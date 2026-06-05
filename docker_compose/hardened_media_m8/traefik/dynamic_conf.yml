@@ -21,11 +21,18 @@ http:
         - ip-allowlist
       tls: {}
 
-    # Auth-User-Service: public routes on HTTPS (health and metrics are internal-only)
+    # Auth-User-Service: public routes on HTTPS.
+    # SECURITY CONTRACT — paths below are NEVER routed from the public internet:
+    #   /user/health   — internal readiness probe only
+    #   /user/metrics  — Prometheus scrape endpoint, internal only
+    #   /user/private  — inter-service API; app also requires X-Internal-Token,
+    #                    but Traefik must block it first so the route is invisible.
+    # If you add new internal paths, add them here AND write a live test in
+    # tests/live/test_security_live.py (see TestAuth_PrivateAPI / TestAuth_MetricsAPI).
     auth-public-router:
       entryPoints:
         - websecure
-      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`))"
+      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
       service: auth-service
       middlewares:
         - security-headers
@@ -42,11 +49,16 @@ http:
         - security-headers
         - internal-only
 
-    # Media-Service: public routes on HTTPS
+    # Media-Service: public routes on HTTPS.
+    # SECURITY CONTRACT — paths below are NEVER routed from the public internet:
+    #   /media/health  — internal readiness probe only
+    #   /media/metrics — Prometheus scrape endpoint, internal only
+    # If you add new internal paths, add them here AND write a live test in
+    # tests/live/test_security_live.py (see TestMedia_MetricsAPI).
     media-public-router:
       entryPoints:
         - websecure
-      rule: "Host(`localhost`) && PathPrefix(`/media`)"
+      rule: "Host(`localhost`) && PathPrefix(`/media`) && !(PathPrefix(`/media/health`) || PathPrefix(`/media/metrics`))"
       service: media-service
       middlewares:
         - security-headers

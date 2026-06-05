@@ -5,6 +5,40 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [0.8.4] — 2026-06-05 · Shell script permissions + Traefik security hardening
+
+### Fixed
+
+- **All `.sh` scripts now stored as `100755` in git** (`media_service/scripts/`,
+  `docker_compose/hardened_media_m8/init.sh`, `docker_compose/shared/`).
+  Files were stored as `100644`; on hosts with `core.filemode=false` (WSL2, Windows,
+  CI runners) the missing execute bit caused `Permission denied` from bind-mounted volumes.
+  Fixed via `git update-index --chmod=+x` — independent of host `core.filemode`.
+
+- **Traefik `auth-public-router` now excludes `/user/private/` and `/user/metrics`**
+  (`docker_compose/hardened_media_m8/traefik/dynamic_conf.yml`).
+  Both paths were reachable from the public internet. Traefik now returns 404 for
+  these paths before requests reach the app.
+
+- **Traefik `media-public-router` now excludes `/media/health/` and `/media/metrics`**
+  (`docker_compose/hardened_media_m8/traefik/dynamic_conf.yml`).
+  Both internal-only endpoints were fully routed to the public internet.
+  A SECURITY CONTRACT comment block documents excluded paths with pointers to live tests.
+
+- **`fastapi-m8` requirement bumped to `>=1.1.3`** (`media_service/requirements_base.txt`).
+
+### Added
+
+- **`tests/live/test_security_live.py`** — live security test suite for the
+  `hardened_media_m8` compose stack. Verifies Traefik-level blocks for:
+  - Auth `/user/private/` (private inter-service API)
+  - Auth `/user/metrics` (Prometheus endpoint)
+  - Media `/media/metrics` (Prometheus endpoint)
+  - Media `/media/health/` (readiness probe)
+  Failures print `[TRAEFIK MISCONFIGURATION]` with the exact fix required.
+
+---
+
 ## [Unreleased] — Phase 9: Custom Prometheus metrics + fastapi-m8 1.1.0 migration
 
 ### Changed
