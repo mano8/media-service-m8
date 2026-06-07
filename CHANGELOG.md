@@ -5,6 +5,65 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [0.9.0] — 2026-06-07 · fastapi-m8 1.2.0 + docs/compose reconciliation
+
+### Changed
+
+- **`fastapi-m8` requirement bumped to `>=1.2.0`** (`media_service/requirements_base.txt`),
+  which pulls in `auth-sdk-m8 1.0.0`. Under 1.0.0 the consumer is **secure-by-default**:
+  - `TOKEN_STRICT_VALIDATION` defaults to `true` → `TOKEN_ISSUER` / `TOKEN_AUDIENCE`
+    are required at boot (opt out with `TOKEN_STRICT_VALIDATION=false` for local dev).
+  - `EVENT_SIGNING_ENABLED` defaults to `true` → a strong `EVENT_SIGNING_KEY` is
+    required at boot or the process **fails closed**. Note: the auth-state event
+    bus is not wired into any service yet, so this is a boot-time requirement
+    only; the key is not used at runtime until the bus lands.
+- **`README.md` rewritten** from the legacy `fa-media-m8` stub to a full overview
+  aligned with the current code: API surface (uploads / objects / admin / category /
+  dashboard), presigned upload flow, visibility→bucket mapping, auth modes, media
+  Redis namespace, and custom metrics. Documents that `variants` are reserved stubs.
+- **`media_service/.example_env` rebuilt** as a real media-consumer example
+  (RS256/JWKS default, MinIO, `MEDIA_REDIS_*`, `EVENT_SIGNING_*`, boundary claims).
+  It was previously a verbatim copy of the generic `fastapi_full` consumer example.
+
+### Fixed
+
+- **Container boot crash** (`media_service/fastapi_pre_start.py`). The pre-start DB
+  probe still imported `media_service.core.engine_sync` — a module that never existed
+  after the fastapi-m8 1.1.0 migration moved the engine into `core/deps.py`. In Docker
+  this raised `ModuleNotFoundError`, the container exited, and Traefik reported it
+  could not find the media_service IP. The probe now uses the shared `DbEngine` from
+  `core/deps.py` via its public `session()` API (the same engine the app uses).
+- **Test bootstrap for secure-by-default** (`tests/conftest.py`). Added the documented
+  local opt-outs (`TOKEN_STRICT_VALIDATION=false`, `EVENT_SIGNING_ENABLED=false`) so the
+  unit suite boots under auth-sdk-m8 1.0.0 without cross-service claim binding or a
+  shared event-signing key. Suite remains 141 unit tests at 100% coverage.
+
+### Removed
+
+- **Legacy `slugify>=0.0.1`** dropped from `requirements_base.txt`. `python-slugify`
+  (imported as `slugify`) is the sole slug dependency, matching the 0.5.0 migration.
+
+### Compose (`docker_compose/hardened_media_m8`)
+
+- **Added `media_redis_cache` service** (`redis:7.4-alpine`, `data_net` only) — the
+  media-owned Redis the code (`core/media_redis.py`, `core/rate_limit.py`) targets via
+  `MEDIA_REDIS_*`. Previously referenced by README/envs/code but never defined.
+- **Added `minio-init` one-shot** — creates the five logical buckets and a scoped
+  `media-rw` user/policy from the `media.env` credentials before `media_service` starts.
+- **`media_service` now `depends_on` `minio`, `minio-init`, and `media_redis_cache`**;
+  fixed the MinIO healthcheck to probe the in-container API port (`:9000`).
+- **`auth.env.example` / `media.env.example` aligned** with the live `auth.env` /
+  `media.env`: added the `EVENT_SIGNING` block and the `TOKEN_ISSUER`/`TOKEN_AUDIENCE`
+  boundary-claim block.
+- **README corrected**: directory name (`hardened_media_m8`), removed the inaccurate
+  "media uses the auth Redis for revocation" claim (revocation is HTTP introspection),
+  documented `minio-init` + `media_redis_cache`, and added `EVENT_SIGNING` setup notes.
+- **Runtime secret env files untracked** — `.env`, `auth.env`, and `media.env` are now
+  git-ignored (`*.env`) and removed from version control; only the `*.example` files
+  remain tracked.
+
+---
+
 ## [0.8.4] — 2026-06-05 · Shell script permissions + Traefik security hardening
 
 ### Fixed
@@ -39,7 +98,7 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
-## [Unreleased] — Phase 9: Custom Prometheus metrics + fastapi-m8 1.1.0 migration
+## [0.8.2] — 2026-06-03 · Phase 9: Custom Prometheus metrics + fastapi-m8 1.1.0 migration
 
 ### Changed
 

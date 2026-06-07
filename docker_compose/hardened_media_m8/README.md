@@ -1,10 +1,13 @@
-# hardened_m8
+# hardened_media_m8
 
 Local hardened stack for `auth_user_service` + `media_service`.
 
-Includes PostgreSQL 16, Redis, MinIO, Traefik, Prometheus, Grafana, RS256/JWKS auth integration, hardened containers, and network segmentation.
+Includes PostgreSQL 16, two Redis instances (auth + media), MinIO, Traefik,
+Prometheus, Grafana, RS256/JWKS auth integration, hardened containers, and
+network segmentation.
 
-Use this example while developing the media microservice. Other compose examples are intentionally not aligned until this one is working.
+Use this example while developing the media microservice. Other compose examples
+are intentionally not aligned until this one is working.
 
 ## Architecture
 
@@ -19,12 +22,19 @@ Browser / Frontend
 
   media_service
        +--> PostgreSQL on data_net
-       +--> Auth Redis on data_net for token revocation checks
+       +--> auth_user_service private API (HTTP introspection) for token revocation
        +--> Media Redis on data_net for media queues/rate limits/cache
        +--> MinIO on data_net
 ```
 
-`app_net` is external-facing for Traefik, app services, and observability. `data_net` is internal and has no gateway; DB, Redis, and MinIO are not exposed through that network.
+`app_net` is external-facing for Traefik, app services, and observability.
+`data_net` is internal and has no gateway; DB, Redis, and MinIO are not exposed
+through that network.
+
+> **Token revocation:** the media service does **not** connect to the auth
+> Redis. In `stateful` mode it queries the auth service's private introspection
+> endpoint (`INTROSPECTION_URL` → `/user/private/v1/jti-status`) over HTTP. The
+> auth Redis (`redis_cache`) is used only by `auth_user_service`.
 
 ## Services
 
@@ -34,15 +44,16 @@ Browser / Frontend
 | auth_user_service | `tepochtli/fa-auth-m8:latest` | `/user` via Traefik |
 | media_service | local `../../media_service` build | `/media` via Traefik |
 | m8_db | `postgres:16-alpine` | internal data network |
-| redis_cache | `redis:7.4-alpine` | internal data network |
-| media_redis_cache | `redis:7.4-alpine` | internal data network |
+| redis_cache | `redis:7.4-alpine` | auth Redis — internal data network |
+| media_redis_cache | `redis:7.4-alpine` | media Redis — internal data network |
 | minio | `quay.io/minio/minio` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
+| minio-init | `minio/mc` | one-shot: buckets + `media-rw` policy |
 | prometheus | `ubuntu/prometheus:3.11-24.04_stable` | `127.0.0.1:9090` |
-| grafana | `grafana/grafana:13.1.0` | `127.0.0.1:3000` |
+| grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 
 ## Setup
 
-From `docker_compose/hardened_m8`:
+From `docker_compose/hardened_media_m8`:
 
 ```sh
 cp .env.example .env
@@ -50,25 +61,28 @@ cp auth.env.example auth.env
 cp media.env.example media.env
 ```
 
-Edit `.env`:
+Edit `.env` (infrastructure / bootstrap):
 
 ```ini
-DB_PASSWORD=<postgres-root-password>
+DB_USER=<postgres-superuser>
+DB_PASSWORD=<postgres-superuser-password>
 AUTH_DB_USER=<auth-db-user>
 AUTH_DB_PASSWORD=<auth-db-password>
 AUTH_DB_NAME=auth_db
 MEDIA_DB_USER=<media-db-user>
 MEDIA_DB_PASSWORD=<media-db-password>
 MEDIA_DB_NAME=media_db
-REDIS_PASSWORD=<redis-password>
+REDIS_PASSWORD=<auth-redis-password>
 MEDIA_REDIS_PASSWORD=<media-redis-password>
 MINIO_ROOT_USER=<minio-root-user>
 MINIO_ROOT_PASSWORD=<minio-root-password>
 ```
 
-Edit `auth.env` so its generic runtime DB values match the `AUTH_DB_*` triplet in `.env`.
+Edit `auth.env` so its generic runtime DB values match the `AUTH_DB_*` triplet in
+`.env`, and set its `REDIS_PASSWORD` to match `.env`. `auth_user_service` is the
+only service that connects to the auth Redis.
 
-Edit `media.env` so its generic runtime DB values match the `MEDIA_DB_*` triplet in `.env`:
+Edit `media.env` so it matches the `MEDIA_DB_*` triplet in `.env`:
 
 ```ini
 DB_DATABASE=media_db
@@ -78,13 +92,31 @@ MINIO_HOST=minio
 MINIO_PORT=9000
 MINIO_ACCESS_KEY=<media-rw-user>
 MINIO_SECRET_KEY=<media-rw-password>
-REDIS_HOST=redis_cache
-REDIS_PASSWORD=<same-as-REDIS_PASSWORD-in-.env>
 MEDIA_REDIS_HOST=media_redis_cache
 MEDIA_REDIS_PASSWORD=<same-as-MEDIA_REDIS_PASSWORD-in-.env>
 ```
 
-`REDIS_*` remains the auth Redis connection used by `auth-sdk-m8` for stateful access-token revocation checks. `MEDIA_REDIS_*` is reserved for media-owned queues, rate limits, locks, and cache keys under the `media:*` namespace.
+`MEDIA_REDIS_*` is the media-owned Redis for queues, rate limits, locks, and
+cache keys under the `media:*` namespace. `media.env` has **no** `REDIS_*`
+(auth Redis) settings — revocation goes through HTTP introspection.
+
+The `minio-init` one-shot provisions a MinIO user from `media.env`'s
+`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`, so set those to the media-rw credentials
+you want (not the MinIO root user).
+
+### Secure-by-default settings (auth-sdk-m8 ≥ 1.0.0)
+
+Both `auth.env` and `media.env` ship with two boot-required blocks. Leaving them
+unset makes the service **fail closed** at startup:
+
+- **`TOKEN_ISSUER` / `TOKEN_AUDIENCE`** — required because
+  `TOKEN_STRICT_VALIDATION` defaults to `true`. Use identical issuer/audience
+  values across the auth service and every consumer (opt out with
+  `TOKEN_STRICT_VALIDATION=false` for local-only experiments).
+- **`EVENT_SIGNING_KEY`** — required because `EVENT_SIGNING_ENABLED` defaults to
+  `true`. Use the **same** key in `auth.env` and `media.env`. The auth-state
+  event bus is not wired into any service yet, so this is a boot-time requirement
+  only; set `EVENT_SIGNING_ENABLED=false` in both files to defer it.
 
 Initialize keys and local certificates:
 
@@ -100,11 +132,12 @@ Start the stack:
 docker-compose up -d --build
 ```
 
-If your Docker install supports Compose v2, `docker compose up -d --build` is equivalent.
+If your Docker install supports Compose v2, `docker compose up -d --build` is
+equivalent.
 
 ## MinIO
 
-MinIO remains exposed only on loopback for local development:
+MinIO is exposed only on loopback for local development:
 
 | Endpoint | URL |
 | --- | --- |
@@ -121,7 +154,10 @@ temp-media
 archive-media
 ```
 
-It also creates/attaches a limited `media-rw` policy for the media service credentials from `media.env`. The media service should use `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`, not MinIO root credentials.
+It also creates and attaches a scoped `media-rw` policy/user for the media
+service credentials from `media.env`. `media_service` waits for `minio-init` to
+complete before starting and uses `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`, not
+the MinIO root credentials.
 
 ## URLs
 
@@ -146,16 +182,23 @@ Prometheus scrapes:
 | auth_user_service | `auth_user_service:8000` | `/user/metrics` |
 | media_service | `media_service:8000` | `/media/metrics` |
 
-Grafana uses the local Prometheus datasource. Default local credentials are controlled by `grafana/config.monitoring`.
+Grafana uses the local Prometheus datasource. Default local credentials are
+controlled by `grafana/config.monitoring`.
 
 ## Configuration Notes
 
-- `.env` is infrastructure/bootstrap config. It provisions `AUTH_DB_*` and `MEDIA_DB_*` through `../shared/db_init/init-db.sh`.
-- `auth.env` and `media.env` are runtime application configs consumed by `auth-sdk-m8`.
-- Runtime service env files intentionally use generic `DB_DATABASE`, `DB_USER`, and `DB_PASSWORD`.
-- Do not replace the SDK-compatible runtime DB variables with `MEDIA_DB_*` inside `media.env`.
-- Do not point `media.env` `REDIS_*` at `media_redis_cache` while `TOKEN_MODE=stateful`; that would disconnect media from auth token revocation state.
-- Use `MEDIA_REDIS_*` for media-owned runtime state.
+- `.env` is infrastructure/bootstrap config. It provisions `AUTH_DB_*` and
+  `MEDIA_DB_*` through `../shared/db_init/init-db.sh`, and supplies the Redis and
+  MinIO root passwords used by the `redis_cache`, `media_redis_cache`, and
+  `minio` services via Compose interpolation.
+- `auth.env` and `media.env` are runtime application configs consumed by
+  `auth-sdk-m8`. They use generic `DB_DATABASE`, `DB_USER`, `DB_PASSWORD` — do
+  **not** replace those with the `MEDIA_DB_*` / `AUTH_DB_*` names.
+- Only `auth_user_service` connects to the auth Redis (`redis_cache`). The media
+  service reaches the auth service over HTTP (`INTROSPECTION_URL`) for revocation.
+- Use `MEDIA_REDIS_*` (→ `media_redis_cache`) for media-owned runtime state.
+- `.env`, `auth.env`, and `media.env` hold secrets and are git-ignored (`*.env`);
+  only the `*.example` files are tracked.
 - The media service base path is `/media`.
 - Other compose examples are not updated by this hardened example.
 
@@ -178,10 +221,24 @@ bash init.sh --reset-db --yes
 
 ## Troubleshooting
 
-**`changethis` rejection on startup**: replace placeholder values in `.env`, `auth.env`, and `media.env`.
+**`changethis` rejection on startup**: replace placeholder values in `.env`,
+`auth.env`, and `media.env`.
 
-**Media service cannot connect to MinIO**: inside Docker, use `MINIO_HOST=minio` and `MINIO_PORT=9000`. Host ports `9005` and `9006` are only for local browser/tool access.
+**Service exits at boot complaining about `EVENT_SIGNING_KEY` or
+`TOKEN_ISSUER`/`TOKEN_AUDIENCE`**: these are required under auth-sdk-m8 ≥ 1.0.0.
+Set them (identically across auth + media), or set `EVENT_SIGNING_ENABLED=false`
+/ `TOKEN_STRICT_VALIDATION=false` for local-only runs.
 
-**DB user authentication fails**: confirm `media.env` `DB_USER` / `DB_PASSWORD` match `.env` `MEDIA_DB_USER` / `MEDIA_DB_PASSWORD`. If `db_data/` already exists, DB init will not rerun unless you reset it.
+**Media service cannot connect to MinIO**: inside Docker, use `MINIO_HOST=minio`
+and `MINIO_PORT=9000`. Host ports `9005` and `9006` are only for local
+browser/tool access.
 
-**Prometheus media target is down**: check `media_service` logs and confirm `/media/metrics` is enabled with `METRICS_ENABLED=true`.
+**`minio-init` fails or buckets are missing**: check `docker-compose logs minio-init`.
+It waits for MinIO to be healthy, then creates buckets and the `media-rw` user.
+
+**DB user authentication fails**: confirm `media.env` `DB_USER` / `DB_PASSWORD`
+match `.env` `MEDIA_DB_USER` / `MEDIA_DB_PASSWORD`. If `db_data/` already exists,
+DB init will not rerun unless you reset it.
+
+**Prometheus media target is down**: check `media_service` logs and confirm
+`/media/metrics` is enabled with `METRICS_ENABLED=true`.

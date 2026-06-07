@@ -1,16 +1,21 @@
 # Copy to .env and replace every "changethis" with real values.
-# Consumer service — validates tokens issued by auth_user_service.
-# Does NOT include auth-service-only settings (FIRST_SUPERUSER, PRIVATE_API_SECRET,
-# TOKENS_ENCRYPTION_KEY, key files).
+# media_service — a fastapi-m8 CONSUMER that validates tokens issued by
+# auth_user_service. It never holds a private signing key and includes no
+# auth-service-only settings (FIRST_SUPERUSER, TOKENS_ENCRYPTION_KEY, key files).
+#
+# This file is the standalone (non-Docker) local-dev example. For the full
+# hardened stack, use docker_compose/hardened_media_m8/media.env.example instead.
+#
+# config.py uses extra="forbid": every key here must be a declared setting.
 
 # ── Identity ──────────────────────────────────────────────────────────────────
 DOMAIN=localhost
 ENVIRONMENT=local
-PROJECT_NAME=M8FastApi
-STACK_NAME=m8-fastapi-service
+PROJECT_NAME=M8MediaService
+STACK_NAME=m8-media-service
 
 # ── API & docs ────────────────────────────────────────────────────────────────
-API_PREFIX=/fastapi
+API_PREFIX=/media
 SET_OPEN_API=true
 SET_DOCS=true
 SET_REDOC=true
@@ -27,47 +32,82 @@ AUTH_SERVICE_ROLE=consumer
 AUTH_PREFIX=/user
 
 # ── Database ──────────────────────────────────────────────────────────────────
-SELECTED_DB=Mysql
+SELECTED_DB=Postgres
 DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_DATABASE=api_db
+DB_PORT=5432
+DB_DATABASE=media_db
 DB_USER=changethis
 DB_PASSWORD=changethis
 
-# ── Token verification ────────────────────────────────────────────────────────
-# HS256 mode: share the same ACCESS_SECRET_KEY with auth_user_service
-ACCESS_SECRET_KEY=changethis
+# ── Token verification — RS256 via JWKS (stack default) ───────────────────────
+# media_service consumes the auth service's published JWKS, so no shared
+# ACCESS_SECRET_KEY or private key is needed.
+ACCESS_TOKEN_ALGORITHM=RS256
+JWKS_URI=http://127.0.0.1:9000/user/.well-known/jwks.json
+JWKS_CACHE_TTL_SECONDS=300
 REFRESH_SECRET_KEY=changethis
-ACCESS_TOKEN_ALGORITHM=HS256
 REFRESH_TOKEN_ALGORITHM=HS256
 
-# Must match auth_user_service TOKEN_MODE exactly:
-#   stateless — no Redis needed, no revocation
-#   hybrid    — Redis for refresh JTIs only
-#   stateful  — Redis blacklist for access tokens (full revocation)
-TOKEN_MODE=stateful
+# HS256 alternative (comment out the RS256 block above):
+# Share the same ACCESS_SECRET_KEY with auth_user_service.
+# ACCESS_TOKEN_ALGORITHM=HS256
+# ACCESS_SECRET_KEY=changethis
 
+# Must match auth_user_service TOKEN_MODE exactly:
+#   stateless — no revocation
+#   hybrid    — revocation for refresh tokens only
+#   stateful  — full revocation via HTTP introspection (requires INTROSPECTION_URL)
+TOKEN_MODE=stateful
 ACCESS_TOKEN_EXPIRE_MINUTES=60
 REFRESH_TOKEN_EXPIRE_MINUTES=3600
 
+# ── Token boundary claims ─────────────────────────────────────────────────────
+# auth-sdk-m8 >= 1.0.0 turns TOKEN_STRICT_VALIDATION on by default: this consumer
+# fails closed at boot unless both are set, and rejects tokens whose iss/aud claim
+# differs. Must match auth_user_service TOKEN_ISSUER / TOKEN_AUDIENCE exactly.
+# Opt out (local/legacy only) with TOKEN_STRICT_VALIDATION=false.
+TOKEN_ISSUER=https://auth.example.com
+TOKEN_AUDIENCE=https://media.example.com
+#TOKEN_STRICT_VALIDATION=false
+
 # ── Token revocation (required when TOKEN_MODE=stateful) ──────────────────────
-# Full URL to the auth service JTI status endpoint.
-# In Docker: http://auth_user_service:8000/user/private/v1/jti-status
-# Locally:   http://127.0.0.1:9000/user/private/v1/jti-status
-INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
-# Must match PRIVATE_API_SECRET in auth_user_service .env — set a strong unique value.
+# media never touches the auth Redis; it queries the auth service's private
+# introspection endpoint over HTTP instead.
+# In Docker:  http://auth_user_service:8000/user/private/v1/jti-status
+# Locally:    http://127.0.0.1:9000/user/private/v1/jti-status
+INTROSPECTION_URL=http://127.0.0.1:9000/user/private/v1/jti-status
+# Must match PRIVATE_API_SECRET in auth_user_service .env.
 PRIVATE_API_SECRET=changethis
 
-# RS256 / ES256 asymmetric mode (comment out the HS256 block above):
-# ACCESS_TOKEN_ALGORITHM=RS256
-# JWKS_URI=http://auth_user_service:8000/user/.well-known/jwks.json
-# JWKS_CACHE_TTL_SECONDS=300
-# REFRESH_SECRET_KEY=changethis
-# REFRESH_TOKEN_ALGORITHM=HS256
+# ── Event signing — auth-sdk-m8 1.0.0 boot validator (fail-closed when enabled) ──
+# EVENT_SIGNING_ENABLED defaults to true; boot fails closed without a strong key.
+# Must match EVENT_SIGNING_KEY in auth_user_service. Set EVENT_SIGNING_ENABLED=false
+# to disable signing entirely (the event bus is not wired by any service yet).
+EVENT_SIGNING_ENABLED=true
+EVENT_SIGNING_KEY=changethis
 
-# Optional claim enforcement — must match auth_user_service if set:
-# TOKEN_ISSUER=https://auth.example.com
-# TOKEN_AUDIENCE=https://api.example.com
+# ── MinIO object storage ──────────────────────────────────────────────────────
+MINIO_HOST=127.0.0.1
+MINIO_PORT=9000
+MINIO_USE_SSL=false
+MINIO_REGION=eu-west-1
+MINIO_ACCESS_KEY=changethis
+MINIO_SECRET_KEY=changethis
+MINIO_BUCKET_PUBLIC=public-media
+MINIO_BUCKET_PRIVATE=private-media
+MINIO_BUCKET_SENSITIVE=sensitive-media
+MINIO_BUCKET_TEMP=temp-media
+MINIO_BUCKET_ARCHIVE=archive-media
+MINIO_PRESIGNED_URL_EXPIRE_SECONDS=300
+MEDIA_MAX_UPLOAD_SIZE_BYTES=104857600
+
+# ── Media Redis (media-owned queues, rate limits, locks, cache) ───────────────
+# Separate from the auth Redis; uses the media:* key namespace.
+MEDIA_REDIS_HOST=127.0.0.1
+MEDIA_REDIS_PORT=6379
+MEDIA_REDIS_USER=appuser
+MEDIA_REDIS_PASSWORD=changethis
+MEDIA_REDIS_NAMESPACE=media
 
 # ── Observability ─────────────────────────────────────────────────────────────
 # Master switch — false = zero overhead, /metrics endpoint not registered

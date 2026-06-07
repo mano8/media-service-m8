@@ -12,3 +12,4 @@ traefik/certs/*.crt
 traefik/certs/*.key
 *.pem
 *README_DEV*
+*.env

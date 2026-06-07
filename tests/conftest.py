@@ -16,6 +16,11 @@ _TEST_ENV = {
     "BACKEND_CORS_ORIGINS": "http://localhost",
     "AUTH_SERVICE_ROLE": "consumer",
     "TOKEN_MODE": "stateless",
+    # auth-sdk-m8 >= 1.0.0 is secure-by-default; use the documented local opt-outs
+    # so unit tests boot without cross-service issuer/audience binding or a shared
+    # event-signing key (the event bus is not wired into any service yet).
+    "TOKEN_STRICT_VALIDATION": "false",
+    "EVENT_SIGNING_ENABLED": "false",
     "ACCESS_SECRET_KEY": "TestSecret!Key4UnitTests_onlyXYZ0987",
     "REFRESH_SECRET_KEY": "TestRefresh!Key4UnitTests_onlyABC1234",
     "ACCESS_TOKEN_ALGORITHM": "HS256",

@@ -92,6 +92,32 @@ services:
     networks:
       - data_net
 
+  # Media-owned Redis (rate limits, queues, locks, cache under the media:* namespace).
+  # Separate from the auth redis_cache; internal-only, never exposed to the host.
+  media_redis_cache:
+    image: redis:7.4-alpine
+    volumes:
+      - ./media_redis/data:/data
+    command:
+      - sh
+      - -c
+      - |
+        redis-server --save 20 1 --loglevel warning --requirepass "${MEDIA_REDIS_PASSWORD}" &
+        until redis-cli ping 2>/dev/null | grep -q PONG; do sleep 0.2; done
+        redis-cli ACL SETUSER appuser on \>"${MEDIA_REDIS_PASSWORD}" "~*" +@all
+        wait
+    environment:
+      - REDIS_PASSWORD=${MEDIA_REDIS_PASSWORD}
+      - REDISCLI_AUTH=${MEDIA_REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - data_net
+
   minio:
     image: quay.io/minio/minio
     container_name: minio
@@ -103,9 +129,9 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
       - ./minio/data:/data
-    command: server /data --console-address ":9006"
+    command: server /data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9005/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -113,7 +139,44 @@ services:
     networks:
       - app_net
       - data_net
-  
+
+  # One-shot: create the logical buckets and a scoped media-rw user/policy.
+  # Reads MinIO root creds from .env and the media service creds from media.env.
+  # media_service waits for this to complete successfully before starting.
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - ./.env
+      - ./media.env
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          echo "minio-init: waiting for minio..."; sleep 1
+        done
+        for b in "$$MINIO_BUCKET_PUBLIC" "$$MINIO_BUCKET_PRIVATE" "$$MINIO_BUCKET_SENSITIVE" "$$MINIO_BUCKET_TEMP" "$$MINIO_BUCKET_ARCHIVE"; do
+          mc mb --ignore-existing "local/$$b"
+        done
+        printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"],"Resource":["arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*"]}]}' \
+          "$$MINIO_BUCKET_PUBLIC" "$$MINIO_BUCKET_PUBLIC" \
+          "$$MINIO_BUCKET_PRIVATE" "$$MINIO_BUCKET_PRIVATE" \
+          "$$MINIO_BUCKET_SENSITIVE" "$$MINIO_BUCKET_SENSITIVE" \
+          "$$MINIO_BUCKET_TEMP" "$$MINIO_BUCKET_TEMP" \
+          "$$MINIO_BUCKET_ARCHIVE" "$$MINIO_BUCKET_ARCHIVE" > /tmp/media-rw.json
+        mc admin policy create local media-rw /tmp/media-rw.json || true
+        mc admin user add local "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY" || true
+        mc admin policy attach local media-rw --user "$$MINIO_ACCESS_KEY" || true
+        echo "minio-init: buckets and media-rw policy ready"
+    restart: "no"
+    networks:
+      - data_net
+
+
   prometheus:
     image: ubuntu/prometheus:3.11-24.04_stable
     volumes:
@@ -207,6 +270,12 @@ services:
         condition: service_healthy
       auth_user_service:
         condition: service_started
+      media_redis_cache:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     networks:
       - app_net
