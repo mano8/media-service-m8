@@ -1,12 +1,14 @@
 """media_service entry point.
 
-All CORS, health, metrics middleware, and lifespan wiring are handled
-by ``create_app``. Only media-specific additions live here.
+All CORS, health, lifespan, and the shared metrics middleware/collectors are
+wired by ``create_app`` (which calls ``auth_sdk_m8.observability.metrics.setup``
+itself when ``METRICS_ENABLED``). Only media-specific additions live here: the
+media-owned counters and the read-only ``/metrics`` endpoint.
 """
 
 from fastapi import APIRouter
+from fastapi.responses import Response
 
-from auth_sdk_m8.observability import metrics as _metrics
 from fastapi_m8 import (
     AppLifecycle,
     HealthCheckResult,
@@ -19,11 +21,9 @@ from media_service.app.main import api_router as domain_router
 from media_service.core.config import settings
 from media_service.core.deps import auth, engine
 
-_metrics.setup(
-    enabled=settings.METRICS_ENABLED,
-    groups_str=settings.METRICS_GROUPS,
-    api_prefix=settings.API_PREFIX,
-)
+# Register media-owned counters against the shared REGISTRY. The shared HTTP
+# collectors are registered by create_app — registering them here too would
+# raise "Duplicated timeseries in CollectorRegistry".
 _media_metrics.setup(enabled=settings.METRICS_ENABLED, api_prefix=settings.API_PREFIX)
 
 
@@ -53,8 +53,27 @@ async def minio_health_check() -> HealthCheckResult:
         )
 
 
+def _register_metrics_endpoint(router: APIRouter, *, enabled: bool) -> None:
+    """Expose Prometheus metrics under the API prefix when enabled.
+
+    ``create_app`` installs the metrics middleware and registers the shared
+    collectors; this only adds the read endpoint that renders ``REGISTRY``
+    (shared HTTP metrics plus the media-owned counters).
+    """
+    if not enabled:
+        return
+
+    from auth_sdk_m8.observability.metrics import render as _render_metrics  # noqa: PLC0415
+
+    @router.get("/metrics", include_in_schema=False)
+    def metrics_endpoint() -> Response:
+        data, content_type = _render_metrics()
+        return Response(content=data, media_type=content_type)
+
+
 api_router = APIRouter(prefix=settings.API_PREFIX)
 api_router.include_router(domain_router)
+_register_metrics_endpoint(api_router, enabled=settings.METRICS_ENABLED)
 
 app = create_app(
     settings,

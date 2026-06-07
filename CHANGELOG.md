@@ -27,6 +27,14 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Fixed
 
+- **Metrics startup crash + missing `/metrics` endpoint** (`media_service/main.py`).
+  `main.py` called `auth_sdk_m8.observability.metrics.setup()` itself, but `create_app`
+  already calls it, so with `METRICS_ENABLED=true` the shared HTTP collectors registered
+  twice and the app crashed with `Duplicated timeseries in CollectorRegistry:
+  {'media_http_requests…'}`. The explicit call is removed (the media-specific counters are
+  still registered), and — like the reference consumer — `main.py` now mounts the read-only
+  `/metrics` endpoint, which previously was never registered despite the README/Prometheus
+  expecting `/media/metrics`. Covered by two new tests (143 unit tests, 100% coverage).
 - **Container boot crash** (`media_service/fastapi_pre_start.py`). The pre-start DB
   probe still imported `media_service.core.engine_sync` — a module that never existed
   after the fastapi-m8 1.1.0 migration moved the engine into `core/deps.py`. In Docker
@@ -67,6 +75,12 @@ All notable changes to `media-service-m8` are documented here.
 - **Runtime secret env files untracked** — `.env`, `auth.env`, and `media.env` are now
   git-ignored (`*.env`) and removed from version control; only the `*.example` files
   remain tracked.
+- **`init.sh --reset-db` fixed** (`docker_compose/shared/scripts/init-common.sh`).
+  `rm -rf db_data/` failed with `Permission denied` because the directory is owned by the
+  Postgres container's uid (0700); it now falls back to a throwaway root container to
+  delete container-owned bind-mount data. The env bootstrap loop also matched only
+  `.env`/`auth.env`/`api.env`, so `media.env` was never created — it now copies every
+  `*.env.example` (dotglob-aware), so `media.env` is bootstrapped for this stack.
 
 ---
 
