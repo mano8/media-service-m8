@@ -1,0 +1,45 @@
+# ---------- BUILD STAGE ----------
+FROM python:3.14-slim AS builder
+
+WORKDIR /install
+
+ARG ENVIRONMENT=prod
+ENV PIP_ROOT_USER_ACTION=ignore
+
+COPY ./media_service/requirements_base.txt .
+COPY ./media_service/requirements_dev.txt .
+COPY ./media_service/requirements_prod.txt .
+
+RUN pip install --upgrade "pip==26.1.1" && \
+    pip install --prefix=/install --no-cache-dir -r requirements_base.txt && \
+    if [ "$ENVIRONMENT" = "development" ]; then \
+        pip install --prefix=/install --no-cache-dir -r requirements_dev.txt ; \
+    else \
+        pip install --prefix=/install --no-cache-dir -r requirements_prod.txt ; \
+    fi
+
+
+# ---------- RUNTIME STAGE ----------
+FROM python:3.14-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PATH="/home/appuser/.local/bin:$PATH"
+ENV PYTHONPATH=/opt/media_service
+
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --create-home appuser
+
+WORKDIR /opt
+
+COPY --from=builder /install /usr/local
+COPY --chown=appuser:appuser ./media_service ./media_service
+
+RUN find /opt/media_service/scripts -name "*.sh" -exec sed -i 's/\r$//' {} + && \
+    chmod +x /opt/media_service/scripts/*.sh
+
+USER appuser
+
+EXPOSE 8000
+
+CMD ["./media_service/scripts/docker_start.sh"]

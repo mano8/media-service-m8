@@ -1,0 +1,285 @@
+<!-- markdownlint-disable MD024 -->
+# Changelog
+
+All notable changes to `media-service-m8` are documented here.
+
+---
+
+## [Unreleased] — Phase 10 · object listing, filtering & pagination
+
+### Added
+
+- **`GET /v1/objects`** — list endpoint with cursor pagination and filters
+  (`controllers/objects.py`, `app/routes/objects.py`, `schemas/objects.py`).
+  - Filters: `category`, `visibility`, `status`, `mime_prefix`,
+    `created_from`/`created_to`, `q` (filename contains).
+  - Sorting on `created_at` or `size_bytes`, `asc`/`desc`, with a stable
+    secondary `id` tiebreak.
+  - Opaque base64 keyset cursor (`next_cursor`); `limit` 1–100 (default 50);
+    rate-limited at 120/min (`objects:list`).
+  - Owner-scoped for regular users; superusers see all and may pass
+    `owner_user_id` / `include_deleted`. Soft-deleted objects excluded by default.
+- `ObjectListParams` / `ObjectListResponse` schemas.
+
+### Changed
+
+- `media_service/alembic/env.py` — `render_item` return type narrowed to
+  `Literal[False]` so `mypy` reports zero issues.
+
+### CI/CD
+
+- **GitHub Actions added** (`.github/workflows/`), mirroring `fa-auth-m8` with
+  SHA-pinned actions:
+  - `CI.yaml` — `lint` (ruff format/check), `typecheck` (mypy), `security`
+    (bandit + Trivy fs scan), and `test` (pytest matrix 3.11–3.14,
+    `--cov-fail-under=100`, Codecov + Codacy upload).
+  - `docker-publish.yaml` — multi-arch image build + Trivy image scan + push on
+    release/dispatch.
+- `mypy` added to `media_service/requirements_dev.txt` (required by the policy
+  toolchain; the `typecheck` job depends on it).
+
+### Tooling / quality config (mirrors `fa-auth-m8`)
+
+- Added repo-root tool configs so `ruff`, `mypy`, `pytest`, and Codacy run with
+  the same conventions as `fa-auth-m8`:
+  - `ruff.toml` (line-length 88; excludes `docker_compose/` and
+    `**/alembic/versions/`).
+  - `mypy.ini` (`ignore_missing_imports`; excludes generated migrations).
+  - `pytest.ini` — **`pythonpath = .`** (fixes `ModuleNotFoundError: media_service`
+    in CI), `testpaths`, registered markers, and `addopts` (`--strict-markers`,
+    `--ignore=tests/live`, `--cov=media_service`, `--cov-branch`).
+  - `setup.cfg` (`pycodestyle max-line-length = 88`).
+  - `.coveragerc` — `branch = True` + expanded `[report] exclude_lines`.
+  - `.codacy.yml` — bandit/ruff/markdownlint engines; excludes `tests/**`,
+    `docker_compose/**`, `**/alembic/versions/**`.
+- **Branch coverage** now enforced; covered the slug-validator false branch in
+  `db_models/categories.py`.
+- **Codacy complexity fixes:** `list_objects` now takes `ObjectListParams` as a
+  query-model dependency (15 → 3 params); `complete_upload` refactored under the
+  50-line limit via shared `_load_owned_session` / `_ensure_completable` helpers
+  (also reused by `abort_upload`).
+- **Dockerfile:** pinned `pip==26.1.1` (matches `fa-auth-m8`).
+- **`CLAUDE.md` untracked** (added to `.git/info/exclude`) — meta files are not
+  version-controlled, consistent with `fa-auth-m8`.
+
+Tested at 100% line+branch coverage (165 unit tests); ruff/mypy/bandit clean.
+
+---
+
+## [0.9.0] — 2026-06-07 · fastapi-m8 1.2.0 + docs/compose reconciliation
+
+### Changed
+
+- **`fastapi-m8` requirement bumped to `>=1.2.0`** (`media_service/requirements_base.txt`),
+  which pulls in `auth-sdk-m8 1.0.0`. Under 1.0.0 the consumer is **secure-by-default**:
+  - `TOKEN_STRICT_VALIDATION` defaults to `true` → `TOKEN_ISSUER` / `TOKEN_AUDIENCE`
+    are required at boot (opt out with `TOKEN_STRICT_VALIDATION=false` for local dev).
+  - `EVENT_SIGNING_ENABLED` defaults to `true` → a strong `EVENT_SIGNING_KEY` is
+    required at boot or the process **fails closed**. Note: the auth-state event
+    bus is not wired into any service yet, so this is a boot-time requirement
+    only; the key is not used at runtime until the bus lands.
+- **`README.md` rewritten** from the legacy `fa-media-m8` stub to a full overview
+  aligned with the current code: API surface (uploads / objects / admin / category /
+  dashboard), presigned upload flow, visibility→bucket mapping, auth modes, media
+  Redis namespace, and custom metrics. Documents that `variants` are reserved stubs.
+- **`media_service/.example_env` rebuilt** as a real media-consumer example
+  (RS256/JWKS default, MinIO, `MEDIA_REDIS_*`, `EVENT_SIGNING_*`, boundary claims).
+  It was previously a verbatim copy of the generic `fastapi_full` consumer example.
+
+### Fixed
+
+- **Metrics startup crash + missing `/metrics` endpoint** (`media_service/main.py`).
+  `main.py` called `auth_sdk_m8.observability.metrics.setup()` itself, but `create_app`
+  already calls it, so with `METRICS_ENABLED=true` the shared HTTP collectors registered
+  twice and the app crashed with `Duplicated timeseries in CollectorRegistry:
+  {'media_http_requests…'}`. The explicit call is removed (the media-specific counters are
+  still registered), and — like the reference consumer — `main.py` now mounts the read-only
+  `/metrics` endpoint, which previously was never registered despite the README/Prometheus
+  expecting `/media/metrics`. Covered by two new tests (143 unit tests, 100% coverage).
+- **Container boot crash** (`media_service/fastapi_pre_start.py`). The pre-start DB
+  probe still imported `media_service.core.engine_sync` — a module that never existed
+  after the fastapi-m8 1.1.0 migration moved the engine into `core/deps.py`. In Docker
+  this raised `ModuleNotFoundError`, the container exited, and Traefik reported it
+  could not find the media_service IP. The probe now uses the shared `DbEngine` from
+  `core/deps.py` via its public `session()` API (the same engine the app uses).
+- **Migration generation crash** (`media_service/alembic/env.py`). Autogenerated
+  migrations referenced `media_service.core.db_models.UUIDString(...)` without
+  importing the module, so `alembic upgrade` raised `NameError: name 'media_service'
+  is not defined` and the container's DB init failed. Added a `render_item` hook
+  (wired into both offline and online `context.configure`) that registers the import
+  for any `media_service` custom column type, so generated scripts import it.
+- **Test bootstrap for secure-by-default** (`tests/conftest.py`). Added the documented
+  local opt-outs (`TOKEN_STRICT_VALIDATION=false`, `EVENT_SIGNING_ENABLED=false`) so the
+  unit suite boots under auth-sdk-m8 1.0.0 without cross-service claim binding or a
+  shared event-signing key. Suite remains 141 unit tests at 100% coverage.
+
+### Removed
+
+- **Legacy `slugify>=0.0.1`** dropped from `requirements_base.txt`. `python-slugify`
+  (imported as `slugify`) is the sole slug dependency, matching the 0.5.0 migration.
+
+### Compose (`docker_compose/hardened_media_m8`)
+
+- **Added `media_redis_cache` service** (`redis:7.4-alpine`, `data_net` only) — the
+  media-owned Redis the code (`core/media_redis.py`, `core/rate_limit.py`) targets via
+  `MEDIA_REDIS_*`. Previously referenced by README/envs/code but never defined.
+- **Added `minio-init` one-shot** — creates the five logical buckets and a scoped
+  `media-rw` user/policy from the `media.env` credentials before `media_service` starts.
+- **`media_service` now `depends_on` `minio`, `minio-init`, and `media_redis_cache`**;
+  fixed the MinIO healthcheck to probe the in-container API port (`:9000`).
+- **`auth.env.example` / `media.env.example` aligned** with the live `auth.env` /
+  `media.env`: added the `EVENT_SIGNING` block and the `TOKEN_ISSUER`/`TOKEN_AUDIENCE`
+  boundary-claim block.
+- **README corrected**: directory name (`hardened_media_m8`), removed the inaccurate
+  "media uses the auth Redis for revocation" claim (revocation is HTTP introspection),
+  documented `minio-init` + `media_redis_cache`, and added `EVENT_SIGNING` setup notes.
+- **Runtime secret env files untracked** — `.env`, `auth.env`, and `media.env` are now
+  git-ignored (`*.env`) and removed from version control; only the `*.example` files
+  remain tracked.
+- **`init.sh --reset-db` fixed** (`docker_compose/shared/scripts/init-common.sh`).
+  `rm -rf db_data/` failed with `Permission denied` because the directory is owned by the
+  Postgres container's uid (0700); it now falls back to a throwaway root container to
+  delete container-owned bind-mount data. The env bootstrap loop also matched only
+  `.env`/`auth.env`/`api.env`, so `media.env` was never created — it now copies every
+  `*.env.example` (dotglob-aware), so `media.env` is bootstrapped for this stack.
+
+---
+
+## [0.8.4] — 2026-06-05 · Shell script permissions + Traefik security hardening
+
+### Fixed
+
+- **All `.sh` scripts now stored as `100755` in git** (`media_service/scripts/`,
+  `docker_compose/hardened_media_m8/init.sh`, `docker_compose/shared/`).
+  Files were stored as `100644`; on hosts with `core.filemode=false` (WSL2, Windows,
+  CI runners) the missing execute bit caused `Permission denied` from bind-mounted volumes.
+  Fixed via `git update-index --chmod=+x` — independent of host `core.filemode`.
+
+- **Traefik `auth-public-router` now excludes `/user/private/` and `/user/metrics`**
+  (`docker_compose/hardened_media_m8/traefik/dynamic_conf.yml`).
+  Both paths were reachable from the public internet. Traefik now returns 404 for
+  these paths before requests reach the app.
+
+- **Traefik `media-public-router` now excludes `/media/health/` and `/media/metrics`**
+  (`docker_compose/hardened_media_m8/traefik/dynamic_conf.yml`).
+  Both internal-only endpoints were fully routed to the public internet.
+  A SECURITY CONTRACT comment block documents excluded paths with pointers to live tests.
+
+- **`fastapi-m8` requirement bumped to `>=1.1.3`** (`media_service/requirements_base.txt`).
+
+### Added
+
+- **`tests/live/test_security_live.py`** — live security test suite for the
+  `hardened_media_m8` compose stack. Verifies Traefik-level blocks for:
+  - Auth `/user/private/` (private inter-service API)
+  - Auth `/user/metrics` (Prometheus endpoint)
+  - Media `/media/metrics` (Prometheus endpoint)
+  - Media `/media/health/` (readiness probe)
+  Failures print `[TRAEFIK MISCONFIGURATION]` with the exact fix required.
+
+---
+
+## [0.8.2] — 2026-06-03 · Phase 9: Custom Prometheus metrics + fastapi-m8 1.1.0 migration
+
+### Changed
+
+- **`create_app` migrated to `HealthConfig`/`AppLifecycle` API** (`media_service/main.py`).
+  The flat kwargs `auth_deps=`, `db_engine=`, `health_checks=` are replaced by two structured
+  objects. Requires `fastapi-m8>=1.1.0`.
+
+- **`settings_customise_sources` no-op removed** (`media_service/core/config.py`).
+  The key was passed in `SettingsConfigDict` which ignores unknown keys (hence the
+  `# type: ignore[typeddict-unknown-key]` suppressor). Vault injection is handled by
+  `CommonSettings.settings_customise_sources` classmethod via normal inheritance — the
+  explicit key was silently redundant.
+
+### Added
+
+- **`media_service/metrics.py`** — five media-specific Prometheus counters registered
+  against the shared `auth_sdk_m8` `REGISTRY`:
+  - `media_uploads_initiated_total` (labels: `category`, `visibility`)
+  - `media_uploads_completed_total` (label: `category`)
+  - `media_uploads_failed_total`
+  - `media_bytes_uploaded_total` (label: `category`)
+  - `media_download_urls_generated_total`
+  All counters are `None` when `METRICS_ENABLED=false` — `inc_*` helpers are always
+  callable and simply no-op in that case.
+- **`media_service/main.py`** — calls `_media_metrics.setup()` immediately after the
+  shared `_metrics.setup()` so counters are registered at startup.
+- **`controllers/uploads.py`** — `inc_upload_initiated` after `initiate_upload` commit,
+  `inc_upload_completed` after `complete_upload` commit, `inc_upload_failed` after
+  `abort_upload` commit.
+- **`controllers/objects.py`** — `inc_download_url_generated` after `create_download_url`.
+- **Tests** — `tests/test_metrics.py` (9 unit tests using `monkeypatch` to inject mock
+  counters; covers both None-guard branches and actual `.inc()` / `.labels().inc()` paths).
+  Total: 147 tests, 100% coverage maintained.
+
+---
+
+## [0.8.0] — Phase 8: Admin routes
+
+### Added
+
+- **`schemas/admin.py`** — `StorageStatsResponse`, `StaleUploadsResponse`, `PurgeStaleResponse`
+  and their nested types (`StorageStatsByStatus`, `StorageStatsByCategory`, `StaleUploadSession`).
+- **`controllers/admin.py`** — `AdminController` with three static methods:
+  - `get_storage_stats`: GROUP BY status and category aggregations using
+    `func.count` + `func.coalesce(func.sum, 0)`.
+  - `get_stale_uploads`: SELECT sessions with `status=INITIATED` and `expires_at < now`.
+  - `purge_stale_uploads`: bulk UPDATE to `EXPIRED` + returns `rowcount`.
+- **`app/routes/admin.py`** — three superuser-gated endpoints under `/v1/admin`:
+  - `GET /v1/admin/storage/stats`
+  - `GET /v1/admin/uploads/stale`
+  - `POST /v1/admin/uploads/purge-stale`
+  Guard applied at router level via `dependencies=[Depends(get_current_active_superuser)]`.
+- **Tests** — `tests/test_admin.py` (13 tests: empty DB, non-empty, multi-status,
+  active-session exclusion, purge idempotency, 403 guards).
+  Total: 138 tests, 100% coverage maintained.
+
+---
+
+## [0.6.0] — Phase 6: Redis rate limiting
+
+### Added
+
+- **`core/rate_limit.py`** — `RateLimiter` callable dependency and `get_redis_client` factory.
+  Uses a fixed-window counter (INCR + EXPIRE) keyed as `media:ratelimit:{action}:{user_id}`.
+  Fails open on Redis errors so a cache outage never blocks uploads.
+- **Per-endpoint limits** applied via `dependencies=[Depends(...)]` on route decorators:
+  - `POST /v1/uploads/initiate` — 20 req/min per user
+  - `POST /v1/uploads/{id}/complete` — 20 req/min per user
+  - `GET /v1/objects/{id}/download-url` — 60 req/min per user
+- **`anyio_backend` fixture** in `conftest.py` restricts async test parametrization to
+  `asyncio` only (trio is not installed in this environment).
+- **Tests** — `tests/test_rate_limit.py` (10 unit tests covering all `RateLimiter` branches),
+  plus 429 integration tests in `test_uploads.py` and `test_objects.py`.
+  Total: 125 tests, 100% coverage maintained.
+
+---
+
+## [0.5.0] — Phase 5: Upload API, Object API, and full test suite
+
+### Added
+
+- **Upload API** (`/v1/uploads`): presigned PUT flow with `initiate`, `complete`, and `abort` endpoints backed by `UploadsController`.
+- **Object API** (`/v1/objects`): `get`, `download-url` (presigned GET), `update` (PATCH), and soft-delete endpoints backed by `ObjectsController`.
+- **Schemas** — `schemas/uploads.py` (`UploadInitiateRequest/Response`, `UploadCompleteRequest/Response`) and `schemas/objects.py` (`MediaObjectUpdate`, `DownloadUrlResponse`).
+- **Full test suite** — 117 tests, 100% line/branch coverage enforced via `pytest-cov --cov-fail-under=100`.
+  - `tests/conftest.py`: SQLite in-memory fixtures, `mock_storage`, `current_user`, `superuser`, `client`, `superuser_client`.
+  - `tests/test_uploads.py`, `tests/test_objects.py`: end-to-end route + controller tests including edge cases (expired session, ownership 403, MinIO stat failure, tz-aware datetime, soft-delete idempotency).
+  - `tests/test_category.py`, `tests/test_controllers_dashboard.py`, `tests/test_dashboard.py`: route and controller coverage including exception-handler branches.
+  - `tests/test_storage_keys.py`, `tests/test_storage_buckets.py`, `tests/test_storage_presign.py`, `tests/test_storage_client.py`: storage layer unit tests.
+  - `tests/test_policies.py`, `tests/test_core_db_models.py`, `tests/test_media_redis.py`, `tests/test_core_deps.py`: infrastructure unit tests. (Note: `tests/test_revocation.py` was removed — revocation is delegated to `fastapi-m8`'s `RemoteRevocationClient`.)
+- **`.coveragerc`**: excludes `fastapi_pre_start.py` (startup script) from coverage measurement.
+- **`python-slugify 8.0.4`** dependency replacing the Python-2-only `slugify 0.0.1`.
+
+### Fixed
+
+- `storage/buckets.py`: removed duplicate `MediaVisibility` enum; now imports from `db_models/media_objects.py` and adds `TENANT` mapping to `private-media`.
+- `db_models/media_objects.py`: `MediaObject.status` default changed from `UPLOADED` to `PENDING_UPLOAD`.
+- `core/deps.py`, `main.py`: extracted boolean helpers (`_need_revocation_client`, `is_stateful_consumer`) to keep pragma-annotated conditional lines within the 88-character limit.
+
+### Changed
+
+- `app/main.py`: registered `/v1/uploads` and `/v1/objects` routers.
+- `README.md`: added full API overview (endpoints, presigned upload flow, visibility/bucket mapping, auth modes, dev commands).

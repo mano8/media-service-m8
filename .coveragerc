@@ -1,0 +1,13 @@
+[run]
+source = media_service
+branch = True
+omit =
+    */media_service/fastapi_pre_start.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    @abstractmethod
+    if TYPE_CHECKING:
