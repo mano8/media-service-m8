@@ -1,20 +1,82 @@
 """Routes for media object metadata and access URLs."""
 
+from datetime import datetime
+from typing import Annotated
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from auth_sdk_m8.controllers.base import BaseController
 
 from media_service.app.deps import CurrentUser, SessionDep, StorageDep
 from media_service.controllers.objects import ObjectsController
 from media_service.core.rate_limit import RateLimiter
-from media_service.db_models.media_objects import MediaObjectPublic
-from media_service.schemas.objects import DownloadUrlResponse, MediaObjectUpdate
+from media_service.db_models.media_objects import (
+    MediaCategory,
+    MediaObjectPublic,
+    MediaObjectStatus,
+    MediaVisibility,
+)
+from media_service.schemas.objects import (
+    DownloadUrlResponse,
+    MediaObjectUpdate,
+    ObjectListParams,
+    ObjectListResponse,
+    SortField,
+    SortOrder,
+)
 
 router = APIRouter(prefix="/objects", tags=["objects"])
 
 _download_limit = RateLimiter("objects:download-url", limit=60, window_seconds=60)
+_list_limit = RateLimiter("objects:list", limit=120, window_seconds=60)
+
+
+@router.get(
+    "",
+    response_model=ObjectListResponse,
+    responses=BaseController.get_error_responses(),
+    dependencies=[Depends(_list_limit)],
+)
+def list_objects(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    category: MediaCategory | None = None,
+    visibility: MediaVisibility | None = None,
+    status: MediaObjectStatus | None = None,
+    mime_prefix: str | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    q: str | None = None,
+    sort_by: SortField = "created_at",
+    order: SortOrder = "desc",
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: str | None = None,
+    owner_user_id: uuid.UUID | None = None,
+    include_deleted: bool = False,
+) -> ObjectListResponse:
+    """Return a filtered, cursor-paginated page of media objects."""
+    params = ObjectListParams(
+        category=category,
+        visibility=visibility,
+        status=status,
+        mime_prefix=mime_prefix,
+        created_from=created_from,
+        created_to=created_to,
+        q=q,
+        sort_by=sort_by,
+        order=order,
+        limit=limit,
+        cursor=cursor,
+        owner_user_id=owner_user_id,
+        include_deleted=include_deleted,
+    )
+    return ObjectsController.list_objects(
+        session=session,
+        current_user=current_user,
+        params=params,
+    )
 
 
 @router.get(

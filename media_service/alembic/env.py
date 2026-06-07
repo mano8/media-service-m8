@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import sys
 from logging.config import fileConfig
-from typing import Any
+from typing import Any, Literal
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
@@ -73,7 +73,7 @@ def include_object(
 # ---------------------------------------------------------------------
 # RENDER ITEM — emit imports for media_service custom column types
 # ---------------------------------------------------------------------
-def render_item(type_: str, obj: Any, autogen_context: Any) -> bool:
+def render_item(type_: str, obj: Any, autogen_context: Any) -> Literal[False]:
     """Ensure custom column types emit their import in generated migrations.
 
     Alembic renders a user-defined type as ``module.Class(...)`` but does not

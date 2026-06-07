@@ -5,6 +5,31 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased] — Phase 10 · object listing, filtering & pagination
+
+### Added
+
+- **`GET /v1/objects`** — list endpoint with cursor pagination and filters
+  (`controllers/objects.py`, `app/routes/objects.py`, `schemas/objects.py`).
+  - Filters: `category`, `visibility`, `status`, `mime_prefix`,
+    `created_from`/`created_to`, `q` (filename contains).
+  - Sorting on `created_at` or `size_bytes`, `asc`/`desc`, with a stable
+    secondary `id` tiebreak.
+  - Opaque base64 keyset cursor (`next_cursor`); `limit` 1–100 (default 50);
+    rate-limited at 120/min (`objects:list`).
+  - Owner-scoped for regular users; superusers see all and may pass
+    `owner_user_id` / `include_deleted`. Soft-deleted objects excluded by default.
+- `ObjectListParams` / `ObjectListResponse` schemas.
+
+### Changed
+
+- `media_service/alembic/env.py` — `render_item` return type narrowed to
+  `Literal[False]` so `mypy` reports zero issues.
+
+Tested at 100% line+branch coverage (163 unit tests); ruff/mypy/bandit clean.
+
+---
+
 ## [0.9.0] — 2026-06-07 · fastapi-m8 1.2.0 + docs/compose reconciliation
 
 ### Changed

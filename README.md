@@ -40,10 +40,20 @@ promotes the `MediaObject` from `PENDING_UPLOAD` to `UPLOADED`.
 
 | Method | Path | Auth | Rate limit | Purpose |
 | --- | --- | --- | --- | --- |
+| GET | `/v1/objects` | user | 120/min | List objects (filtered, cursor-paginated) |
 | GET | `/v1/objects/{object_id}` | user | — | Fetch object metadata |
 | GET | `/v1/objects/{object_id}/download-url` | user | 60/min | Presigned GET URL for download |
 | PATCH | `/v1/objects/{object_id}` | user | — | Update mutable metadata |
 | DELETE | `/v1/objects/{object_id}` | user | — | Soft-delete (idempotent) |
+
+`GET /v1/objects` is owner-scoped for regular users (superusers see all and may
+pass `owner_user_id` / `include_deleted`). Supported query parameters:
+`category`, `visibility`, `status`, `mime_prefix` (e.g. `image/`),
+`created_from`/`created_to`, `q` (filename contains), `sort_by`
+(`created_at`|`size_bytes`), `order` (`asc`|`desc`), and `limit` (1–100).
+Pagination is keyset/cursor based: the response carries an opaque `next_cursor`;
+pass it back as `?cursor=` to fetch the next page. Soft-deleted objects are
+excluded unless a superuser passes `include_deleted=true`.
 
 ### Admin — `/{prefix}/v1/admin` (superuser only)
 

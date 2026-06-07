@@ -1,10 +1,16 @@
 """Business logic for media object metadata and access URLs."""
 
+import base64
+import binascii
+import json
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import HTTPException, status
-from sqlmodel import Session
+from sqlalchemy import and_, or_
+from sqlmodel import Session, col, select
+from sqlmodel.sql.expression import SelectOfScalar
 
 from auth_sdk_m8.schemas.user import UserModel
 
@@ -15,10 +21,96 @@ from media_service.db_models.media_objects import (
     MediaObjectStatus,
     utcnow,
 )
-from media_service.schemas.objects import DownloadUrlResponse, MediaObjectUpdate
+from media_service.schemas.objects import (
+    DownloadUrlResponse,
+    MediaObjectUpdate,
+    ObjectListParams,
+    ObjectListResponse,
+)
 from media_service.metrics import inc_download_url_generated
 from media_service.storage.client import ObjectStorage
 from media_service.storage.presign import create_download_url
+
+_SORT_COLUMNS: dict[str, Any] = {
+    "created_at": MediaObject.created_at,
+    "size_bytes": MediaObject.size_bytes,
+}
+
+
+def _encode_cursor(*, sort_by: str, obj: MediaObject) -> str:
+    """Encode the (sort_value, id) pair of an object into an opaque cursor."""
+    value = getattr(obj, sort_by)
+    raw = value.isoformat() if isinstance(value, datetime) else value
+    payload = json.dumps({"v": raw, "id": str(obj.id)})
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def _decode_cursor(*, sort_by: str, cursor: str) -> tuple[Any, uuid.UUID]:
+    """Decode an opaque cursor back into a (sort_value, id) pair."""
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode()).decode()
+        payload = json.loads(decoded)
+        last_id = uuid.UUID(str(payload["id"]))
+        raw = payload["v"]
+        value = datetime.fromisoformat(raw) if sort_by == "created_at" else int(raw)
+    except (ValueError, KeyError, TypeError, binascii.Error) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor."
+        ) from exc
+    return value, last_id
+
+
+def _keyset_predicate(
+    sort_col: Any, value: Any, last_id: uuid.UUID, *, descending: bool
+) -> Any:
+    """Build a keyset predicate for rows strictly after the cursor position."""
+    id_col = col(MediaObject.id)
+    if descending:
+        return or_(sort_col < value, and_(sort_col == value, id_col < last_id))
+    return or_(sort_col > value, and_(sort_col == value, id_col > last_id))
+
+
+def _scoped_query(
+    current_user: UserModel, params: ObjectListParams
+) -> SelectOfScalar[MediaObject]:
+    """Build the base query with owner scoping and soft-delete handling."""
+    statement = select(MediaObject)
+    if current_user.is_superuser:
+        if params.owner_user_id is not None:
+            statement = statement.where(
+                col(MediaObject.owner_user_id) == params.owner_user_id
+            )
+        if not params.include_deleted:
+            statement = statement.where(col(MediaObject.deleted_at).is_(None))
+        return statement
+    owner_id = uuid.UUID(str(current_user.id))
+    statement = statement.where(col(MediaObject.owner_user_id) == owner_id)
+    return statement.where(col(MediaObject.deleted_at).is_(None))
+
+
+def _apply_filters(
+    statement: SelectOfScalar[MediaObject], params: ObjectListParams
+) -> SelectOfScalar[MediaObject]:
+    """Apply optional attribute filters to the listing query."""
+    if params.category is not None:
+        statement = statement.where(col(MediaObject.category) == params.category)
+    if params.visibility is not None:
+        statement = statement.where(col(MediaObject.visibility) == params.visibility)
+    if params.status is not None:
+        statement = statement.where(col(MediaObject.status) == params.status)
+    if params.mime_prefix is not None:
+        statement = statement.where(
+            col(MediaObject.mime_type).like(f"{params.mime_prefix}%")
+        )
+    if params.created_from is not None:
+        statement = statement.where(col(MediaObject.created_at) >= params.created_from)
+    if params.created_to is not None:
+        statement = statement.where(col(MediaObject.created_at) <= params.created_to)
+    if params.q is not None:
+        statement = statement.where(
+            col(MediaObject.original_filename).contains(params.q)
+        )
+    return statement
 
 
 def _load_object(
@@ -51,6 +143,41 @@ def _load_object(
 
 class ObjectsController:
     """Handle media object metadata and access URLs."""
+
+    @staticmethod
+    def list_objects(
+        *,
+        session: Session,
+        current_user: UserModel,
+        params: ObjectListParams,
+    ) -> ObjectListResponse:
+        """Return a filtered, cursor-paginated page of media objects."""
+        statement = _apply_filters(_scoped_query(current_user, params), params)
+        sort_col = col(_SORT_COLUMNS[params.sort_by])
+        id_col = col(MediaObject.id)
+        descending = params.order == "desc"
+        if params.cursor is not None:
+            value, last_id = _decode_cursor(
+                sort_by=params.sort_by, cursor=params.cursor
+            )
+            statement = statement.where(
+                _keyset_predicate(sort_col, value, last_id, descending=descending)
+            )
+        if descending:
+            statement = statement.order_by(sort_col.desc(), id_col.desc())
+        else:
+            statement = statement.order_by(sort_col.asc(), id_col.asc())
+        rows = list(session.exec(statement.limit(params.limit + 1)).all())
+        has_more = len(rows) > params.limit
+        items = rows[: params.limit]
+        next_cursor = (
+            _encode_cursor(sort_by=params.sort_by, obj=items[-1]) if has_more else None
+        )
+        return ObjectListResponse(
+            items=[MediaObjectPublic.model_validate(o) for o in items],
+            next_cursor=next_cursor,
+            count=len(items),
+        )
 
     @staticmethod
     def get_object(
