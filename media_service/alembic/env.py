@@ -71,6 +71,24 @@ def include_object(
 
 
 # ---------------------------------------------------------------------
+# RENDER ITEM — emit imports for media_service custom column types
+# ---------------------------------------------------------------------
+def render_item(type_: str, obj: Any, autogen_context: Any) -> bool:
+    """Ensure custom column types emit their import in generated migrations.
+
+    Alembic renders a user-defined type as ``module.Class(...)`` but does not
+    add the matching ``import module`` line, which raises ``NameError`` at
+    migration time (e.g. ``media_service.core.db_models.UUIDString``). Register
+    the import for any media_service type, then fall back to default rendering.
+    """
+    if type_ == "type":
+        module = obj.__class__.__module__
+        if module.startswith("media_service"):
+            autogen_context.imports.add(f"import {module}")
+    return False
+
+
+# ---------------------------------------------------------------------
 # OFFLINE MIGRATIONS
 # ---------------------------------------------------------------------
 def run_migrations_offline() -> None:
@@ -81,6 +99,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         compare_type=True,
         include_object=include_object,
+        render_item=render_item,
         version_table=VERSION_TABLE,
         version_locations=VERSION_LOCATIONS,
     )
@@ -111,6 +130,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             compare_type=True,
             include_object=include_object,
+            render_item=render_item,
             version_table=VERSION_TABLE,
             version_locations=VERSION_LOCATIONS,
         )
