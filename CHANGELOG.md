@@ -26,6 +26,18 @@ All notable changes to `media-service-m8` are documented here.
 - `media_service/alembic/env.py` — `render_item` return type narrowed to
   `Literal[False]` so `mypy` reports zero issues.
 
+### CI/CD
+
+- **GitHub Actions added** (`.github/workflows/`), mirroring `fa-auth-m8` with
+  SHA-pinned actions:
+  - `CI.yaml` — `lint` (ruff format/check), `typecheck` (mypy), `security`
+    (bandit + Trivy fs scan), and `test` (pytest matrix 3.11–3.14,
+    `--cov-fail-under=100`, Codecov + Codacy upload).
+  - `docker-publish.yaml` — multi-arch image build + Trivy image scan + push on
+    release/dispatch.
+- `mypy` added to `media_service/requirements_dev.txt` (required by the policy
+  toolchain; the `typecheck` job depends on it).
+
 Tested at 100% line+branch coverage (163 unit tests); ruff/mypy/bandit clean.
 
 ---
