@@ -59,7 +59,8 @@ class TestAuth_PrivateAPI:
         """GOOD: Traefik returns 404 — /user/private/ not reachable from the internet."""
         r = self._post(json=self._BODY)
         assert r.status_code == 404, _TRAEFIK_MISCONFIG_MSG.format(
-            path="/user/private", router="auth-public-router",
+            path="/user/private",
+            router="auth-public-router",
             status=r.status_code,
         )
 
@@ -67,7 +68,8 @@ class TestAuth_PrivateAPI:
         """GOOD: Traefik returns 404 regardless of token value."""
         r = self._post(json=self._BODY, headers={"X-Internal-Token": "wrong"})
         assert r.status_code == 404, _TRAEFIK_MISCONFIG_MSG.format(
-            path="/user/private", router="auth-public-router",
+            path="/user/private",
+            router="auth-public-router",
             status=r.status_code,
         )
 
@@ -99,7 +101,8 @@ class TestAuth_MetricsAPI:
         except requests.exceptions.SSLError:
             pytest.skip("SSL error — check cert setup")
         assert r.status_code == 404, _TRAEFIK_MISCONFIG_MSG.format(
-            path="/user/metrics", router="auth-public-router",
+            path="/user/metrics",
+            router="auth-public-router",
             status=r.status_code,
         )
 
@@ -138,7 +141,8 @@ class TestMedia_MetricsAPI:
         except requests.exceptions.SSLError:
             pytest.skip("SSL error — check cert setup")
         assert r.status_code == 404, _TRAEFIK_MISCONFIG_MSG.format(
-            path="/media/metrics", router="media-public-router",
+            path="/media/metrics",
+            router="media-public-router",
             status=r.status_code,
         )
 
@@ -149,7 +153,8 @@ class TestMedia_MetricsAPI:
         except requests.exceptions.SSLError:
             pytest.skip("SSL error — check cert setup")
         assert r.status_code == 404, _TRAEFIK_MISCONFIG_MSG.format(
-            path="/media/health", router="media-public-router",
+            path="/media/health",
+            router="media-public-router",
             status=r.status_code,
         )
 

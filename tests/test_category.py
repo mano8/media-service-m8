@@ -10,7 +10,25 @@ from starlette.responses import JSONResponse
 
 from auth_sdk_m8.schemas.user import UserModel
 from media_service.app.routes.category import create_item, read_item
-from media_service.db_models.categories import Category, CategoryCreate
+from media_service.db_models.categories import (
+    Category,
+    CategoryCreate,
+    CategoryGenerators,
+)
+
+
+# ── slug auto-generation validator ────────────────────────────────────────────
+
+
+def test_generate_slug_from_name():
+    values = CategoryGenerators.generate_slug({"name": "My Category"})
+    assert values["slug"] == "my-category"
+
+
+def test_generate_slug_skips_when_name_missing():
+    """Falsy/absent name leaves values untouched (no slug generated)."""
+    values = CategoryGenerators.generate_slug({})
+    assert "slug" not in values
 
 
 def _make_category(

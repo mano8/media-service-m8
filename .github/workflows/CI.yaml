@@ -24,10 +24,10 @@ jobs:
         run: pip install ruff
 
       - name: Check formatting
-        run: ruff format --check media_service tests
+        run: ruff format --check .
 
       - name: Lint
-        run: ruff check media_service tests
+        run: ruff check .
 
   typecheck:
     runs-on: ubuntu-latest
@@ -100,13 +100,11 @@ jobs:
 
       # The test suite is self-contained: tests/conftest.py sets every required
       # env var (auth secrets, MinIO, MEDIA_REDIS_*) and stubs find_dotenv before
-      # importing media_service, so no .env file is needed. Live tests under
-      # tests/live require a running stack and are excluded from unit CI.
+      # importing media_service, so no .env file is needed. pytest.ini provides
+      # pythonpath, --cov, --cov-branch, and --ignore=tests/live (live tests need
+      # a running stack).
       - name: Run tests
-        run: >-
-          pytest tests --ignore=tests/live
-          --cov=media_service --cov-report=xml --cov-report=term-missing
-          --cov-fail-under=100
+        run: pytest --cov-report=xml --cov-fail-under=100
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11' && github.actor != 'dependabot[bot]'

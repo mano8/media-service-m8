@@ -37,6 +37,45 @@ from media_service.storage.presign import create_upload_url
 _logger = logging.getLogger(__name__)
 
 
+def _load_owned_session(
+    session: Session, current_user: UserModel, session_id: uuid.UUID
+) -> UploadSession:
+    """Fetch an UploadSession, enforcing ownership for non-superusers."""
+    upload_session = session.get(UploadSession, session_id)
+    if upload_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Upload session not found.",
+        )
+    owner_id = uuid.UUID(str(current_user.id))
+    if not current_user.is_superuser and upload_session.owner_user_id != owner_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions."
+        )
+    return upload_session
+
+
+def _ensure_completable(session: Session, upload_session: UploadSession) -> None:
+    """Reject completion if the session is not INITIATED or has expired."""
+    if upload_session.status != UploadSessionStatus.INITIATED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Upload session is already {upload_session.status}.",
+        )
+    now = utcnow().replace(tzinfo=None)
+    expires = upload_session.expires_at
+    if expires.tzinfo is not None:
+        expires = expires.replace(tzinfo=None)
+    if now > expires:
+        upload_session.status = UploadSessionStatus.EXPIRED
+        session.add(upload_session)
+        session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Upload session has expired.",
+        )
+
+
 class UploadsController:
     """Handle presigned upload lifecycle: initiate, complete, abort."""
 
@@ -99,36 +138,8 @@ class UploadsController:
         storage: ObjectStorage,
     ) -> UploadCompleteResponse:
         """Verify the object landed in storage and promote the session to a MediaObject."""
-        upload_session = session.get(UploadSession, session_id)
-        if upload_session is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Upload session not found.",
-            )
-
-        owner_id = uuid.UUID(str(current_user.id))
-        if not current_user.is_superuser and upload_session.owner_user_id != owner_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions."
-            )
-
-        if upload_session.status != UploadSessionStatus.INITIATED:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Upload session is already {upload_session.status}.",
-            )
-        now = utcnow().replace(tzinfo=None)
-        expires = upload_session.expires_at
-        if expires.tzinfo is not None:
-            expires = expires.replace(tzinfo=None)
-        if now > expires:
-            upload_session.status = UploadSessionStatus.EXPIRED
-            session.add(upload_session)
-            session.commit()
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Upload session has expired.",
-            )
+        upload_session = _load_owned_session(session, current_user, session_id)
+        _ensure_completable(session, upload_session)
 
         try:
             stat = storage.stat_object(
@@ -176,18 +187,7 @@ class UploadsController:
         storage: ObjectStorage,
     ) -> None:
         """Cancel an upload session and remove any partial object from storage."""
-        upload_session = session.get(UploadSession, session_id)
-        if upload_session is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Upload session not found.",
-            )
-
-        owner_id = uuid.UUID(str(current_user.id))
-        if not current_user.is_superuser and upload_session.owner_user_id != owner_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions."
-            )
+        upload_session = _load_owned_session(session, current_user, session_id)
 
         if upload_session.status == UploadSessionStatus.COMPLETED:
             raise HTTPException(

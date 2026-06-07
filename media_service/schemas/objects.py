@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 import uuid
 
-from sqlmodel import SQLModel
+from sqlmodel import Field, SQLModel
 
 from media_service.db_models.media_objects import (
     MediaCategory,
@@ -44,7 +44,7 @@ class ObjectListParams(SQLModel):
     q: str | None = None
     sort_by: SortField = "created_at"
     order: SortOrder = "desc"
-    limit: int = 50
+    limit: int = Field(default=50, ge=1, le=100)
     cursor: str | None = None
     owner_user_id: uuid.UUID | None = None
     include_deleted: bool = False

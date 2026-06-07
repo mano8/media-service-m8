@@ -38,7 +38,31 @@ All notable changes to `media-service-m8` are documented here.
 - `mypy` added to `media_service/requirements_dev.txt` (required by the policy
   toolchain; the `typecheck` job depends on it).
 
-Tested at 100% line+branch coverage (163 unit tests); ruff/mypy/bandit clean.
+### Tooling / quality config (mirrors `fa-auth-m8`)
+
+- Added repo-root tool configs so `ruff`, `mypy`, `pytest`, and Codacy run with
+  the same conventions as `fa-auth-m8`:
+  - `ruff.toml` (line-length 88; excludes `docker_compose/` and
+    `**/alembic/versions/`).
+  - `mypy.ini` (`ignore_missing_imports`; excludes generated migrations).
+  - `pytest.ini` — **`pythonpath = .`** (fixes `ModuleNotFoundError: media_service`
+    in CI), `testpaths`, registered markers, and `addopts` (`--strict-markers`,
+    `--ignore=tests/live`, `--cov=media_service`, `--cov-branch`).
+  - `setup.cfg` (`pycodestyle max-line-length = 88`).
+  - `.coveragerc` — `branch = True` + expanded `[report] exclude_lines`.
+  - `.codacy.yml` — bandit/ruff/markdownlint engines; excludes `tests/**`,
+    `docker_compose/**`, `**/alembic/versions/**`.
+- **Branch coverage** now enforced; covered the slug-validator false branch in
+  `db_models/categories.py`.
+- **Codacy complexity fixes:** `list_objects` now takes `ObjectListParams` as a
+  query-model dependency (15 → 3 params); `complete_upload` refactored under the
+  50-line limit via shared `_load_owned_session` / `_ensure_completable` helpers
+  (also reused by `abort_upload`).
+- **Dockerfile:** pinned `pip==26.1.1` (matches `fa-auth-m8`).
+- **`CLAUDE.md` untracked** (added to `.git/info/exclude`) — meta files are not
+  version-controlled, consistent with `fa-auth-m8`.
+
+Tested at 100% line+branch coverage (165 unit tests); ruff/mypy/bandit clean.
 
 ---
 
