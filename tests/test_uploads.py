@@ -63,22 +63,39 @@ def _stat_mock(size: int = 2048, etag: str = "etag123") -> MagicMock:
 # ── POST /media/v1/uploads/initiate ──────────────────────────────────────────
 
 
-def test_initiate_upload_returns_presigned_url(
+def test_initiate_upload_returns_presigned_post_form(
     client: TestClient, mock_storage: MagicMock
 ):
-    mock_storage.presigned_put_object.return_value = "https://minio/upload-url"
+    mock_storage.presigned_post_object.return_value = (
+        "https://minio/private-media",
+        {"key": "k", "Content-Type": "application/pdf", "policy": "p"},
+    )
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["upload_url"] == "https://minio/upload-url"
+    assert data["upload_url"] == "https://minio/private-media"
+    assert data["upload_fields"]["key"] == "k"
     assert "session_id" in data
     assert "expires_at" in data
+
+
+def test_initiate_upload_constrains_size_and_content_type(
+    client: TestClient, mock_storage: MagicMock
+):
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
+    assert resp.status_code == 200
+    # The POST policy is signed for the declared type and a finite size cap, so
+    # storage rejects oversized/garbage bodies before they land.
+    _, kwargs = mock_storage.presigned_post_object.call_args
+    assert kwargs["content_type"] == "application/pdf"
+    assert kwargs["max_size_bytes"] > 0
 
 
 def test_initiate_upload_creates_session_in_db(
     client: TestClient, mock_storage: MagicMock, session: Session
 ):
-    mock_storage.presigned_put_object.return_value = "https://minio/url"
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     sid = uuid.UUID(resp.json()["session_id"])
     upload_session = session.get(UploadSession, sid)
@@ -89,7 +106,7 @@ def test_initiate_upload_creates_session_in_db(
 def test_initiate_upload_ignores_client_tenant_id(
     client: TestClient, mock_storage: MagicMock, session: Session
 ):
-    mock_storage.presigned_put_object.return_value = "https://minio/url"
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
     body = {**_INITIATE_BODY, "tenant_id": str(uuid.uuid4())}
     resp = client.post("/media/v1/uploads/initiate", json=body)
     assert resp.status_code == 200
@@ -106,7 +123,7 @@ def test_initiate_upload_rejects_disallowed_mime(
     body = {**_INITIATE_BODY, "mime_type": "image/svg+xml"}
     resp = client.post("/media/v1/uploads/initiate", json=body)
     assert resp.status_code == 422
-    mock_storage.presigned_put_object.assert_not_called()
+    mock_storage.presigned_post_object.assert_not_called()
 
 
 # ── POST /media/v1/uploads/{id}/complete ─────────────────────────────────────

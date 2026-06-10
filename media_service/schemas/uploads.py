@@ -23,10 +23,18 @@ class UploadInitiateRequest(SQLModel):
 
 
 class UploadInitiateResponse(SQLModel):
-    """Response after a session is created."""
+    """Response after a session is created.
+
+    ``upload_url`` is an S3 POST endpoint: the client must send a multipart
+    ``POST`` containing every entry of ``upload_fields`` followed by the
+    ``file`` part. The signed policy caps the body size and pins the
+    ``Content-Type``, so storage rejects an oversized or wrong-typed upload
+    rather than letting it land.
+    """
 
     session_id: uuid.UUID
     upload_url: str
+    upload_fields: dict[str, str]
     expires_at: datetime
 
 

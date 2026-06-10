@@ -1,7 +1,7 @@
 """MinIO client configuration boundary."""
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from media_service.core.config import settings
@@ -122,18 +122,54 @@ class ObjectStorage:
             CopySource(src_bucket, src_object_key),
         )
 
-    def presigned_put_object(
+    def post_upload_url(self, *, bucket: str) -> str:
+        """Return the POST endpoint URL for a bucket (path-style addressing).
+
+        ``presigned_post_policy`` only returns the signed form fields, not the
+        target URL; MinIO uses path-style addressing, so the form is POSTed to
+        ``{scheme}://{host}:{port}/{bucket}``.
+        """
+        config = get_storage_config()
+        scheme = "https" if config.secure else "http"
+        return f"{scheme}://{config.endpoint}/{bucket}"
+
+    def presigned_post_object(
         self,
         *,
         bucket: str,
         object_key: str,
+        content_type: str,
+        max_size_bytes: int,
+        min_size_bytes: int = 1,
         expires_seconds: int | None = None,
-    ) -> str:
-        """Generate a presigned PUT URL."""
-        expires = timedelta(
-            seconds=expires_seconds or settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
-        )
-        return self.client.presigned_put_object(bucket, object_key, expires=expires)
+    ) -> tuple[str, dict[str, str]]:
+        """Generate a presigned POST policy that constrains size and content-type.
+
+        Unlike a presigned PUT — which lets the client write an object of any
+        size and any ``Content-Type`` — an S3 POST policy is enforced by storage
+        at upload time: the ``content-length-range`` and exact ``Content-Type``
+        conditions cause MinIO to reject an oversized or wrong-typed body
+        *before* it lands, closing the window in which garbage occupies a bucket
+        until ``complete`` rejects it.
+
+        Returns the POST URL and the form fields the client must submit
+        alongside the ``file`` part (the ``key`` and ``Content-Type`` fields are
+        pinned to the values the policy was signed for).
+        """
+        from minio.datatypes import PostPolicy
+
+        expires = expires_seconds or settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
+        expiration = datetime.now(timezone.utc) + timedelta(seconds=expires)
+        policy = PostPolicy(bucket, expiration)
+        policy.add_equals_condition("key", object_key)
+        policy.add_equals_condition("Content-Type", content_type)
+        policy.add_content_length_range_condition(min_size_bytes, max_size_bytes)
+        fields = self.client.presigned_post_policy(policy)
+        # The policy only signs the conditions; echo the pinned values back so
+        # the client submits them verbatim (any deviation fails the signature).
+        fields["key"] = object_key
+        fields["Content-Type"] = content_type
+        return self.post_upload_url(bucket=bucket), fields
 
     def presigned_get_object(
         self,

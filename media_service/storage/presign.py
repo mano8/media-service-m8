@@ -34,12 +34,21 @@ def create_upload_url(
     storage: ObjectStorage,
     bucket: str,
     object_key: str,
+    content_type: str,
+    max_size_bytes: int,
     expires_seconds: int,
-) -> str:
-    """Create a presigned upload URL."""
-    return storage.presigned_put_object(
+) -> tuple[str, dict[str, str]]:
+    """Create a presigned upload form (URL + fields) constrained by policy.
+
+    Uses an S3 POST policy rather than a bare presigned PUT so storage enforces
+    the size cap and ``Content-Type`` at upload time, instead of letting an
+    oversized or garbage object land and be rejected only at ``complete``.
+    """
+    return storage.presigned_post_object(
         bucket=bucket,
         object_key=object_key,
+        content_type=content_type,
+        max_size_bytes=max_size_bytes,
         expires_seconds=expires_seconds,
     )
 

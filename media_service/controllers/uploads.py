@@ -146,10 +146,12 @@ class UploadsController:
         )
         bucket = bucket_for_visibility(req.visibility)
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
-        upload_url = create_upload_url(
+        upload_url, upload_fields = create_upload_url(
             storage=storage,
             bucket=bucket,
             object_key=object_key,
+            content_type=req.mime_type,
+            max_size_bytes=max_size_for_category(str(req.category)),
             expires_seconds=expires,
         )
         expires_at = utcnow() + timedelta(seconds=expires)
@@ -172,6 +174,7 @@ class UploadsController:
         return UploadInitiateResponse(
             session_id=media_id,
             upload_url=upload_url,
+            upload_fields=upload_fields,
             expires_at=expires_at,
         )
 

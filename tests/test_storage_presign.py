@@ -8,19 +8,29 @@ from media_service.storage.presign import create_download_url, create_upload_url
 
 def _storage(return_url: str = "https://minio/presigned") -> MagicMock:
     s = MagicMock(spec=ObjectStorage)
-    s.presigned_put_object.return_value = return_url
+    s.presigned_post_object.return_value = (return_url, {"key": "k"})
     s.presigned_get_object.return_value = return_url
     return s
 
 
 def test_create_upload_url_delegates_to_storage():
-    storage = _storage("https://minio/put")
-    url = create_upload_url(
-        storage=storage, bucket="b", object_key="k", expires_seconds=300
+    storage = _storage("https://minio/post")
+    url, fields = create_upload_url(
+        storage=storage,
+        bucket="b",
+        object_key="k",
+        content_type="application/pdf",
+        max_size_bytes=2048,
+        expires_seconds=300,
     )
-    assert url == "https://minio/put"
-    storage.presigned_put_object.assert_called_once_with(
-        bucket="b", object_key="k", expires_seconds=300
+    assert url == "https://minio/post"
+    assert fields == {"key": "k"}
+    storage.presigned_post_object.assert_called_once_with(
+        bucket="b",
+        object_key="k",
+        content_type="application/pdf",
+        max_size_bytes=2048,
+        expires_seconds=300,
     )
 
 

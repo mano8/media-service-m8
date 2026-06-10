@@ -33,23 +33,32 @@ def test_remove_object_delegates():
     minio.remove_object.assert_called_once_with("b", "k")
 
 
-def test_presigned_put_object_uses_settings_expiry():
-    from media_service.core.config import settings
+def test_presigned_post_object_constrains_size_and_content_type():
+    from minio.datatypes import PostPolicy
 
     minio = MagicMock()
+    minio.presigned_post_policy.return_value = {"policy": "p", "x-amz-signature": "s"}
     storage = _client(minio)
-    storage.presigned_put_object(bucket="b", object_key="k")
-    minio.presigned_put_object.assert_called_once_with(
-        "b", "k", expires=timedelta(seconds=settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS)
+    url, fields = storage.presigned_post_object(
+        bucket="public-media",
+        object_key="k",
+        content_type="image/png",
+        max_size_bytes=4096,
     )
+    # The signed policy carries the size + content-type conditions.
+    minio.presigned_post_policy.assert_called_once()
+    (policy,), _ = minio.presigned_post_policy.call_args
+    assert isinstance(policy, PostPolicy)
+    # key + Content-Type are echoed back so the client submits the pinned values.
+    assert fields["key"] == "k"
+    assert fields["Content-Type"] == "image/png"
+    assert url == "http://minio:9000/public-media"
 
 
-def test_presigned_put_object_uses_custom_expiry():
-    minio = MagicMock()
-    storage = _client(minio)
-    storage.presigned_put_object(bucket="b", object_key="k", expires_seconds=120)
-    minio.presigned_put_object.assert_called_once_with(
-        "b", "k", expires=timedelta(seconds=120)
+def test_post_upload_url_uses_path_style_addressing():
+    storage = _client(MagicMock())
+    assert storage.post_upload_url(bucket="private-media").endswith(
+        "/private-media"
     )
 
 
