@@ -180,15 +180,18 @@ def _relocate_for_visibility(
     return old_bucket
 
 
-def _remove_stale_copy(storage: ObjectStorage, *, bucket: str, object_key: str) -> None:
-    """Best-effort delete of the source copy after a committed visibility move."""
+def _best_effort_remove(
+    storage: ObjectStorage, *, bucket: str, object_key: str, context: str
+) -> None:
+    """Best-effort delete of stored bytes; logs and swallows storage errors."""
     try:
         storage.remove_object(bucket=bucket, object_key=object_key)
     except Exception as exc:  # noqa: BLE001
         _logger.warning(
-            "Failed to remove relocated object copy %s/%s: %s",
+            "Failed to remove object %s/%s (%s): %s",
             bucket,
             object_key,
+            context,
             exc,
         )
 
@@ -289,7 +292,12 @@ class ObjectsController:
         session.commit()
         session.refresh(obj)
         if old_bucket is not None:
-            _remove_stale_copy(storage, bucket=old_bucket, object_key=obj.object_key)
+            _best_effort_remove(
+                storage,
+                bucket=old_bucket,
+                object_key=obj.object_key,
+                context="visibility-relocation",
+            )
         return MediaObjectPublic.model_validate(obj)
 
     @staticmethod
@@ -298,8 +306,15 @@ class ObjectsController:
         session: Session,
         current_user: UserModel,
         object_id: uuid.UUID,
+        storage: ObjectStorage,
     ) -> None:
-        """Soft-delete a media object (idempotent)."""
+        """Soft-delete a media object (idempotent).
+
+        A PUBLIC object's bytes are world-readable at a known URL, so a metadata-
+        only soft-delete would leave them exposed after the user "deleted" them.
+        Remove those bytes best-effort; private/sensitive buckets are reachable
+        only via presigned URLs, so their metadata soft-delete is sufficient.
+        """
         obj = _load_object(session, current_user, object_id, include_deleted=True)
         if obj.deleted_at is not None:
             return
@@ -308,3 +323,10 @@ class ObjectsController:
         obj.updated_at = utcnow()
         session.add(obj)
         session.commit()
+        if obj.visibility == MediaVisibility.PUBLIC:
+            _best_effort_remove(
+                storage,
+                bucket=obj.storage_bucket,
+                object_key=obj.object_key,
+                context="soft-delete",
+            )

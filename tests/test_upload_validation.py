@@ -302,6 +302,36 @@ def test_complete_upload_session_aborted_after_rejection(
     assert us.status == UploadSessionStatus.ABORTED
 
 
+def test_complete_upload_rejection_removes_orphaned_bytes(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # A rejected upload must not leave its bytes in the (possibly public) bucket;
+    # the REJECTED row preserves the audit trail, the stored object is removed.
+    us = _make_session(session, current_user.id, mime_type="application/pdf")
+    mock_storage.stat_object.return_value = _stat()
+    mock_storage.get_object_head.return_value = _PNG_BYTES
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 422
+    mock_storage.remove_object.assert_called_once_with(
+        bucket=us.storage_bucket, object_key=us.object_key
+    )
+
+
+def test_complete_upload_rejection_tolerates_remove_failure(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # Byte cleanup is best-effort: a storage error during removal must not mask
+    # the 422 rejection or leave the session un-aborted.
+    us = _make_session(session, current_user.id, mime_type="application/pdf")
+    mock_storage.stat_object.return_value = _stat()
+    mock_storage.get_object_head.return_value = _PNG_BYTES
+    mock_storage.remove_object.side_effect = Exception("bucket gone")
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 422
+    session.refresh(us)
+    assert us.status == UploadSessionStatus.ABORTED
+
+
 def test_complete_upload_same_image_type_passes(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):

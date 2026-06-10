@@ -87,6 +87,7 @@ def _ensure_completable(session: Session, upload_session: UploadSession) -> None
 def _reject_upload(
     *,
     session: Session,
+    storage: ObjectStorage,
     upload_session: UploadSession,
     reason: str,
     mime_type: str,
@@ -112,6 +113,15 @@ def _reject_upload(
     session.add(media_object)
     session.add(upload_session)
     session.commit()
+    # The REJECTED row keeps the audit trail; the stored bytes must not linger
+    # in the (possibly public) bucket. Remove them best-effort, like abort.
+    try:
+        storage.remove_object(
+            bucket=upload_session.storage_bucket,
+            object_key=upload_session.object_key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("storage.remove_object failed during reject: %s", exc)
     inc_upload_rejected(reason)
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -206,6 +216,7 @@ class UploadsController:
         category = str(upload_session.category)
         _reject_kw = dict(
             session=session,
+            storage=storage,
             upload_session=upload_session,
             mime_type=declared_mime,
             size_bytes=stat.size,

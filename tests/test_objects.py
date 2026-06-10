@@ -207,19 +207,66 @@ def test_update_object_forbidden(client: TestClient, session: Session, superuser
 # ── DELETE /media/v1/objects/{id} ─────────────────────────────────────────────
 
 
-def test_delete_object_soft_deletes(client: TestClient, session: Session, current_user):
+def test_delete_object_soft_deletes(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
     obj = _make_object(session, current_user.id)
     resp = client.delete(f"/media/v1/objects/{obj.id}")
     assert resp.status_code == 204
     session.refresh(obj)
     assert obj.deleted_at is not None
     assert obj.status == MediaObjectStatus.DELETED
+    # PRIVATE bytes are reachable only via presigned URLs; metadata soft-delete
+    # is sufficient, so the stored object is left in place.
+    mock_storage.remove_object.assert_not_called()
 
 
-def test_delete_object_idempotent(client: TestClient, session: Session, current_user):
+def test_delete_object_public_removes_bytes(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # A PUBLIC object is world-readable at a known URL; a soft-delete must also
+    # remove the bytes so "deleted" content stops being served.
+    obj = _make_object(
+        session, current_user.id, visibility=MediaVisibility.PUBLIC
+    )
+    obj.storage_bucket = "public-media"
+    session.add(obj)
+    session.commit()
+    resp = client.delete(f"/media/v1/objects/{obj.id}")
+    assert resp.status_code == 204
+    session.refresh(obj)
+    assert obj.deleted_at is not None
+    mock_storage.remove_object.assert_called_once_with(
+        bucket="public-media", object_key=obj.object_key
+    )
+
+
+def test_delete_object_public_tolerates_remove_failure(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # Byte cleanup is best-effort: a storage error must not fail the delete or
+    # leave the metadata un-soft-deleted.
+    obj = _make_object(
+        session, current_user.id, visibility=MediaVisibility.PUBLIC
+    )
+    obj.storage_bucket = "public-media"
+    session.add(obj)
+    session.commit()
+    mock_storage.remove_object.side_effect = RuntimeError("delete failed")
+    resp = client.delete(f"/media/v1/objects/{obj.id}")
+    assert resp.status_code == 204
+    session.refresh(obj)
+    assert obj.deleted_at is not None
+
+
+def test_delete_object_idempotent(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
     obj = _make_object(session, current_user.id, deleted=True)
     resp = client.delete(f"/media/v1/objects/{obj.id}")
     assert resp.status_code == 204
+    # Already deleted: no second attempt to remove bytes.
+    mock_storage.remove_object.assert_not_called()
 
 
 def test_delete_object_not_found(client: TestClient):

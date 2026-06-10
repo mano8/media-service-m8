@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 from sqlmodel import Session
@@ -187,6 +188,38 @@ def test_purge_stale_marks_sessions_expired(
     superuser_client: TestClient, session: Session, superuser
 ):
     us = _make_stale_session(session, superuser.id)
+    resp = superuser_client.post("/media/v1/admin/uploads/purge-stale")
+    assert resp.json()["purged"] == 1
+    session.refresh(us)
+    assert us.status == UploadSessionStatus.EXPIRED
+
+
+def test_purge_stale_removes_orphaned_bytes(
+    superuser_client: TestClient,
+    mock_storage: MagicMock,
+    session: Session,
+    superuser,
+):
+    # A stale session may have had its file POSTed but never completed, leaving
+    # unvalidated bytes in the bucket; purge must delete them.
+    us = _make_stale_session(session, superuser.id)
+    resp = superuser_client.post("/media/v1/admin/uploads/purge-stale")
+    assert resp.json()["purged"] == 1
+    mock_storage.remove_object.assert_called_once_with(
+        bucket=us.storage_bucket, object_key=us.object_key
+    )
+
+
+def test_purge_stale_tolerates_remove_failure(
+    superuser_client: TestClient,
+    mock_storage: MagicMock,
+    session: Session,
+    superuser,
+):
+    # Byte cleanup is best-effort: a storage error must not stop the session
+    # from being marked EXPIRED.
+    us = _make_stale_session(session, superuser.id)
+    mock_storage.remove_object.side_effect = Exception("bucket gone")
     resp = superuser_client.post("/media/v1/admin/uploads/purge-stale")
     assert resp.json()["purged"] == 1
     session.refresh(us)
