@@ -9,6 +9,7 @@ from auth_sdk_m8.observability.metrics import REGISTRY
 _uploads_initiated: Optional[Counter] = None
 _uploads_completed: Optional[Counter] = None
 _uploads_failed: Optional[Counter] = None
+_uploads_rejected: Optional[Counter] = None
 _bytes_uploaded: Optional[Counter] = None
 _download_urls_generated: Optional[Counter] = None
 
@@ -21,7 +22,7 @@ def setup(*, enabled: bool, api_prefix: str = "media") -> None:
 
 
 def _do_register(api_prefix: str) -> None:  # pragma: no cover
-    global _uploads_initiated, _uploads_completed, _uploads_failed
+    global _uploads_initiated, _uploads_completed, _uploads_failed, _uploads_rejected
     global _bytes_uploaded, _download_urls_generated
     p = api_prefix.strip().lstrip("/").replace("-", "_").replace("/", "_")
     pfx = f"{p}_" if p else ""
@@ -40,6 +41,12 @@ def _do_register(api_prefix: str) -> None:  # pragma: no cover
     _uploads_failed = Counter(
         f"{pfx}media_uploads_failed_total",
         "Upload sessions aborted by user or expired",
+        registry=REGISTRY,
+    )
+    _uploads_rejected = Counter(
+        f"{pfx}media_uploads_rejected_total",
+        "Uploads rejected at completion by reason",
+        ["reason"],
         registry=REGISTRY,
     )
     _bytes_uploaded = Counter(
@@ -70,6 +77,11 @@ def inc_upload_completed(category: str, size_bytes: int) -> None:
 def inc_upload_failed() -> None:
     if _uploads_failed is not None:
         _uploads_failed.inc()
+
+
+def inc_upload_rejected(reason: str) -> None:
+    if _uploads_rejected is not None:
+        _uploads_rejected.labels(reason=reason).inc()
 
 
 def inc_download_url_generated() -> None:

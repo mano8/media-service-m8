@@ -57,6 +57,26 @@ class ObjectStorage:
         """Remove an object from storage."""
         self.client.remove_object(bucket, object_key)
 
+    def get_object_head(
+        self, *, bucket: str, object_key: str, length: int = 512
+    ) -> bytes:
+        """Read the first *length* bytes of an object for content-type sniffing."""
+        response = self.client.get_object(bucket, object_key, offset=0, length=length)
+        try:
+            return response.read(length)
+        finally:
+            response.close()
+            response.release_conn()
+
+    def get_object(self, *, bucket: str, object_key: str) -> bytes:
+        """Download an entire object and return its raw bytes."""
+        response = self.client.get_object(bucket, object_key)
+        try:
+            return response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
     def presigned_put_object(
         self,
         *,

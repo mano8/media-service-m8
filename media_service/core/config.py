@@ -47,6 +47,9 @@ class Settings(ConsumerServiceSettings):
     MINIO_BUCKET_ARCHIVE: str = "archive-media"
     MINIO_PRESIGNED_URL_EXPIRE_SECONDS: int = Field(default=300, ge=1)
     MEDIA_MAX_UPLOAD_SIZE_BYTES: int = Field(default=104_857_600, ge=1)
+    MEDIA_MAX_UPLOAD_SIZE_BYTES_PER_CATEGORY: dict[str, int] = Field(
+        default_factory=dict
+    )
 
     # ── Media Redis ──────────────────────────────────────────────────────────
     MEDIA_REDIS_HOST: str = "media_redis_cache"

@@ -39,8 +39,20 @@ All routes are mounted under `API_PREFIX` (default `/media`). Domain routers:
 | POST | `/v1/uploads/{session_id}/abort` | user | — | Abort an in-progress session |
 
 Flow: `initiate` returns a presigned `PUT` URL and a session id → client uploads
-bytes directly to MinIO → `complete` verifies the object (MinIO `stat`) and
-promotes the `MediaObject` from `PENDING_UPLOAD` to `UPLOADED`.
+bytes directly to MinIO → `complete` runs three integrity checks then promotes
+the `MediaObject` from `PENDING_UPLOAD` to `UPLOADED`:
+
+1. **Size** — `stat.size` must not exceed `MEDIA_MAX_UPLOAD_SIZE_BYTES` (or the
+   per-category override from `MEDIA_MAX_UPLOAD_SIZE_BYTES_PER_CATEGORY`).
+2. **Magic-byte MIME** — the object's leading bytes are sniffed with `filetype`;
+   the detected type must be compatible with the declared `mime_type` (same major
+   type for `image/*`, `video/*`, `audio/*`; exact match otherwise).
+3. **SHA-256** — when `sha256` is present in the complete request, the full object
+   is streamed and the digest verified.
+
+On any failure the session is marked `ABORTED`, a `MediaObject` with
+`status=REJECTED` is persisted for the audit trail, and a
+`media_uploads_rejected_total{reason}` counter is incremented.
 
 ### Objects — `/{prefix}/v1/objects`
 

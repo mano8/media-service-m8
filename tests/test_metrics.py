@@ -10,6 +10,7 @@ def test_setup_disabled_leaves_all_counters_none():
     assert metrics_mod._uploads_initiated is None
     assert metrics_mod._uploads_completed is None
     assert metrics_mod._uploads_failed is None
+    assert metrics_mod._uploads_rejected is None
     assert metrics_mod._bytes_uploaded is None
     assert metrics_mod._download_urls_generated is None
 
@@ -55,6 +56,19 @@ def test_inc_upload_failed_increments_counter(monkeypatch):
     monkeypatch.setattr(metrics_mod, "_uploads_failed", mock_counter)
     metrics_mod.inc_upload_failed()
     mock_counter.inc.assert_called_once()
+
+
+def test_inc_upload_rejected_noop_when_disabled():
+    metrics_mod._uploads_rejected = None
+    metrics_mod.inc_upload_rejected("mime_mismatch")  # must not raise
+
+
+def test_inc_upload_rejected_calls_labels_inc(monkeypatch):
+    mock_counter = MagicMock()
+    monkeypatch.setattr(metrics_mod, "_uploads_rejected", mock_counter)
+    metrics_mod.inc_upload_rejected("size_exceeded")
+    mock_counter.labels.assert_called_once_with(reason="size_exceeded")
+    mock_counter.labels.return_value.inc.assert_called_once()
 
 
 def test_inc_download_url_generated_noop_when_disabled():
