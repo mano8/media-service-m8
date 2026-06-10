@@ -21,6 +21,10 @@ _INITIATE_BODY = {
     "expected_size_bytes": 2048,
 }
 
+# Leading bytes the sniffer recognises as application/pdf — matches the declared
+# type used by `_make_session`, so the content-validation step passes.
+_PDF_BYTES = b"%PDF-1.4" + b"\x00" * 504
+
 
 def _make_session(
     session: Session,
@@ -89,6 +93,16 @@ def test_initiate_upload_with_tenant_id(client: TestClient, mock_storage: MagicM
     assert resp.status_code == 200
 
 
+def test_initiate_upload_rejects_disallowed_mime(
+    client: TestClient, mock_storage: MagicMock
+):
+    # image/svg+xml is markup that can carry <script> — never issue a URL for it.
+    body = {**_INITIATE_BODY, "mime_type": "image/svg+xml"}
+    resp = client.post("/media/v1/uploads/initiate", json=body)
+    assert resp.status_code == 422
+    mock_storage.presigned_put_object.assert_not_called()
+
+
 # ── POST /media/v1/uploads/{id}/complete ─────────────────────────────────────
 
 
@@ -97,6 +111,7 @@ def test_complete_upload_happy_path(
 ):
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 200
     assert "media_object" in resp.json()
@@ -151,7 +166,7 @@ def test_complete_upload_with_sha256(
     correct_sha256 = hashlib.sha256(content).hexdigest()
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat_mock()
-    mock_storage.get_object_head.return_value = b""
+    mock_storage.get_object_head.return_value = _PDF_BYTES
     mock_storage.get_object.return_value = content
     resp = client.post(
         f"/media/v1/uploads/{us.id}/complete",
@@ -170,6 +185,7 @@ def test_complete_upload_superuser_can_complete_any(
 ):
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
     resp = superuser_client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 200
 
@@ -280,6 +296,7 @@ def test_complete_upload_tz_aware_expires_at(mock_storage: MagicMock, current_us
     stat.size = 1024
     stat.etag = "etag-tz"
     mock_storage.stat_object.return_value = stat
+    mock_storage.get_object_head.return_value = _PDF_BYTES
 
     result = UploadsController.complete_upload(
         session=mock_sess,

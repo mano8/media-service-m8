@@ -24,6 +24,7 @@ from media_service.schemas.uploads import (
     UploadInitiateResponse,
 )
 from media_service.core.validation import (
+    is_allowed_declared_mime,
     max_size_for_category,
     mime_consistent,
     sniff_mime,
@@ -130,6 +131,11 @@ class UploadsController:
         storage: ObjectStorage,
     ) -> UploadInitiateResponse:
         """Create an UploadSession and return a presigned PUT URL."""
+        if not is_allowed_declared_mime(req.mime_type):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unsupported content type: {req.mime_type}",
+            )
         media_id = uuid.uuid4()
         owner_id = uuid.UUID(str(current_user.id))
         object_key = build_object_key(

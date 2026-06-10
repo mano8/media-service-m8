@@ -95,8 +95,23 @@ def test_mime_consistent_exact_match():
     assert mime_consistent("image/png", "image/png") is True
 
 
-def test_mime_consistent_sniffed_none():
-    assert mime_consistent("application/pdf", None) is True
+def test_mime_consistent_sniffable_sniffed_none_rejected():
+    # PDF is a binary, sniffable format: an unidentified payload must fail closed.
+    assert mime_consistent("application/pdf", None) is False
+
+
+def test_mime_consistent_image_sniffed_none_rejected():
+    # The SVG-as-image bypass: image/* declared but the sniffer can't see magic bytes.
+    assert mime_consistent("image/png", None) is False
+
+
+def test_mime_consistent_unsniffable_text_sniffed_none_allowed():
+    assert mime_consistent("text/plain", None) is True
+
+
+def test_mime_consistent_disallowed_declared_type_rejected():
+    assert mime_consistent("image/svg+xml", "image/png") is False
+    assert mime_consistent("text/html", None) is False
 
 
 def test_mime_consistent_same_major_image():
@@ -193,7 +208,7 @@ def test_complete_upload_rejects_sha256_mismatch(
 ):
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat()
-    mock_storage.get_object_head.return_value = b""
+    mock_storage.get_object_head.return_value = _PDF_BYTES
     mock_storage.get_object.return_value = b"real-content"
     wrong_sha256 = "b" * 64
     resp = client.post(
@@ -209,7 +224,7 @@ def test_complete_upload_passes_with_correct_sha256(
     us = _make_session(session, current_user.id)
     content = b"verified-file-content"
     mock_storage.stat_object.return_value = _stat()
-    mock_storage.get_object_head.return_value = b""
+    mock_storage.get_object_head.return_value = _PDF_BYTES
     mock_storage.get_object.return_value = content
     correct_sha256 = hashlib.sha256(content).hexdigest()
     resp = client.post(
@@ -224,7 +239,7 @@ def test_complete_upload_skips_sha256_when_not_provided(
 ):
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat()
-    mock_storage.get_object_head.return_value = b""
+    mock_storage.get_object_head.return_value = _PDF_BYTES
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 200
     mock_storage.get_object.assert_not_called()
@@ -240,14 +255,16 @@ def test_complete_upload_passes_when_sniff_unrecognised(
     assert resp.status_code == 200
 
 
-def test_complete_upload_passes_when_get_object_head_raises(
+def test_complete_upload_rejects_when_get_object_head_raises(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
+    # Head read failed → the sniffable PDF type can't be verified → fail closed.
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat()
     mock_storage.get_object_head.side_effect = Exception("storage error")
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
-    assert resp.status_code == 200
+    assert resp.status_code == 422
+    assert "mime_mismatch" in resp.json()["detail"]
 
 
 def test_complete_upload_sha256_get_object_raises_422(
@@ -295,6 +312,19 @@ def test_complete_upload_same_image_type_passes(
     assert resp.status_code == 200
 
 
+def test_complete_upload_rejects_unsniffable_payload_for_image(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # Stored-XSS vector: image/* declared but the payload is text (SVG/HTML) the
+    # sniffer cannot identify. Must be rejected rather than waved through.
+    us = _make_session(session, current_user.id, mime_type="image/png")
+    mock_storage.stat_object.return_value = _stat()
+    mock_storage.get_object_head.return_value = b"<svg><script>alert(1)</script></svg>"
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 422
+    assert "mime_mismatch" in resp.json()["detail"]
+
+
 def test_complete_upload_category_size_override_rejects(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
@@ -316,6 +346,6 @@ def test_complete_upload_category_size_override_passes(
     ):
         us = _make_session(session, current_user.id)
         mock_storage.stat_object.return_value = _stat(size=2048)
-        mock_storage.get_object_head.return_value = b""
+        mock_storage.get_object_head.return_value = _PDF_BYTES
         resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 200
