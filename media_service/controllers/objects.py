@@ -112,8 +112,10 @@ def _apply_filters(
     if params.created_to is not None:
         statement = statement.where(col(MediaObject.created_at) <= params.created_to)
     if params.q is not None:
+        # autoescape treats %/_ in the user term as literals (no SQLi here since
+        # the value is bound, but unescaped wildcards would broaden the match).
         statement = statement.where(
-            col(MediaObject.original_filename).contains(params.q)
+            col(MediaObject.original_filename).contains(params.q, autoescape=True)
         )
     return statement
 

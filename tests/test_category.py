@@ -96,7 +96,7 @@ def test_get_category_forbidden_other_owner(
 ):
     cat = _make_category(session, superuser.id, "OtherCat")
     resp = client.get(f"/media/category/get/{cat.id}/")
-    assert resp.status_code == 401
+    assert resp.status_code == 403
 
 
 # ── POST /media/category/add/ ─────────────────────────────────────────────────
@@ -129,7 +129,7 @@ def test_update_category_not_found(client: TestClient):
 def test_update_category_forbidden(client: TestClient, session: Session, superuser):
     cat = _make_category(session, superuser.id, "NotMine")
     resp = client.put(f"/media/category/edit/{cat.id}/", json={"name": "Hacked"})
-    assert resp.status_code == 400
+    assert resp.status_code == 403
 
 
 # ── DELETE /media/category/delete/{id}/ ──────────────────────────────────────
@@ -150,7 +150,7 @@ def test_delete_category_not_found(client: TestClient):
 def test_delete_category_forbidden(client: TestClient, session: Session, superuser):
     cat = _make_category(session, superuser.id, "Protected")
     resp = client.delete(f"/media/category/delete/{cat.id}/")
-    assert resp.status_code == 400
+    assert resp.status_code == 403
 
 
 # ── Exception handler coverage ───────────────────────────────────────────────
