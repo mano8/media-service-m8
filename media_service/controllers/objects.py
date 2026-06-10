@@ -286,10 +286,26 @@ class ObjectsController:
         old_bucket = _relocate_for_visibility(
             storage, obj, update_data.get("visibility")
         )
+        new_bucket = obj.storage_bucket
+        object_key = obj.object_key
         obj.sqlmodel_update(update_data)
         obj.updated_at = utcnow()
         session.add(obj)
-        session.commit()
+        try:
+            session.commit()
+        except Exception:
+            # The copy already landed in the destination bucket but no metadata
+            # now points at it. For a PRIVATE->PUBLIC move that orphan would be
+            # world-readable, so best-effort remove it before surfacing the error.
+            session.rollback()
+            if old_bucket is not None:
+                _best_effort_remove(
+                    storage,
+                    bucket=new_bucket,
+                    object_key=object_key,
+                    context="visibility-relocation-commit-failure",
+                )
+            raise
         session.refresh(obj)
         if old_bucket is not None:
             _best_effort_remove(

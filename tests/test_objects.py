@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
@@ -165,6 +166,26 @@ def test_update_object_relocation_failure_leaves_metadata_unchanged(
     session.refresh(obj)
     assert obj.visibility == MediaVisibility.PRIVATE
     assert obj.storage_bucket == "private-media"
+
+
+def test_update_object_commit_failure_removes_relocated_copy(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # If the metadata commit fails after a PRIVATE->PUBLIC copy landed, the
+    # orphaned (and world-readable) destination copy must be cleaned up before
+    # the error surfaces, leaving no bytes the metadata no longer points at.
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
+    object_key = obj.object_key
+    session.commit = MagicMock(side_effect=RuntimeError("db down"))
+    with pytest.raises(RuntimeError):
+        client.patch(
+            f"/media/v1/objects/{obj.id}",
+            json={"visibility": "public"},
+        )
+    mock_storage.copy_object.assert_called_once()
+    mock_storage.remove_object.assert_called_once_with(
+        bucket="public-media", object_key=object_key
+    )
 
 
 def test_update_object_stale_copy_delete_failure_is_tolerated(
