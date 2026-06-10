@@ -77,6 +77,29 @@ class ObjectStorage:
             response.close()
             response.release_conn()
 
+    def set_object_content_type(
+        self, *, bucket: str, object_key: str, content_type: str
+    ) -> Any:
+        """Rewrite an object's stored ``Content-Type`` in place.
+
+        The presigned PUT lets the client choose the ``Content-Type`` sent to
+        storage, and for public-read buckets that type is served verbatim on
+        direct access. Forcing the server-validated type here (via a metadata-
+        only server-side copy) prevents a client from having an object served
+        as an active type — e.g. ``text/html`` declared as ``text/plain`` —
+        regardless of what it sent on upload. Returns the write result so the
+        caller can pick up the authoritative post-copy etag.
+        """
+        from minio.commonconfig import REPLACE, CopySource
+
+        return self.client.copy_object(
+            bucket,
+            object_key,
+            CopySource(bucket, object_key),
+            metadata={"Content-Type": content_type},
+            metadata_directive=REPLACE,
+        )
+
     def copy_object(
         self,
         *,

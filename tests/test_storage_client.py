@@ -79,6 +79,26 @@ def test_presigned_get_object_passes_response_headers():
     )
 
 
+def test_set_object_content_type_replaces_via_server_side_copy():
+    from minio.commonconfig import REPLACE
+
+    minio = MagicMock()
+    storage = _client(minio)
+    storage.set_object_content_type(
+        bucket="public-media", object_key="k", content_type="image/png"
+    )
+    minio.copy_object.assert_called_once()
+    args, kwargs = minio.copy_object.call_args
+    assert args[0] == "public-media"
+    assert args[1] == "k"
+    # CopySource points back at the same object (in-place rewrite).
+    source = args[2]
+    assert source.bucket_name == "public-media"
+    assert source.object_name == "k"
+    assert kwargs["metadata"] == {"Content-Type": "image/png"}
+    assert kwargs["metadata_directive"] == REPLACE
+
+
 def test_copy_object_server_side_copies_across_buckets():
     minio = MagicMock()
     storage = _client(minio)

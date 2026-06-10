@@ -241,6 +241,24 @@ class UploadsController:
             if not verify_sha256(content, req.sha256):
                 _reject_upload(**_reject_kw, reason="sha256_mismatch")
 
+        # 4. Pin the stored Content-Type to the server-validated declared type.
+        # The presigned PUT let the client choose the Content-Type, which is
+        # served verbatim on direct public-bucket access; normalising it here
+        # stops a validated-but-mistyped object from being served as an active
+        # type (e.g. text/html) and triggering stored XSS.
+        try:
+            storage.set_object_content_type(
+                bucket=upload_session.storage_bucket,
+                object_key=upload_session.object_key,
+                content_type=declared_mime,
+            )
+        except Exception as exc:
+            _logger.warning("set_object_content_type failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Failed to finalize object content type.",
+            ) from exc
+
         media_object = MediaObject(
             id=upload_session.id,
             owner_user_id=upload_session.owner_user_id,

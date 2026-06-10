@@ -119,6 +119,36 @@ def test_complete_upload_happy_path(
     assert us.status == UploadSessionStatus.COMPLETED
 
 
+def test_complete_upload_pins_stored_content_type(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    us = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 200
+    # The client-chosen PUT Content-Type is overwritten with the validated type.
+    mock_storage.set_object_content_type.assert_called_once_with(
+        bucket=us.storage_bucket,
+        object_key=us.object_key,
+        content_type="application/pdf",
+    )
+
+
+def test_complete_upload_fails_when_content_type_pin_fails(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    us = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
+    mock_storage.set_object_content_type.side_effect = Exception("copy failed")
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 422
+    # The session is not promoted when the content type cannot be pinned.
+    session.refresh(us)
+    assert us.status == UploadSessionStatus.INITIATED
+
+
 def test_complete_upload_not_found(client: TestClient):
     resp = client.post(f"/media/v1/uploads/{uuid.uuid4()}/complete", json={})
     assert resp.status_code == 404
