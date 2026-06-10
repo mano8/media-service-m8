@@ -143,7 +143,6 @@ class UploadsController:
             media_id=media_id,
             category=req.category,
             filename=req.original_filename,
-            tenant_id=req.tenant_id,
         )
         bucket = bucket_for_visibility(req.visibility)
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
@@ -157,7 +156,7 @@ class UploadsController:
         upload_session = UploadSession(
             id=media_id,
             owner_user_id=owner_id,
-            tenant_id=req.tenant_id,
+            tenant_id=None,
             category=req.category,
             visibility=req.visibility,
             storage_bucket=bucket,

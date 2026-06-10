@@ -86,11 +86,17 @@ def test_initiate_upload_creates_session_in_db(
     assert upload_session.status == UploadSessionStatus.INITIATED
 
 
-def test_initiate_upload_with_tenant_id(client: TestClient, mock_storage: MagicMock):
+def test_initiate_upload_ignores_client_tenant_id(
+    client: TestClient, mock_storage: MagicMock, session: Session
+):
     mock_storage.presigned_put_object.return_value = "https://minio/url"
     body = {**_INITIATE_BODY, "tenant_id": str(uuid.uuid4())}
     resp = client.post("/media/v1/uploads/initiate", json=body)
     assert resp.status_code == 200
+    sid = uuid.UUID(resp.json()["session_id"])
+    stored = session.get(UploadSession, sid)
+    assert stored is not None
+    assert stored.tenant_id is None
 
 
 def test_initiate_upload_rejects_disallowed_mime(

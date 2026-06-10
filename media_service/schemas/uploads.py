@@ -20,7 +20,6 @@ class UploadInitiateRequest(SQLModel):
     original_filename: str
     mime_type: str
     expected_size_bytes: int
-    tenant_id: uuid.UUID | None = None
 
 
 class UploadInitiateResponse(SQLModel):
