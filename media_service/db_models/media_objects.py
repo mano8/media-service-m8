@@ -45,6 +45,7 @@ class MediaObjectStatus(StrEnum):
     READY = "ready"
     FAILED = "failed"
     DELETED = "deleted"
+    REJECTED = "rejected"
 
 
 class ScanStatus(StrEnum):

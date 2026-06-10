@@ -23,10 +23,17 @@ from media_service.schemas.uploads import (
     UploadInitiateRequest,
     UploadInitiateResponse,
 )
+from media_service.core.validation import (
+    max_size_for_category,
+    mime_consistent,
+    sniff_mime,
+    verify_sha256,
+)
 from media_service.metrics import (
     inc_upload_completed,
     inc_upload_failed,
     inc_upload_initiated,
+    inc_upload_rejected,
 )
 from media_service.storage.buckets import bucket_for_visibility
 from media_service.storage.client import ObjectStorage
@@ -74,6 +81,41 @@ def _ensure_completable(session: Session, upload_session: UploadSession) -> None
             status_code=status.HTTP_409_CONFLICT,
             detail="Upload session has expired.",
         )
+
+
+def _reject_upload(
+    *,
+    session: Session,
+    upload_session: UploadSession,
+    reason: str,
+    mime_type: str,
+    size_bytes: int,
+    etag: str | None,
+) -> None:
+    """Abort the session, persist a REJECTED MediaObject for audit, and raise 422."""
+    media_object = MediaObject(
+        id=upload_session.id,
+        owner_user_id=upload_session.owner_user_id,
+        tenant_id=upload_session.tenant_id,
+        category=upload_session.category,
+        visibility=upload_session.visibility,
+        storage_bucket=upload_session.storage_bucket,
+        object_key=upload_session.object_key,
+        original_filename=upload_session.original_filename,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+        etag=etag,
+        status=MediaObjectStatus.REJECTED,
+    )
+    upload_session.status = UploadSessionStatus.ABORTED
+    session.add(media_object)
+    session.add(upload_session)
+    session.commit()
+    inc_upload_rejected(reason)
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"Upload rejected: {reason}.",
+    )
 
 
 class UploadsController:
@@ -151,6 +193,47 @@ class UploadsController:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Object not found in storage. Upload the file before completing.",
             ) from exc
+
+        declared_mime = upload_session.expected_mime_type
+        category = str(upload_session.category)
+        _reject_kw = dict(
+            session=session,
+            upload_session=upload_session,
+            mime_type=declared_mime,
+            size_bytes=stat.size,
+            etag=stat.etag,
+        )
+
+        # 1. Size enforcement
+        if stat.size > max_size_for_category(category):
+            _reject_upload(**_reject_kw, reason="size_exceeded")
+
+        # 2. Magic-byte MIME check
+        try:
+            head = storage.get_object_head(
+                bucket=upload_session.storage_bucket,
+                object_key=upload_session.object_key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("get_object_head failed during mime check: %s", exc)
+            head = b""
+        if not mime_consistent(declared_mime, sniff_mime(head)):
+            _reject_upload(**_reject_kw, reason="mime_mismatch")
+
+        # 3. SHA-256 verification
+        if req.sha256:
+            try:
+                content = storage.get_object(
+                    bucket=upload_session.storage_bucket,
+                    object_key=upload_session.object_key,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Failed to read object for SHA-256 verification.",
+                ) from exc
+            if not verify_sha256(content, req.sha256):
+                _reject_upload(**_reject_kw, reason="sha256_mismatch")
 
         media_object = MediaObject(
             id=upload_session.id,

@@ -5,6 +5,53 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased] — Phase 11 · upload validation & integrity hardening
+
+### Added
+
+- **`core/validation.py`** — pure content-validation helpers:
+  - `sniff_mime(head)` — magic-byte MIME detection via `filetype`.
+  - `mime_consistent(declared, sniffed)` — tolerant same-major check for
+    `image/*`, `video/*`, `audio/*`; rejects cross-major spoofs.
+  - `verify_sha256(data, expected)` — constant-time-comparable hex digest check.
+  - `max_size_for_category(category)` — returns the category-specific limit from
+    `MEDIA_MAX_UPLOAD_SIZE_BYTES_PER_CATEGORY` or the global default.
+- **`storage/client.py`** — two new `ObjectStorage` methods:
+  - `get_object_head(*, bucket, object_key, length=512)` — reads a partial object
+    for magic-byte sniffing.
+  - `get_object(*, bucket, object_key)` — downloads an entire object for SHA-256
+    verification.
+- **`MediaObjectStatus.REJECTED`** — new enum member (no migration; `String(32)`
+  column).
+- **`media_uploads_rejected_total{reason}`** Prometheus counter in `metrics.py`;
+  `inc_upload_rejected(reason)` helper.
+- **`MEDIA_MAX_UPLOAD_SIZE_BYTES_PER_CATEGORY`** setting (`dict[str, int]`,
+  default `{}`); parsed from a JSON environment variable.
+- **Three validation checks in `complete_upload`** (after the `stat_object` call):
+  1. Size enforcement — `stat.size > max_size_for_category(category)` → 422
+     `size_exceeded`.
+  2. Magic-byte MIME check — `sniff_mime(head)` inconsistent with declared type
+     → 422 `mime_mismatch`; failure to read head silently skips the check.
+  3. SHA-256 verification — when `req.sha256` is present, stream the full object
+     and compare; mismatch → 422 `sha256_mismatch`; storage error → 422.
+  On any rejection: upload session marked `ABORTED`, a `REJECTED` `MediaObject`
+  is persisted for the audit trail, `media_uploads_rejected_total` is incremented.
+- **`tests/test_upload_validation.py`** — 29 new tests covering all validation
+  helpers and HTTP rejection/pass scenarios.
+
+### Changed
+
+- `requirements_base.txt` — added `filetype>=1.2.0`.
+- `tests/test_metrics.py` — added noop + counter assertions for
+  `inc_upload_rejected`; `test_setup_disabled` asserts `_uploads_rejected` is
+  `None`.
+- `tests/test_uploads.py` — `test_complete_upload_with_sha256` updated to provide
+  a correct SHA-256 (now actually verified by the controller).
+- `tests/test_storage_client.py` — added three tests for `get_object_head` and
+  `get_object`.
+
+---
+
 ## [Unreleased] — Phase 10 · object listing, filtering & pagination
 
 ### Added

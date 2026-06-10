@@ -1,5 +1,6 @@
 """Tests for app/routes/uploads.py (initiate / complete / abort)."""
 
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -146,15 +147,19 @@ def test_complete_upload_file_not_in_storage(
 def test_complete_upload_with_sha256(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
+    content = b"test-file-content-for-sha256"
+    correct_sha256 = hashlib.sha256(content).hexdigest()
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = b""
+    mock_storage.get_object.return_value = content
     resp = client.post(
         f"/media/v1/uploads/{us.id}/complete",
-        json={"sha256": "a" * 64},
+        json={"sha256": correct_sha256},
     )
     assert resp.status_code == 200
     obj = resp.json()["media_object"]
-    assert obj["sha256"] == "a" * 64
+    assert obj["sha256"] == correct_sha256
 
 
 def test_complete_upload_superuser_can_complete_any(

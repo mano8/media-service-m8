@@ -79,6 +79,43 @@ def test_presigned_get_object_passes_response_headers():
     )
 
 
+def test_get_object_head_reads_partial_bytes():
+    minio = MagicMock()
+    fake_response = MagicMock()
+    fake_response.read.return_value = b"\x89PNG\r\n\x1a\n"
+    minio.get_object.return_value = fake_response
+    storage = _client(minio)
+    result = storage.get_object_head(bucket="b", object_key="k")
+    minio.get_object.assert_called_once_with("b", "k", offset=0, length=512)
+    fake_response.close.assert_called_once()
+    fake_response.release_conn.assert_called_once()
+    assert result == b"\x89PNG\r\n\x1a\n"
+
+
+def test_get_object_head_custom_length():
+    minio = MagicMock()
+    fake_response = MagicMock()
+    fake_response.read.return_value = b"\xff\xd8"
+    minio.get_object.return_value = fake_response
+    storage = _client(minio)
+    storage.get_object_head(bucket="b", object_key="k", length=128)
+    minio.get_object.assert_called_once_with("b", "k", offset=0, length=128)
+
+
+def test_get_object_reads_full_content():
+    minio = MagicMock()
+    fake_response = MagicMock()
+    content = b"full-file-bytes"
+    fake_response.read.return_value = content
+    minio.get_object.return_value = fake_response
+    storage = _client(minio)
+    result = storage.get_object(bucket="b", object_key="k")
+    minio.get_object.assert_called_once_with("b", "k")
+    fake_response.close.assert_called_once()
+    fake_response.release_conn.assert_called_once()
+    assert result == content
+
+
 def test_default_constructor_creates_minio_client():
     fake_minio = MagicMock()
     with patch(
