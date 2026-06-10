@@ -79,6 +79,24 @@ def test_presigned_get_object_passes_response_headers():
     )
 
 
+def test_copy_object_server_side_copies_across_buckets():
+    minio = MagicMock()
+    storage = _client(minio)
+    storage.copy_object(
+        src_bucket="private-media",
+        src_object_key="k",
+        dest_bucket="public-media",
+        dest_object_key="k",
+    )
+    minio.copy_object.assert_called_once()
+    args, _ = minio.copy_object.call_args
+    assert args[0] == "public-media"
+    assert args[1] == "k"
+    source = args[2]
+    assert source.bucket_name == "private-media"
+    assert source.object_name == "k"
+
+
 def test_get_object_head_reads_partial_bytes():
     minio = MagicMock()
     fake_response = MagicMock()

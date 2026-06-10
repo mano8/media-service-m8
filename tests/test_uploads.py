@@ -177,6 +177,20 @@ def test_complete_upload_with_sha256(
     assert obj["sha256"] == correct_sha256
 
 
+def test_complete_upload_sha256_read_failure_returns_422(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    us = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
+    mock_storage.get_object.side_effect = Exception("read failed")
+    resp = client.post(
+        f"/media/v1/uploads/{us.id}/complete",
+        json={"sha256": "a" * 64},
+    )
+    assert resp.status_code == 422
+
+
 def test_complete_upload_superuser_can_complete_any(
     superuser_client: TestClient,
     mock_storage: MagicMock,

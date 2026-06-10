@@ -3,6 +3,7 @@
 import base64
 import binascii
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -19,6 +20,7 @@ from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectPublic,
     MediaObjectStatus,
+    MediaVisibility,
     utcnow,
 )
 from media_service.schemas.objects import (
@@ -28,8 +30,11 @@ from media_service.schemas.objects import (
     ObjectListResponse,
 )
 from media_service.metrics import inc_download_url_generated
+from media_service.storage.buckets import bucket_for_visibility
 from media_service.storage.client import ObjectStorage
 from media_service.storage.presign import create_download_url
+
+_logger = logging.getLogger(__name__)
 
 _SORT_COLUMNS: dict[str, Any] = {
     "created_at": MediaObject.created_at,
@@ -141,6 +146,53 @@ def _load_object(
     return obj
 
 
+def _relocate_for_visibility(
+    storage: ObjectStorage,
+    obj: MediaObject,
+    new_visibility: MediaVisibility | None,
+) -> str | None:
+    """Copy bytes into the bucket matching a new visibility, repointing ``obj``.
+
+    Keeps stored bytes and ``visibility`` metadata consistent: the copy lands in
+    the destination bucket before the metadata is committed. Returns the previous
+    bucket (to delete once the commit succeeds) when the object actually moved,
+    otherwise ``None``.
+    """
+    if new_visibility is None or new_visibility == obj.visibility:
+        return None
+    new_bucket = bucket_for_visibility(new_visibility)
+    old_bucket = obj.storage_bucket
+    if new_bucket == old_bucket:
+        return None
+    try:
+        storage.copy_object(
+            src_bucket=old_bucket,
+            src_object_key=obj.object_key,
+            dest_bucket=new_bucket,
+            dest_object_key=obj.object_key,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to relocate object for the new visibility.",
+        ) from exc
+    obj.storage_bucket = new_bucket
+    return old_bucket
+
+
+def _remove_stale_copy(storage: ObjectStorage, *, bucket: str, object_key: str) -> None:
+    """Best-effort delete of the source copy after a committed visibility move."""
+    try:
+        storage.remove_object(bucket=bucket, object_key=object_key)
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning(
+            "Failed to remove relocated object copy %s/%s: %s",
+            bucket,
+            object_key,
+            exc,
+        )
+
+
 class ObjectsController:
     """Handle media object metadata and access URLs."""
 
@@ -219,15 +271,25 @@ class ObjectsController:
         current_user: UserModel,
         object_id: uuid.UUID,
         update: MediaObjectUpdate,
+        storage: ObjectStorage,
     ) -> MediaObjectPublic:
-        """Patch allowed metadata fields on a media object."""
+        """Patch allowed metadata fields on a media object.
+
+        A ``visibility`` change relocates the stored bytes to the matching
+        bucket so metadata never diverges from where the object actually lives.
+        """
         obj = _load_object(session, current_user, object_id)
         update_data = update.model_dump(exclude_unset=True)
+        old_bucket = _relocate_for_visibility(
+            storage, obj, update_data.get("visibility")
+        )
         obj.sqlmodel_update(update_data)
         obj.updated_at = utcnow()
         session.add(obj)
         session.commit()
         session.refresh(obj)
+        if old_bucket is not None:
+            _remove_stale_copy(storage, bucket=old_bucket, object_key=obj.object_key)
         return MediaObjectPublic.model_validate(obj)
 
     @staticmethod

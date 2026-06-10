@@ -77,6 +77,28 @@ class ObjectStorage:
             response.close()
             response.release_conn()
 
+    def copy_object(
+        self,
+        *,
+        src_bucket: str,
+        src_object_key: str,
+        dest_bucket: str,
+        dest_object_key: str,
+    ) -> Any:
+        """Server-side copy an object to another bucket/key.
+
+        Used to relocate bytes when an object's visibility changes and it must
+        move between the public/private/sensitive buckets. Returns the write
+        result so the caller can pick up the post-copy etag.
+        """
+        from minio.commonconfig import CopySource
+
+        return self.client.copy_object(
+            dest_bucket,
+            dest_object_key,
+            CopySource(src_bucket, src_object_key),
+        )
+
     def presigned_put_object(
         self,
         *,
