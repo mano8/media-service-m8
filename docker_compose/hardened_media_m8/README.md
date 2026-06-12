@@ -2,7 +2,7 @@
 
 Local hardened stack for `auth_user_service` + `media_service`.
 
-Includes PostgreSQL 16, two Redis instances (auth + media), MinIO, Traefik,
+Includes PostgreSQL 18, two Redis instances (auth + media), MinIO, Traefik,
 Prometheus, Grafana, RS256/JWKS auth integration, hardened containers, and
 network segmentation.
 
@@ -40,15 +40,15 @@ through that network.
 
 | Service | Image/build | Local access |
 | --- | --- | --- |
-| traefik | `traefik:v3.3` | `:8000`, `:4430`, `127.0.0.1:9000`, `127.0.0.1:8080` |
+| traefik | `traefik:v3.7.5` | `:8000`, `:4430`, `127.0.0.1:9000`, `127.0.0.1:8080` |
 | auth_user_service | `tepochtli/fa-auth-m8:latest` | `/user` via Traefik |
 | media_service | local `../../media_service` build | `/media` via Traefik |
-| m8_db | `postgres:16-alpine` | internal data network |
-| redis_cache | `redis:7.4-alpine` | auth Redis — internal data network |
-| media_redis_cache | `redis:7.4-alpine` | media Redis — internal data network |
+| m8_db | `postgres:18.4-alpine` | internal data network |
+| redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
+| media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
 | minio | `quay.io/minio/minio` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
 | minio-init | `minio/mc` | one-shot: buckets + `media-rw` policy |
-| prometheus | `ubuntu/prometheus:3.11-24.04_stable` | `127.0.0.1:9090` |
+| prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 
 ## Setup
@@ -114,9 +114,10 @@ unset makes the service **fail closed** at startup:
   values across the auth service and every consumer (opt out with
   `TOKEN_STRICT_VALIDATION=false` for local-only experiments).
 - **`EVENT_SIGNING_KEY`** — required because `EVENT_SIGNING_ENABLED` defaults to
-  `true`. Use the **same** key in `auth.env` and `media.env`. The auth-state
-  event bus is not wired into any service yet, so this is a boot-time requirement
-  only; set `EVENT_SIGNING_ENABLED=false` in both files to defer it.
+  `true`. Use the **same** key in `auth.env` and `media.env`. It signs and
+  verifies the auth event-stream payloads delivered over fa-auth's private SSE
+  bridge (`media_service` consumes them to evict its validation cache early); set
+  `EVENT_SIGNING_ENABLED=false` in both files to disable signing entirely.
 
 Initialize keys and local certificates:
 

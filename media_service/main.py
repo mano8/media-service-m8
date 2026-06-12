@@ -20,6 +20,7 @@ from media_service import metrics as _media_metrics
 from media_service.app.main import api_router as domain_router
 from media_service.core.config import settings
 from media_service.core.deps import auth, engine
+from media_service.core.events import make_lifespan_extras
 
 # Register media-owned counters against the shared REGISTRY. The shared HTTP
 # collectors are registered by create_app — registering them here too would
@@ -81,5 +82,9 @@ app = create_app(
     service_name="media-service-m8",
     service_version="1.0.0",
     health=HealthConfig(checks=[minio_health_check]),
-    lifecycle=AppLifecycle(auth_deps=auth, db_engine=engine),
+    lifecycle=AppLifecycle(
+        auth_deps=auth,
+        db_engine=engine,
+        lifespan_extras=make_lifespan_extras(settings, auth),
+    ),
 )

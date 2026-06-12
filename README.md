@@ -118,10 +118,28 @@ Set these to match `auth_user_service` exactly:
   on, so `TOKEN_ISSUER` and `TOKEN_AUDIENCE` are required at boot (or opt out
   with `TOKEN_STRICT_VALIDATION=false` for local dev).
 - **Event signing:** `EVENT_SIGNING_ENABLED` defaults on; a strong
-  `EVENT_SIGNING_KEY` is required at boot or the process fails closed. This is a
-  boot-time requirement only — the auth-state event bus is **not wired into any
-  service yet**, so the key is not actively used at runtime. Set
-  `EVENT_SIGNING_ENABLED=false` if you prefer to defer it until the bus lands.
+  `EVENT_SIGNING_KEY` is required at boot or the process fails closed. It must
+  match `auth_user_service` — SSE event-stream payloads (below) are
+  HMAC-SHA256 signed and verified with it. Set `EVENT_SIGNING_ENABLED=false` to
+  disable signing/verification entirely.
+- **Auth event stream (`fastapi-m8 >= 1.5.0`):** when `INTROSPECTION_URL` is set,
+  the lifespan starts an `AuthEventStreamClient` that consumes session-revoked /
+  user-deleted events from fa-auth's private SSE bridge and evicts the local
+  validation cache early. It is a **best-effort cache accelerator** — the JTI
+  blacklist behind `INTROSPECTION_URL` stays authoritative and stream loss is
+  non-fatal. Tune with `EVENT_STREAM_CONNECT_TIMEOUT` / `EVENT_STREAM_READ_TIMEOUT`.
+
+## Response security headers
+
+Headers are applied by the shared `auth-sdk-m8 >= 1.2.1` layer (wired through
+`fastapi-m8 >= 1.5.0`) in three tiers:
+
+- **Always on:** `X-Content-Type-Options`, `X-Frame-Options`.
+- **Production gate:** `Referrer-Policy`, `Permissions-Policy`.
+- **Express opt-in:** `Strict-Transport-Security` (`HSTS_ENABLED`) and
+  `Content-Security-Policy` (`CONTENT_SECURITY_POLICY_ENABLED`), both default off
+  and **never emitted on `ENVIRONMENT=local`** even when enabled — so a
+  production-configured build run on localhost can't poison the host's HSTS cache.
 
 See [`media_service/.example_env`](media_service/.example_env) for the full,
 commented set of settings.
