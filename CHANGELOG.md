@@ -5,6 +5,36 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased] — Phase 15a · access control — visibility & tenant enforcement
+
+### Added
+
+- **`require_visibility_access(obj, current_user)`** in
+  `controllers/objects.py` — authorizes read/download by the object's
+  `visibility`: owner and superusers always pass; `PUBLIC` is readable by any
+  authenticated user; `TENANT` only by callers in the same (non-null) tenant;
+  `PRIVATE`/`SENSITIVE` by nobody else (**403** otherwise). A null caller tenant
+  never matches a `TENANT` object.
+- **`tests/test_access_control.py`** — full visibility matrix over the helper,
+  the `GET`/`download-url` routes, and list scoping (incl. tenant isolation).
+
+### Changed
+
+- **`GET /v1/objects/{id}` and `…/download-url`** now enforce `visibility`
+  instead of bare ownership: previously every non-owner was refused, so `PUBLIC`
+  and same-tenant `TENANT` objects were unreachable by users entitled to them.
+- **`GET /v1/objects` (listing)** — a non-superuser now sees their own objects
+  **plus** anything `PUBLIC` and same-tenant `TENANT` objects, mirroring
+  `require_visibility_access` so the list never surfaces a row the caller could
+  not also fetch by id. `PRIVATE`/`SENSITIVE` objects of other owners stay
+  hidden. Owner-scoping and superuser scoping are unchanged.
+
+> No schema change. Tenant matching activates once an authenticated tenant claim
+> is wired through `UserModel`; until then objects are untenanted and `TENANT`
+> behaves as owner/superuser-only.
+
+---
+
 ## [Unreleased] — Phase 13 · storage quotas & accounting
 
 ### Added
