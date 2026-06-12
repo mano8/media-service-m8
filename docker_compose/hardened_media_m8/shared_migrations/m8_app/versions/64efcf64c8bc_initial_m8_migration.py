@@ -1,8 +1,8 @@
 """Initial m8 migration
 
-Revision ID: 876b274766df
+Revision ID: 64efcf64c8bc
 Revises: 
-Create Date: 2026-06-07 16:47:32.188520
+Create Date: 2026-06-12 21:01:17.101061
 
 """
 from typing import Sequence, Union
@@ -13,7 +13,7 @@ import sqlmodel
 import media_service.core.db_models
 
 # revision identifiers, used by Alembic.
-revision: str = '876b274766df'
+revision: str = '64efcf64c8bc'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -75,6 +75,24 @@ def upgrade() -> None:
     op.create_index(op.f('ix_app_media_object_storage_bucket'), 'app_media_object', ['storage_bucket'], unique=False)
     op.create_index(op.f('ix_app_media_object_tenant_id'), 'app_media_object', ['tenant_id'], unique=False)
     op.create_index(op.f('ix_app_media_object_visibility'), 'app_media_object', ['visibility'], unique=False)
+    op.create_table('app_storage_usage',
+    sa.Column('owner_user_id', sa.Uuid(), nullable=False),
+    sa.Column('tenant_id', sa.Uuid(), nullable=True),
+    sa.Column('total_bytes', sa.BigInteger(), nullable=False),
+    sa.Column('object_count', sa.BigInteger(), nullable=False),
+    sa.Column('quota_bytes', sa.BigInteger(), nullable=True),
+    sa.Column('quota_objects', sa.BigInteger(), nullable=True),
+    sa.Column('id', sa.Uuid(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('owner_user_id', 'tenant_id', name='uq_storage_usage_scope'),
+    mysql_charset='utf8mb4',
+    mysql_engine='InnoDB'
+    )
+    op.create_index(op.f('ix_app_storage_usage_id'), 'app_storage_usage', ['id'], unique=False)
+    op.create_index(op.f('ix_app_storage_usage_owner_user_id'), 'app_storage_usage', ['owner_user_id'], unique=False)
+    op.create_index(op.f('ix_app_storage_usage_tenant_id'), 'app_storage_usage', ['tenant_id'], unique=False)
     op.create_table('app_upload_session',
     sa.Column('tenant_id', sa.Uuid(), nullable=True),
     sa.Column('owner_user_id', sa.Uuid(), nullable=False),
@@ -142,6 +160,10 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_app_upload_session_id'), table_name='app_upload_session')
     op.drop_index(op.f('ix_app_upload_session_category'), table_name='app_upload_session')
     op.drop_table('app_upload_session')
+    op.drop_index(op.f('ix_app_storage_usage_tenant_id'), table_name='app_storage_usage')
+    op.drop_index(op.f('ix_app_storage_usage_owner_user_id'), table_name='app_storage_usage')
+    op.drop_index(op.f('ix_app_storage_usage_id'), table_name='app_storage_usage')
+    op.drop_table('app_storage_usage')
     op.drop_index(op.f('ix_app_media_object_visibility'), table_name='app_media_object')
     op.drop_index(op.f('ix_app_media_object_tenant_id'), table_name='app_media_object')
     op.drop_index(op.f('ix_app_media_object_storage_bucket'), table_name='app_media_object')
