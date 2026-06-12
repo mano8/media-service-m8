@@ -71,7 +71,7 @@ def read_item(session: SessionDep, current_user: CurrentUser, item_id: int) -> A
         if not current_user.is_superuser and (
             str(item.owner_id) != str(str(current_user.id))
         ):
-            raise HTTPException(status_code=401, detail="Not enough permissions")
+            raise HTTPException(status_code=403, detail="Not enough permissions")
         return ResponseModelBase(success=True, data=dict(item))
     except HTTPException as ex:
         raise ex
@@ -122,7 +122,7 @@ def update_item(
         if not current_user.is_superuser and (
             str(item.owner_id) != str(current_user.id)
         ):
-            raise HTTPException(status_code=400, detail="Not enough permissions")
+            raise HTTPException(status_code=403, detail="Not enough permissions")
         update_dict = item_in.model_dump(exclude_unset=True)
         item.sqlmodel_update(update_dict)
         session.add(item)
@@ -151,7 +151,7 @@ def delete_item(
         if not current_user.is_superuser and (
             str(item.owner_id) != str(current_user.id)
         ):
-            raise HTTPException(status_code=400, detail="Not enough permissions")
+            raise HTTPException(status_code=403, detail="Not enough permissions")
         session.delete(item)
         session.commit()
         return ResponseMessage(success=True, msg="Category deleted successfully")

@@ -1,8 +1,9 @@
 """Business logic for admin endpoints: storage stats and stale upload management."""
 
+import logging
 from datetime import datetime
 
-from sqlalchemy import func, update
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from media_service.db_models.media_objects import (
@@ -20,6 +21,10 @@ from media_service.schemas.admin import (
     StorageStatsByStatus,
     StorageStatsResponse,
 )
+from media_service.storage.client import ObjectStorage
+
+
+_logger = logging.getLogger(__name__)
 
 
 class AdminController:
@@ -110,16 +115,33 @@ class AdminController:
         )
 
     @staticmethod
-    def purge_stale_uploads(*, session: Session) -> PurgeStaleResponse:
-        """Mark all stale INITIATED sessions as EXPIRED. Returns the count purged."""
+    def purge_stale_uploads(
+        *, session: Session, storage: ObjectStorage
+    ) -> PurgeStaleResponse:
+        """Mark all stale INITIATED sessions EXPIRED and delete their orphaned bytes.
+
+        A client can initiate, POST the file, and never call complete — the
+        magic-byte check only runs at completion, so unvalidated bytes can sit
+        in the (possibly public) bucket indefinitely. Remove each object
+        best-effort before expiring the session. Returns the count purged.
+        """
         now = datetime.utcnow()
-        result = session.execute(
-            update(UploadSession)
-            .where(
+        sessions = session.exec(
+            select(UploadSession).where(
                 UploadSession.status == UploadSessionStatus.INITIATED,  # type: ignore[arg-type]
                 col(UploadSession.expires_at) < now,
             )
-            .values(status=UploadSessionStatus.EXPIRED)
-        )
+        ).all()
+        for stale in sessions:
+            try:
+                storage.remove_object(
+                    bucket=stale.storage_bucket, object_key=stale.object_key
+                )
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(
+                    "storage.remove_object failed during stale purge: %s", exc
+                )
+            stale.status = UploadSessionStatus.EXPIRED
+            session.add(stale)
         session.commit()
-        return PurgeStaleResponse(purged=result.rowcount)  # type: ignore[attr-defined]
+        return PurgeStaleResponse(purged=len(sessions))

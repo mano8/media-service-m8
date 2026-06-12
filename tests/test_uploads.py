@@ -21,6 +21,10 @@ _INITIATE_BODY = {
     "expected_size_bytes": 2048,
 }
 
+# Leading bytes the sniffer recognises as application/pdf — matches the declared
+# type used by `_make_session`, so the content-validation step passes.
+_PDF_BYTES = b"%PDF-1.4" + b"\x00" * 504
+
 
 def _make_session(
     session: Session,
@@ -59,22 +63,39 @@ def _stat_mock(size: int = 2048, etag: str = "etag123") -> MagicMock:
 # ── POST /media/v1/uploads/initiate ──────────────────────────────────────────
 
 
-def test_initiate_upload_returns_presigned_url(
+def test_initiate_upload_returns_presigned_post_form(
     client: TestClient, mock_storage: MagicMock
 ):
-    mock_storage.presigned_put_object.return_value = "https://minio/upload-url"
+    mock_storage.presigned_post_object.return_value = (
+        "https://minio/private-media",
+        {"key": "k", "Content-Type": "application/pdf", "policy": "p"},
+    )
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["upload_url"] == "https://minio/upload-url"
+    assert data["upload_url"] == "https://minio/private-media"
+    assert data["upload_fields"]["key"] == "k"
     assert "session_id" in data
     assert "expires_at" in data
+
+
+def test_initiate_upload_constrains_size_and_content_type(
+    client: TestClient, mock_storage: MagicMock
+):
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
+    assert resp.status_code == 200
+    # The POST policy is signed for the declared type and a finite size cap, so
+    # storage rejects oversized/garbage bodies before they land.
+    _, kwargs = mock_storage.presigned_post_object.call_args
+    assert kwargs["content_type"] == "application/pdf"
+    assert kwargs["max_size_bytes"] > 0
 
 
 def test_initiate_upload_creates_session_in_db(
     client: TestClient, mock_storage: MagicMock, session: Session
 ):
-    mock_storage.presigned_put_object.return_value = "https://minio/url"
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     sid = uuid.UUID(resp.json()["session_id"])
     upload_session = session.get(UploadSession, sid)
@@ -82,11 +103,27 @@ def test_initiate_upload_creates_session_in_db(
     assert upload_session.status == UploadSessionStatus.INITIATED
 
 
-def test_initiate_upload_with_tenant_id(client: TestClient, mock_storage: MagicMock):
-    mock_storage.presigned_put_object.return_value = "https://minio/url"
+def test_initiate_upload_ignores_client_tenant_id(
+    client: TestClient, mock_storage: MagicMock, session: Session
+):
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
     body = {**_INITIATE_BODY, "tenant_id": str(uuid.uuid4())}
     resp = client.post("/media/v1/uploads/initiate", json=body)
     assert resp.status_code == 200
+    sid = uuid.UUID(resp.json()["session_id"])
+    stored = session.get(UploadSession, sid)
+    assert stored is not None
+    assert stored.tenant_id is None
+
+
+def test_initiate_upload_rejects_disallowed_mime(
+    client: TestClient, mock_storage: MagicMock
+):
+    # image/svg+xml is markup that can carry <script> — never issue a URL for it.
+    body = {**_INITIATE_BODY, "mime_type": "image/svg+xml"}
+    resp = client.post("/media/v1/uploads/initiate", json=body)
+    assert resp.status_code == 422
+    mock_storage.presigned_post_object.assert_not_called()
 
 
 # ── POST /media/v1/uploads/{id}/complete ─────────────────────────────────────
@@ -97,11 +134,42 @@ def test_complete_upload_happy_path(
 ):
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 200
     assert "media_object" in resp.json()
     session.refresh(us)
     assert us.status == UploadSessionStatus.COMPLETED
+
+
+def test_complete_upload_pins_stored_content_type(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    us = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 200
+    # The client-chosen PUT Content-Type is overwritten with the validated type.
+    mock_storage.set_object_content_type.assert_called_once_with(
+        bucket=us.storage_bucket,
+        object_key=us.object_key,
+        content_type="application/pdf",
+    )
+
+
+def test_complete_upload_fails_when_content_type_pin_fails(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    us = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
+    mock_storage.set_object_content_type.side_effect = Exception("copy failed")
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 422
+    # The session is not promoted when the content type cannot be pinned.
+    session.refresh(us)
+    assert us.status == UploadSessionStatus.INITIATED
 
 
 def test_complete_upload_not_found(client: TestClient):
@@ -151,7 +219,7 @@ def test_complete_upload_with_sha256(
     correct_sha256 = hashlib.sha256(content).hexdigest()
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat_mock()
-    mock_storage.get_object_head.return_value = b""
+    mock_storage.get_object_head.return_value = _PDF_BYTES
     mock_storage.get_object.return_value = content
     resp = client.post(
         f"/media/v1/uploads/{us.id}/complete",
@@ -162,6 +230,20 @@ def test_complete_upload_with_sha256(
     assert obj["sha256"] == correct_sha256
 
 
+def test_complete_upload_sha256_read_failure_returns_422(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    us = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
+    mock_storage.get_object.side_effect = Exception("read failed")
+    resp = client.post(
+        f"/media/v1/uploads/{us.id}/complete",
+        json={"sha256": "a" * 64},
+    )
+    assert resp.status_code == 422
+
+
 def test_complete_upload_superuser_can_complete_any(
     superuser_client: TestClient,
     mock_storage: MagicMock,
@@ -170,6 +252,7 @@ def test_complete_upload_superuser_can_complete_any(
 ):
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat_mock()
+    mock_storage.get_object_head.return_value = _PDF_BYTES
     resp = superuser_client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 200
 
@@ -280,6 +363,7 @@ def test_complete_upload_tz_aware_expires_at(mock_storage: MagicMock, current_us
     stat.size = 1024
     stat.etag = "etag-tz"
     mock_storage.stat_object.return_value = stat
+    mock_storage.get_object_head.return_value = _PDF_BYTES
 
     result = UploadsController.complete_upload(
         session=mock_sess,

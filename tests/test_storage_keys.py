@@ -60,3 +60,16 @@ def test_key_normalises_backslash_in_filename():
         filename=r"sub\dir\file.txt",
     )
     assert key.endswith("/file.txt")
+
+
+def test_key_falls_back_when_filename_empties_after_strip():
+    # "foo/" and a bare dot-reference both reduce to "" / "." / ".." after the
+    # path-strip; the helper must still produce a real, unambiguous key.
+    for filename in ("trailing/", "..", "."):
+        key = build_object_key(
+            owner_user_id=_OWNER,
+            media_id=_MEDIA,
+            category="document",
+            filename=filename,
+        )
+        assert key == f"users/{_OWNER}/document/{_MEDIA}/original/file"

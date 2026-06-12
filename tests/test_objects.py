@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
@@ -112,14 +113,110 @@ def test_download_url_forbidden(client: TestClient, session: Session, superuser)
 # ── PATCH /media/v1/objects/{id} ─────────────────────────────────────────────
 
 
-def test_update_object_visibility(client: TestClient, session: Session, current_user):
-    obj = _make_object(session, current_user.id)
+def test_update_object_visibility_relocates_bytes(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
     resp = client.patch(
         f"/media/v1/objects/{obj.id}",
         json={"visibility": "public"},
     )
     assert resp.status_code == 200
     assert resp.json()["visibility"] == "public"
+    assert resp.json()["storage_bucket"] == "public-media"
+    mock_storage.copy_object.assert_called_once_with(
+        src_bucket="private-media",
+        src_object_key=obj.object_key,
+        dest_bucket="public-media",
+        dest_object_key=obj.object_key,
+    )
+    # old copy is deleted only after the metadata commit succeeds
+    mock_storage.remove_object.assert_called_once_with(
+        bucket="private-media", object_key=obj.object_key
+    )
+
+
+def test_update_object_same_bucket_visibility_skips_move(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # PRIVATE and TENANT share the private bucket: no byte movement needed.
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
+    resp = client.patch(
+        f"/media/v1/objects/{obj.id}",
+        json={"visibility": "tenant"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["visibility"] == "tenant"
+    assert resp.json()["storage_bucket"] == "private-media"
+    mock_storage.copy_object.assert_not_called()
+    mock_storage.remove_object.assert_not_called()
+
+
+def test_update_object_relocation_failure_leaves_metadata_unchanged(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
+    mock_storage.copy_object.side_effect = RuntimeError("minio down")
+    resp = client.patch(
+        f"/media/v1/objects/{obj.id}",
+        json={"visibility": "public"},
+    )
+    assert resp.status_code == 502
+    mock_storage.remove_object.assert_not_called()
+    session.refresh(obj)
+    assert obj.visibility == MediaVisibility.PRIVATE
+    assert obj.storage_bucket == "private-media"
+
+
+def test_update_object_commit_failure_removes_relocated_copy(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # If the metadata commit fails after a PRIVATE->PUBLIC copy landed, the
+    # orphaned (and world-readable) destination copy must be cleaned up before
+    # the error surfaces, leaving no bytes the metadata no longer points at.
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
+    object_key = obj.object_key
+    session.commit = MagicMock(side_effect=RuntimeError("db down"))
+    with pytest.raises(RuntimeError):
+        client.patch(
+            f"/media/v1/objects/{obj.id}",
+            json={"visibility": "public"},
+        )
+    mock_storage.copy_object.assert_called_once()
+    mock_storage.remove_object.assert_called_once_with(
+        bucket="public-media", object_key=object_key
+    )
+
+
+def test_update_object_commit_failure_same_bucket_no_cleanup(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # PRIVATE→TENANT maps to the same bucket, so no relocation occurs (old_bucket
+    # is None). If the commit still fails, the error must surface without any
+    # attempt to remove the destination copy (there is none).
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
+    session.commit = MagicMock(side_effect=RuntimeError("db down"))
+    with pytest.raises(RuntimeError):
+        client.patch(
+            f"/media/v1/objects/{obj.id}",
+            json={"visibility": "tenant"},
+        )
+    mock_storage.copy_object.assert_not_called()
+    mock_storage.remove_object.assert_not_called()
+
+
+def test_update_object_stale_copy_delete_failure_is_tolerated(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
+    mock_storage.remove_object.side_effect = RuntimeError("delete failed")
+    resp = client.patch(
+        f"/media/v1/objects/{obj.id}",
+        json={"visibility": "public"},
+    )
+    # The move is committed even if cleanup of the old copy fails.
+    assert resp.status_code == 200
+    assert resp.json()["storage_bucket"] == "public-media"
 
 
 def test_update_object_filename(client: TestClient, session: Session, current_user):
@@ -148,19 +245,62 @@ def test_update_object_forbidden(client: TestClient, session: Session, superuser
 # ── DELETE /media/v1/objects/{id} ─────────────────────────────────────────────
 
 
-def test_delete_object_soft_deletes(client: TestClient, session: Session, current_user):
+def test_delete_object_soft_deletes(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
     obj = _make_object(session, current_user.id)
     resp = client.delete(f"/media/v1/objects/{obj.id}")
     assert resp.status_code == 204
     session.refresh(obj)
     assert obj.deleted_at is not None
     assert obj.status == MediaObjectStatus.DELETED
+    # PRIVATE bytes are reachable only via presigned URLs; metadata soft-delete
+    # is sufficient, so the stored object is left in place.
+    mock_storage.remove_object.assert_not_called()
 
 
-def test_delete_object_idempotent(client: TestClient, session: Session, current_user):
+def test_delete_object_public_removes_bytes(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # A PUBLIC object is world-readable at a known URL; a soft-delete must also
+    # remove the bytes so "deleted" content stops being served.
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PUBLIC)
+    obj.storage_bucket = "public-media"
+    session.add(obj)
+    session.commit()
+    resp = client.delete(f"/media/v1/objects/{obj.id}")
+    assert resp.status_code == 204
+    session.refresh(obj)
+    assert obj.deleted_at is not None
+    mock_storage.remove_object.assert_called_once_with(
+        bucket="public-media", object_key=obj.object_key
+    )
+
+
+def test_delete_object_public_tolerates_remove_failure(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # Byte cleanup is best-effort: a storage error must not fail the delete or
+    # leave the metadata un-soft-deleted.
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PUBLIC)
+    obj.storage_bucket = "public-media"
+    session.add(obj)
+    session.commit()
+    mock_storage.remove_object.side_effect = RuntimeError("delete failed")
+    resp = client.delete(f"/media/v1/objects/{obj.id}")
+    assert resp.status_code == 204
+    session.refresh(obj)
+    assert obj.deleted_at is not None
+
+
+def test_delete_object_idempotent(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
     obj = _make_object(session, current_user.id, deleted=True)
     resp = client.delete(f"/media/v1/objects/{obj.id}")
     assert resp.status_code == 204
+    # Already deleted: no second attempt to remove bytes.
+    mock_storage.remove_object.assert_not_called()
 
 
 def test_delete_object_not_found(client: TestClient):

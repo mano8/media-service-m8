@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 
 from auth_sdk_m8.controllers.base import BaseController
 
-from media_service.app.deps import SessionDep
+from media_service.app.deps import SessionDep, StorageDep
 from media_service.controllers.admin import AdminController
 from media_service.core.deps import auth
 from media_service.schemas.admin import (
@@ -45,6 +45,8 @@ def get_stale_uploads(*, session: SessionDep) -> StaleUploadsResponse:
     response_model=PurgeStaleResponse,
     responses=BaseController.get_error_responses(),
 )
-def purge_stale_uploads(*, session: SessionDep) -> PurgeStaleResponse:
+def purge_stale_uploads(
+    *, session: SessionDep, storage: StorageDep
+) -> PurgeStaleResponse:
     """Mark all stale INITIATED sessions as EXPIRED and return the count purged."""
-    return AdminController.purge_stale_uploads(session=session)
+    return AdminController.purge_stale_uploads(session=session, storage=storage)

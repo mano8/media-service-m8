@@ -94,6 +94,7 @@ def update_object(
     *,
     session: SessionDep,
     current_user: CurrentUser,
+    storage: StorageDep,
     object_id: uuid.UUID,
     body: MediaObjectUpdate,
 ) -> MediaObjectPublic:
@@ -103,6 +104,7 @@ def update_object(
         current_user=current_user,
         object_id=object_id,
         update=body,
+        storage=storage,
     )
 
 
@@ -116,6 +118,7 @@ def delete_object(
     *,
     session: SessionDep,
     current_user: CurrentUser,
+    storage: StorageDep,
     object_id: uuid.UUID,
 ) -> None:
     """Soft-delete a media object."""
@@ -123,4 +126,5 @@ def delete_object(
         session=session,
         current_user=current_user,
         object_id=object_id,
+        storage=storage,
     )
