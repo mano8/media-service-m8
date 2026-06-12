@@ -78,7 +78,7 @@ def test_create_download_url_filename_with_quote_is_sanitized():
     disposition = kwargs["response_headers"]["response-content-disposition"]
     # The raw quote must not survive into the ASCII fallback (no header breakout).
     assert 'filename="evil".pdf"' not in disposition
-    assert "filename=\"evil_.pdf\"" in disposition
+    assert 'filename="evil_.pdf"' in disposition
     assert "filename*=UTF-8''evil%22.pdf" in disposition
 
 

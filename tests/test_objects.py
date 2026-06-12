@@ -188,6 +188,23 @@ def test_update_object_commit_failure_removes_relocated_copy(
     )
 
 
+def test_update_object_commit_failure_same_bucket_no_cleanup(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # PRIVATE→TENANT maps to the same bucket, so no relocation occurs (old_bucket
+    # is None). If the commit still fails, the error must surface without any
+    # attempt to remove the destination copy (there is none).
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
+    session.commit = MagicMock(side_effect=RuntimeError("db down"))
+    with pytest.raises(RuntimeError):
+        client.patch(
+            f"/media/v1/objects/{obj.id}",
+            json={"visibility": "tenant"},
+        )
+    mock_storage.copy_object.assert_not_called()
+    mock_storage.remove_object.assert_not_called()
+
+
 def test_update_object_stale_copy_delete_failure_is_tolerated(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
@@ -247,9 +264,7 @@ def test_delete_object_public_removes_bytes(
 ):
     # A PUBLIC object is world-readable at a known URL; a soft-delete must also
     # remove the bytes so "deleted" content stops being served.
-    obj = _make_object(
-        session, current_user.id, visibility=MediaVisibility.PUBLIC
-    )
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PUBLIC)
     obj.storage_bucket = "public-media"
     session.add(obj)
     session.commit()
@@ -267,9 +282,7 @@ def test_delete_object_public_tolerates_remove_failure(
 ):
     # Byte cleanup is best-effort: a storage error must not fail the delete or
     # leave the metadata un-soft-deleted.
-    obj = _make_object(
-        session, current_user.id, visibility=MediaVisibility.PUBLIC
-    )
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PUBLIC)
     obj.storage_bucket = "public-media"
     session.add(obj)
     session.commit()

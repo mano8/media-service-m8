@@ -57,9 +57,7 @@ def test_presigned_post_object_constrains_size_and_content_type():
 
 def test_post_upload_url_uses_path_style_addressing():
     storage = _client(MagicMock())
-    assert storage.post_upload_url(bucket="private-media").endswith(
-        "/private-media"
-    )
+    assert storage.post_upload_url(bucket="private-media").endswith("/private-media")
 
 
 def test_presigned_get_object_uses_settings_expiry():

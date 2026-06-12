@@ -160,7 +160,9 @@ def test_rate_limiter_per_ip_key_strips_control_chars():
         current_user=_make_user(),
         redis_client=redis,
     )
-    ip_key = next(k for k in (c.args[0] for c in redis.incr.call_args_list) if ":ip:" in k)
+    ip_key = next(
+        k for k in (c.args[0] for c in redis.incr.call_args_list) if ":ip:" in k
+    )
     assert "\n" not in ip_key
 
 
@@ -171,8 +173,6 @@ def test_rate_limiter_different_users_get_different_keys():
     limiter(request=_make_request(), current_user=user_a, redis_client=redis)
     limiter(request=_make_request(), current_user=user_b, redis_client=redis)
     user_keys = [
-        call.args[0]
-        for call in redis.incr.call_args_list
-        if ":ip:" not in call.args[0]
+        call.args[0] for call in redis.incr.call_args_list if ":ip:" not in call.args[0]
     ]
     assert user_keys[0] != user_keys[1]
