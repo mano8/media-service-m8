@@ -58,6 +58,7 @@ from auth_sdk_m8.schemas.user import UserModel  # noqa: E402
 import media_service.db_models.categories  # noqa: F401, E402
 import media_service.db_models.media_objects  # noqa: F401, E402
 import media_service.db_models.media_variants  # noqa: F401, E402
+import media_service.db_models.storage_usage  # noqa: F401, E402
 import media_service.db_models.upload_sessions  # noqa: F401, E402
 
 from media_service.app.deps import get_storage  # noqa: E402

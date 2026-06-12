@@ -51,6 +51,12 @@ class Settings(ConsumerServiceSettings):
         default_factory=dict
     )
 
+    # ── Storage quotas ───────────────────────────────────────────────────────
+    # Default ceilings applied to every owner/tenant scope without an explicit
+    # admin override. ``None`` means unlimited (no enforcement).
+    MEDIA_DEFAULT_QUOTA_BYTES: Optional[int] = Field(default=None, ge=1)
+    MEDIA_DEFAULT_QUOTA_OBJECTS: Optional[int] = Field(default=None, ge=1)
+
     # ── Media Redis ──────────────────────────────────────────────────────────
     MEDIA_REDIS_HOST: str = "media_redis_cache"
     MEDIA_REDIS_PORT: int = Field(default=6379, ge=1, le=65535)

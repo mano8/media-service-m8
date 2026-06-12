@@ -122,6 +122,12 @@ MINIO_BUCKET_ARCHIVE=archive-media
 MINIO_PRESIGNED_URL_EXPIRE_SECONDS=300
 MEDIA_MAX_UPLOAD_SIZE_BYTES=104857600
 
+# ── Storage quotas ───────────────────────────────────────────────────────────
+# Default per-owner ceilings, enforced at upload initiation. Leave unset for
+# unlimited; admins can raise/lower a single scope via PUT /v1/admin/quotas/{id}.
+# MEDIA_DEFAULT_QUOTA_BYTES=10737418240
+# MEDIA_DEFAULT_QUOTA_OBJECTS=10000
+
 # ── Media Redis (media-owned queues, rate limits, locks, cache) ───────────────
 # Separate from the auth Redis; uses the media:* key namespace.
 MEDIA_REDIS_HOST=127.0.0.1

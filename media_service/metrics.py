@@ -10,6 +10,7 @@ _uploads_initiated: Optional[Counter] = None
 _uploads_completed: Optional[Counter] = None
 _uploads_failed: Optional[Counter] = None
 _uploads_rejected: Optional[Counter] = None
+_quota_rejected: Optional[Counter] = None
 _bytes_uploaded: Optional[Counter] = None
 _download_urls_generated: Optional[Counter] = None
 
@@ -23,7 +24,7 @@ def setup(*, enabled: bool, api_prefix: str = "media") -> None:
 
 def _do_register(api_prefix: str) -> None:  # pragma: no cover
     global _uploads_initiated, _uploads_completed, _uploads_failed, _uploads_rejected
-    global _bytes_uploaded, _download_urls_generated
+    global _quota_rejected, _bytes_uploaded, _download_urls_generated
     p = api_prefix.strip().lstrip("/").replace("-", "_").replace("/", "_")
     pfx = f"{p}_" if p else ""
     _uploads_initiated = Counter(
@@ -46,6 +47,12 @@ def _do_register(api_prefix: str) -> None:  # pragma: no cover
     _uploads_rejected = Counter(
         f"{pfx}media_uploads_rejected_total",
         "Uploads rejected at completion by reason",
+        ["reason"],
+        registry=REGISTRY,
+    )
+    _quota_rejected = Counter(
+        f"{pfx}media_uploads_quota_rejected_total",
+        "Uploads refused at initiation by exceeded quota dimension",
         ["reason"],
         registry=REGISTRY,
     )
@@ -82,6 +89,11 @@ def inc_upload_failed() -> None:
 def inc_upload_rejected(reason: str) -> None:
     if _uploads_rejected is not None:
         _uploads_rejected.labels(reason=reason).inc()
+
+
+def inc_quota_rejected(reason: str) -> None:
+    if _quota_rejected is not None:
+        _quota_rejected.labels(reason=reason).inc()
 
 
 def inc_download_url_generated() -> None:

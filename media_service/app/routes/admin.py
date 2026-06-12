@@ -1,5 +1,7 @@
 """Admin routes — superuser-only storage inspection and housekeeping."""
 
+import uuid
+
 from fastapi import APIRouter, Depends
 
 from auth_sdk_m8.controllers.base import BaseController
@@ -9,8 +11,10 @@ from media_service.controllers.admin import AdminController
 from media_service.core.deps import auth
 from media_service.schemas.admin import (
     PurgeStaleResponse,
+    QuotaUpdateRequest,
     StaleUploadsResponse,
     StorageStatsResponse,
+    StorageUsagePublic,
 )
 
 router = APIRouter(
@@ -50,3 +54,41 @@ def purge_stale_uploads(
 ) -> PurgeStaleResponse:
     """Mark all stale INITIATED sessions as EXPIRED and return the count purged."""
     return AdminController.purge_stale_uploads(session=session, storage=storage)
+
+
+@router.get(
+    "/quotas/{owner_user_id}",
+    response_model=StorageUsagePublic,
+    responses=BaseController.get_error_responses(),
+)
+def get_quota(
+    *,
+    session: SessionDep,
+    owner_user_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = None,
+) -> StorageUsagePublic:
+    """Return storage usage and effective quotas for an owner/tenant scope."""
+    return AdminController.get_quota(
+        session=session, owner_user_id=owner_user_id, tenant_id=tenant_id
+    )
+
+
+@router.put(
+    "/quotas/{owner_user_id}",
+    response_model=StorageUsagePublic,
+    responses=BaseController.get_error_responses(),
+)
+def set_quota(
+    *,
+    session: SessionDep,
+    owner_user_id: uuid.UUID,
+    body: QuotaUpdateRequest,
+    tenant_id: uuid.UUID | None = None,
+) -> StorageUsagePublic:
+    """Set per-scope quota overrides for an owner/tenant scope."""
+    return AdminController.set_quota(
+        session=session,
+        owner_user_id=owner_user_id,
+        update=body,
+        tenant_id=tenant_id,
+    )

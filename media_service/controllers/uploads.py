@@ -10,6 +10,7 @@ from sqlmodel import Session
 from auth_sdk_m8.schemas.user import UserModel
 
 from media_service.core.config import settings
+from media_service.core.quotas import check_quota, record_object_added
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectPublic,
@@ -148,6 +149,14 @@ class UploadsController:
             )
         media_id = uuid.uuid4()
         owner_id = uuid.UUID(str(current_user.id))
+        # Refuse before issuing a presigned URL if the declared upload would push
+        # this owner past their byte or object-count quota.
+        check_quota(
+            session,
+            owner_user_id=owner_id,
+            tenant_id=None,
+            additional_bytes=req.expected_size_bytes,
+        )
         object_key = build_object_key(
             owner_user_id=owner_id,
             media_id=media_id,
@@ -291,6 +300,14 @@ class UploadsController:
         upload_session.completed_at = utcnow()
         session.add(media_object)
         session.add(upload_session)
+        # Credit the stored bytes to the owner's running totals in the same
+        # transaction that promotes the object, so usage never diverges.
+        record_object_added(
+            session,
+            owner_user_id=upload_session.owner_user_id,
+            tenant_id=upload_session.tenant_id,
+            size_bytes=stat.size,
+        )
         session.commit()
         session.refresh(media_object)
         inc_upload_completed(str(upload_session.category), stat.size)

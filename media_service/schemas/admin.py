@@ -28,6 +28,34 @@ class StorageStatsByCategory(SQLModel):
     total_bytes: int
 
 
+class StorageUsagePublic(SQLModel):
+    """Accounting totals and effective quotas for one owner/tenant scope."""
+
+    owner_user_id: uuid.UUID
+    tenant_id: uuid.UUID | None
+    total_bytes: int
+    object_count: int
+    # Per-scope overrides as stored (``None`` = falls back to the default).
+    quota_bytes: int | None
+    quota_objects: int | None
+    # Ceilings actually enforced (override else settings default; ``None`` =
+    # unlimited).
+    effective_quota_bytes: int | None
+    effective_quota_objects: int | None
+
+
+class QuotaUpdateRequest(SQLModel):
+    """Admin payload to set per-scope quota overrides.
+
+    Only the fields present in the request body are applied (``exclude_unset``),
+    so one ceiling can be changed without disturbing the other. Send an explicit
+    ``null`` to clear an override back to the settings default.
+    """
+
+    quota_bytes: int | None = None
+    quota_objects: int | None = None
+
+
 class StorageStatsResponse(SQLModel):
     """Aggregate storage statistics across all live objects."""
 
@@ -36,6 +64,7 @@ class StorageStatsResponse(SQLModel):
     total_objects: int
     total_bytes: int
     deleted_objects: int
+    usage: list[StorageUsagePublic]
 
 
 class StaleUploadSession(SQLModel):

@@ -16,6 +16,7 @@ from sqlmodel.sql.expression import SelectOfScalar
 from auth_sdk_m8.schemas.user import UserModel
 
 from media_service.core.config import settings
+from media_service.core.quotas import record_object_removed
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectPublic,
@@ -340,6 +341,14 @@ class ObjectsController:
         obj.status = MediaObjectStatus.DELETED
         obj.updated_at = utcnow()
         session.add(obj)
+        # Debit the freed bytes from the owner's totals in the same transaction
+        # as the soft-delete, so quota headroom is reclaimed immediately.
+        record_object_removed(
+            session,
+            owner_user_id=obj.owner_user_id,
+            tenant_id=obj.tenant_id,
+            size_bytes=obj.size_bytes,
+        )
         session.commit()
         if obj.visibility == MediaVisibility.PUBLIC:
             _best_effort_remove(
