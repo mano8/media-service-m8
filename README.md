@@ -77,12 +77,27 @@ excluded unless a superuser passes `include_deleted=true`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/v1/admin/storage/stats` | Aggregate counts/bytes by status and category |
+| GET | `/v1/admin/storage/stats` | Aggregate counts/bytes by status and category, plus per-owner usage |
 | GET | `/v1/admin/uploads/stale` | List `INITIATED` sessions past `expires_at` |
 | POST | `/v1/admin/uploads/purge-stale` | Bulk-expire stale sessions |
+| GET | `/v1/admin/quotas/{owner_user_id}` | Usage totals and effective quotas for a scope |
+| PUT | `/v1/admin/quotas/{owner_user_id}` | Set per-scope `quota_bytes` / `quota_objects` overrides |
 
 The guard is applied at the router level via
 `dependencies=[Depends(get_current_active_superuser)]`.
+
+## Storage quotas & accounting
+
+Every completed upload credits, and every soft-delete debits, a running
+`(owner_user_id, tenant_id)` total in the `storage_usage` table (single source
+of accounting truth in [`core/quotas.py`](media_service/core/quotas.py)).
+`POST /v1/uploads/initiate` refuses up front when the declared
+`expected_size_bytes` would push the owner past their ceiling: **413** over the
+byte quota, **409** over the object-count quota. Ceilings resolve to the
+per-scope admin override if set, otherwise the `MEDIA_DEFAULT_QUOTA_BYTES` /
+`MEDIA_DEFAULT_QUOTA_OBJECTS` defaults (unset = unlimited). Refusals increment
+`media_uploads_quota_rejected_total{reason="bytes"|"objects"}`. Both quota
+endpoints (and the optional `?tenant_id=`) are superuser-only.
 
 ### Category & Dashboard
 

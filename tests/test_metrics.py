@@ -46,6 +46,19 @@ def test_inc_upload_completed_increments_both_counters(monkeypatch):
     mock_bytes.labels.return_value.inc.assert_called_once_with(4096)
 
 
+def test_inc_quota_rejected_noop_when_disabled():
+    metrics_mod._quota_rejected = None
+    metrics_mod.inc_quota_rejected("bytes")  # must not raise
+
+
+def test_inc_quota_rejected_calls_labels_inc(monkeypatch):
+    mock_counter = MagicMock()
+    monkeypatch.setattr(metrics_mod, "_quota_rejected", mock_counter)
+    metrics_mod.inc_quota_rejected("objects")
+    mock_counter.labels.assert_called_once_with(reason="objects")
+    mock_counter.labels.return_value.inc.assert_called_once()
+
+
 def test_inc_upload_failed_noop_when_disabled():
     metrics_mod._uploads_failed = None
     metrics_mod.inc_upload_failed()  # must not raise
