@@ -68,6 +68,12 @@ jobs:
           name: bandit-security-report
           path: bandit-report.json
 
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run pip-audit (dependency vulnerability scan)
+        run: pip-audit -r media_service/requirements_dev.txt
+
       - name: Trivy filesystem scan (CRITICAL/HIGH CVEs and secrets)
         uses: aquasecurity/trivy-action@bfa4b33a029b9aa80ddb784b45574c30e072c59e # master
         with:

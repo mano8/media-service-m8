@@ -24,6 +24,7 @@ from media_service.schemas.uploads import (
     UploadInitiateResponse,
 )
 from media_service.core.validation import (
+    is_allowed_declared_mime,
     max_size_for_category,
     mime_consistent,
     sniff_mime,
@@ -86,6 +87,7 @@ def _ensure_completable(session: Session, upload_session: UploadSession) -> None
 def _reject_upload(
     *,
     session: Session,
+    storage: ObjectStorage,
     upload_session: UploadSession,
     reason: str,
     mime_type: str,
@@ -111,6 +113,15 @@ def _reject_upload(
     session.add(media_object)
     session.add(upload_session)
     session.commit()
+    # The REJECTED row keeps the audit trail; the stored bytes must not linger
+    # in the (possibly public) bucket. Remove them best-effort, like abort.
+    try:
+        storage.remove_object(
+            bucket=upload_session.storage_bucket,
+            object_key=upload_session.object_key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("storage.remove_object failed during reject: %s", exc)
     inc_upload_rejected(reason)
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -130,6 +141,11 @@ class UploadsController:
         storage: ObjectStorage,
     ) -> UploadInitiateResponse:
         """Create an UploadSession and return a presigned PUT URL."""
+        if not is_allowed_declared_mime(req.mime_type):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unsupported content type: {req.mime_type}",
+            )
         media_id = uuid.uuid4()
         owner_id = uuid.UUID(str(current_user.id))
         object_key = build_object_key(
@@ -137,21 +153,22 @@ class UploadsController:
             media_id=media_id,
             category=req.category,
             filename=req.original_filename,
-            tenant_id=req.tenant_id,
         )
         bucket = bucket_for_visibility(req.visibility)
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
-        upload_url = create_upload_url(
+        upload_url, upload_fields = create_upload_url(
             storage=storage,
             bucket=bucket,
             object_key=object_key,
+            content_type=req.mime_type,
+            max_size_bytes=max_size_for_category(str(req.category)),
             expires_seconds=expires,
         )
         expires_at = utcnow() + timedelta(seconds=expires)
         upload_session = UploadSession(
             id=media_id,
             owner_user_id=owner_id,
-            tenant_id=req.tenant_id,
+            tenant_id=None,
             category=req.category,
             visibility=req.visibility,
             storage_bucket=bucket,
@@ -167,6 +184,7 @@ class UploadsController:
         return UploadInitiateResponse(
             session_id=media_id,
             upload_url=upload_url,
+            upload_fields=upload_fields,
             expires_at=expires_at,
         )
 
@@ -198,6 +216,7 @@ class UploadsController:
         category = str(upload_session.category)
         _reject_kw = dict(
             session=session,
+            storage=storage,
             upload_session=upload_session,
             mime_type=declared_mime,
             size_bytes=stat.size,
@@ -234,6 +253,24 @@ class UploadsController:
                 ) from exc
             if not verify_sha256(content, req.sha256):
                 _reject_upload(**_reject_kw, reason="sha256_mismatch")
+
+        # 4. Pin the stored Content-Type to the server-validated declared type.
+        # The presigned PUT let the client choose the Content-Type, which is
+        # served verbatim on direct public-bucket access; normalising it here
+        # stops a validated-but-mistyped object from being served as an active
+        # type (e.g. text/html) and triggering stored XSS.
+        try:
+            storage.set_object_content_type(
+                bucket=upload_session.storage_bucket,
+                object_key=upload_session.object_key,
+                content_type=declared_mime,
+            )
+        except Exception as exc:
+            _logger.warning("set_object_content_type failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Failed to finalize object content type.",
+            ) from exc
 
         media_object = MediaObject(
             id=upload_session.id,

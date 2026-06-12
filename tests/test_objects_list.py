@@ -178,6 +178,19 @@ def test_list_filter_q_filename(client: TestClient, session: Session, current_us
     assert resp.json()["count"] == 1
 
 
+def test_list_filter_q_escapes_like_wildcards(
+    client: TestClient, session: Session, current_user
+):
+    # "%" / "_" in the search term must match literally, not as LIKE wildcards.
+    _make_object(session, current_user.id, filename="50%_off.pdf")
+    _make_object(session, current_user.id, filename="photo.png")
+    # An unescaped "%" would match every filename; escaped, it only hits the literal.
+    resp = client.get("/media/v1/objects?q=50%25")  # %25 == "%"
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["items"][0]["original_filename"] == "50%_off.pdf"
+
+
 # ── sorting ───────────────────────────────────────────────────────────────────
 
 

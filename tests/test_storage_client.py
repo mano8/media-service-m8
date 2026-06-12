@@ -33,24 +33,31 @@ def test_remove_object_delegates():
     minio.remove_object.assert_called_once_with("b", "k")
 
 
-def test_presigned_put_object_uses_settings_expiry():
-    from media_service.core.config import settings
+def test_presigned_post_object_constrains_size_and_content_type():
+    from minio.datatypes import PostPolicy
 
     minio = MagicMock()
+    minio.presigned_post_policy.return_value = {"policy": "p", "x-amz-signature": "s"}
     storage = _client(minio)
-    storage.presigned_put_object(bucket="b", object_key="k")
-    minio.presigned_put_object.assert_called_once_with(
-        "b", "k", expires=timedelta(seconds=settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS)
+    url, fields = storage.presigned_post_object(
+        bucket="public-media",
+        object_key="k",
+        content_type="image/png",
+        max_size_bytes=4096,
     )
+    # The signed policy carries the size + content-type conditions.
+    minio.presigned_post_policy.assert_called_once()
+    (policy,), _ = minio.presigned_post_policy.call_args
+    assert isinstance(policy, PostPolicy)
+    # key + Content-Type are echoed back so the client submits the pinned values.
+    assert fields["key"] == "k"
+    assert fields["Content-Type"] == "image/png"
+    assert url == "http://minio:9000/public-media"
 
 
-def test_presigned_put_object_uses_custom_expiry():
-    minio = MagicMock()
-    storage = _client(minio)
-    storage.presigned_put_object(bucket="b", object_key="k", expires_seconds=120)
-    minio.presigned_put_object.assert_called_once_with(
-        "b", "k", expires=timedelta(seconds=120)
-    )
+def test_post_upload_url_uses_path_style_addressing():
+    storage = _client(MagicMock())
+    assert storage.post_upload_url(bucket="private-media").endswith("/private-media")
 
 
 def test_presigned_get_object_uses_settings_expiry():
@@ -77,6 +84,44 @@ def test_presigned_get_object_passes_response_headers():
     minio.presigned_get_object.assert_called_once_with(
         "b", "k", expires=timedelta(seconds=60), response_headers=headers
     )
+
+
+def test_set_object_content_type_replaces_via_server_side_copy():
+    from minio.commonconfig import REPLACE
+
+    minio = MagicMock()
+    storage = _client(minio)
+    storage.set_object_content_type(
+        bucket="public-media", object_key="k", content_type="image/png"
+    )
+    minio.copy_object.assert_called_once()
+    args, kwargs = minio.copy_object.call_args
+    assert args[0] == "public-media"
+    assert args[1] == "k"
+    # CopySource points back at the same object (in-place rewrite).
+    source = args[2]
+    assert source.bucket_name == "public-media"
+    assert source.object_name == "k"
+    assert kwargs["metadata"] == {"Content-Type": "image/png"}
+    assert kwargs["metadata_directive"] == REPLACE
+
+
+def test_copy_object_server_side_copies_across_buckets():
+    minio = MagicMock()
+    storage = _client(minio)
+    storage.copy_object(
+        src_bucket="private-media",
+        src_object_key="k",
+        dest_bucket="public-media",
+        dest_object_key="k",
+    )
+    minio.copy_object.assert_called_once()
+    args, _ = minio.copy_object.call_args
+    assert args[0] == "public-media"
+    assert args[1] == "k"
+    source = args[2]
+    assert source.bucket_name == "private-media"
+    assert source.object_name == "k"
 
 
 def test_get_object_head_reads_partial_bytes():

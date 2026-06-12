@@ -3,6 +3,7 @@
 import base64
 import binascii
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -19,6 +20,7 @@ from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectPublic,
     MediaObjectStatus,
+    MediaVisibility,
     utcnow,
 )
 from media_service.schemas.objects import (
@@ -28,8 +30,11 @@ from media_service.schemas.objects import (
     ObjectListResponse,
 )
 from media_service.metrics import inc_download_url_generated
+from media_service.storage.buckets import bucket_for_visibility
 from media_service.storage.client import ObjectStorage
 from media_service.storage.presign import create_download_url
+
+_logger = logging.getLogger(__name__)
 
 _SORT_COLUMNS: dict[str, Any] = {
     "created_at": MediaObject.created_at,
@@ -107,8 +112,10 @@ def _apply_filters(
     if params.created_to is not None:
         statement = statement.where(col(MediaObject.created_at) <= params.created_to)
     if params.q is not None:
+        # autoescape treats %/_ in the user term as literals (no SQLi here since
+        # the value is bound, but unescaped wildcards would broaden the match).
         statement = statement.where(
-            col(MediaObject.original_filename).contains(params.q)
+            col(MediaObject.original_filename).contains(params.q, autoescape=True)
         )
     return statement
 
@@ -139,6 +146,56 @@ def _load_object(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions."
         )
     return obj
+
+
+def _relocate_for_visibility(
+    storage: ObjectStorage,
+    obj: MediaObject,
+    new_visibility: MediaVisibility | None,
+) -> str | None:
+    """Copy bytes into the bucket matching a new visibility, repointing ``obj``.
+
+    Keeps stored bytes and ``visibility`` metadata consistent: the copy lands in
+    the destination bucket before the metadata is committed. Returns the previous
+    bucket (to delete once the commit succeeds) when the object actually moved,
+    otherwise ``None``.
+    """
+    if new_visibility is None or new_visibility == obj.visibility:
+        return None
+    new_bucket = bucket_for_visibility(new_visibility)
+    old_bucket = obj.storage_bucket
+    if new_bucket == old_bucket:
+        return None
+    try:
+        storage.copy_object(
+            src_bucket=old_bucket,
+            src_object_key=obj.object_key,
+            dest_bucket=new_bucket,
+            dest_object_key=obj.object_key,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to relocate object for the new visibility.",
+        ) from exc
+    obj.storage_bucket = new_bucket
+    return old_bucket
+
+
+def _best_effort_remove(
+    storage: ObjectStorage, *, bucket: str, object_key: str, context: str
+) -> None:
+    """Best-effort delete of stored bytes; logs and swallows storage errors."""
+    try:
+        storage.remove_object(bucket=bucket, object_key=object_key)
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning(
+            "Failed to remove object %s/%s (%s): %s",
+            bucket,
+            object_key,
+            context,
+            exc,
+        )
 
 
 class ObjectsController:
@@ -219,15 +276,46 @@ class ObjectsController:
         current_user: UserModel,
         object_id: uuid.UUID,
         update: MediaObjectUpdate,
+        storage: ObjectStorage,
     ) -> MediaObjectPublic:
-        """Patch allowed metadata fields on a media object."""
+        """Patch allowed metadata fields on a media object.
+
+        A ``visibility`` change relocates the stored bytes to the matching
+        bucket so metadata never diverges from where the object actually lives.
+        """
         obj = _load_object(session, current_user, object_id)
         update_data = update.model_dump(exclude_unset=True)
+        old_bucket = _relocate_for_visibility(
+            storage, obj, update_data.get("visibility")
+        )
+        new_bucket = obj.storage_bucket
+        object_key = obj.object_key
         obj.sqlmodel_update(update_data)
         obj.updated_at = utcnow()
         session.add(obj)
-        session.commit()
+        try:
+            session.commit()
+        except Exception:
+            # The copy already landed in the destination bucket but no metadata
+            # now points at it. For a PRIVATE->PUBLIC move that orphan would be
+            # world-readable, so best-effort remove it before surfacing the error.
+            session.rollback()
+            if old_bucket is not None:
+                _best_effort_remove(
+                    storage,
+                    bucket=new_bucket,
+                    object_key=object_key,
+                    context="visibility-relocation-commit-failure",
+                )
+            raise
         session.refresh(obj)
+        if old_bucket is not None:
+            _best_effort_remove(
+                storage,
+                bucket=old_bucket,
+                object_key=obj.object_key,
+                context="visibility-relocation",
+            )
         return MediaObjectPublic.model_validate(obj)
 
     @staticmethod
@@ -236,8 +324,15 @@ class ObjectsController:
         session: Session,
         current_user: UserModel,
         object_id: uuid.UUID,
+        storage: ObjectStorage,
     ) -> None:
-        """Soft-delete a media object (idempotent)."""
+        """Soft-delete a media object (idempotent).
+
+        A PUBLIC object's bytes are world-readable at a known URL, so a metadata-
+        only soft-delete would leave them exposed after the user "deleted" them.
+        Remove those bytes best-effort; private/sensitive buckets are reachable
+        only via presigned URLs, so their metadata soft-delete is sufficient.
+        """
         obj = _load_object(session, current_user, object_id, include_deleted=True)
         if obj.deleted_at is not None:
             return
@@ -246,3 +341,10 @@ class ObjectsController:
         obj.updated_at = utcnow()
         session.add(obj)
         session.commit()
+        if obj.visibility == MediaVisibility.PUBLIC:
+            _best_effort_remove(
+                storage,
+                bucket=obj.storage_bucket,
+                object_key=obj.object_key,
+                context="soft-delete",
+            )
