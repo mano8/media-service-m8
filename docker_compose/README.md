@@ -23,11 +23,11 @@ Five ready-to-run stacks, each targeting a distinct use case. Each runs the same
 | Stack | Database | Algorithm | Token mode | Secrets | Monitoring | Hardening | Best for |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [quickstart_m8](quickstart_m8/) | MariaDB | HS256 | `stateful` | env file | — | — | **Start here** — fastest onboarding |
-| [postgres_m8](postgres_m8/) | PostgreSQL 16 | HS256 | `stateful` | env file | — | — | PostgreSQL projects |
+| [postgres_m8](postgres_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | — | — | PostgreSQL projects |
 | [rs256_m8](rs256_m8/) | MariaDB | RS256 | `hybrid` | env file | — | — | Asymmetric signing + JWKS |
-| [metrics_m8](metrics_m8/) | PostgreSQL 16 | HS256 | `stateful` | env file | Prometheus + Grafana | — | Metrics dashboards |
-| [hardened_m8](hardened_m8/) | PostgreSQL 16 | RS256 | `stateful` | env file | Prometheus + Grafana | container + network | Hardened posture without Vault |
-| [vault_m8](vault_m8/) | PostgreSQL 16 | RS256 | `stateful` | **HashiCorp Vault** | Prometheus + Grafana | container + network | Hardened + secrets manager |
+| [metrics_m8](metrics_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | Prometheus + Grafana | — | Metrics dashboards |
+| [hardened_m8](hardened_m8/) | PostgreSQL 18 | RS256 | `stateful` | env file | Prometheus + Grafana | container + network | Hardened posture without Vault |
+| [vault_m8](vault_m8/) | PostgreSQL 18 | RS256 | `stateful` | **HashiCorp Vault** | Prometheus + Grafana | container + network | Hardened + secrets manager |
 
 **Decision guide:**
 
@@ -59,7 +59,7 @@ auth_user_service :8000            fastapi_service :8000
           ┌───────┴────────┐
           ▼                ▼
         m8_db          redis_cache
-   (MariaDB / PG)      (Redis 7.4)
+   (MariaDB / PG)      (Redis 8.8)
 
 (metrics_m8, hardened_m8, and vault_m8 also include Prometheus + Grafana)
 ```

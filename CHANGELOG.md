@@ -5,6 +5,50 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased] — SD · auth event-stream consumer + platform alignment
+
+> Tracks **`fastapi-m8 1.5.0`** / **`auth-sdk-m8 1.2.1`** / **`fa-auth-m8`** latest.
+
+### Added
+
+- **`core/events.py`** — wires fa-auth's private SSE bridge into the app lifespan
+  via `build_event_stream_client` (`fastapi-m8 >= 1.5.0`). `handle_auth_event`
+  dispatches on the signed `payload["event_type"]` (`session.revoked` →
+  `evict_jti` / `evict_user`; `user.deleted` → `evict_user`); `handle_auth_gap`
+  flushes the validation cache on an unresumable gap. Best-effort cache
+  accelerator only — the JTI blacklist behind `INTROSPECTION_URL` stays
+  authoritative and stream loss is non-fatal. The client starts only when
+  `INTROSPECTION_URL` is configured. New tunables `EVENT_STREAM_CONNECT_TIMEOUT`
+  / `EVENT_STREAM_READ_TIMEOUT` (inherited from `ConsumerServiceSettings`).
+
+### Changed
+
+- **`requirements_base.txt`** — `fastapi-m8` pin `>=1.4.0` → `>=1.5.0`, picking up
+  the tiered response-header model (`auth-sdk-m8 1.2.1`). No service code change:
+  `create_app` wires `add_security_headers_middleware` and the two new knobs
+  (`HSTS_ENABLED`, `CONTENT_SECURITY_POLICY_ENABLED`) are inherited from
+  `CommonSettings`.
+- **Response security headers — tiered model.** HSTS and CSP, previously inferred
+  from the production gate, are now **express opt-in** (both default off) and are
+  **never emitted when `ENVIRONMENT=local`** even when enabled. Documented in
+  README and every `.example_env` / `*.env.example`.
+- **Env examples** (`media_service/.example_env`,
+  `docker_compose/hardened_media_m8/{media,auth}.env.example`) — added the
+  three-tier **Response security headers** block and the **Auth event stream**
+  (SSE bridge) settings; corrected the stale "event bus not wired into any
+  service yet" note now that the SSE consumer is live. `auth.env.example` gains
+  the fa-auth publisher-side stream knobs (`EVENT_STREAM_ENABLED`,
+  `EVENT_STREAM_BUFFER_SIZE`, `EVENT_STREAM_HEARTBEAT_SECONDS`,
+  `EVENT_STREAM_MAX_QUEUE`).
+- **Compose stack** (`docker_compose/hardened_media_m8`) — image bumps
+  (PostgreSQL 18, Redis 8.8, Traefik v3.7.5, Prometheus 26.04); Traefik hardened
+  to mirror `fa-auth-m8`: TLS 1.2 floor + strong ciphers, pinned `172.16.0.0/16`
+  subnet with gateway-trust allowlists, dashboard on the loopback `traefik`
+  entrypoint (`api.insecure=false`), encoded-character path hardening, and a
+  longer DB `start_period` for slow first-boot init.
+
+---
+
 ## [Unreleased] — Phase 11 · upload validation & integrity hardening
 
 ### Added
