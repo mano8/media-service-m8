@@ -12,6 +12,7 @@ from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectStatus,
     MediaVisibility,
+    ScanStatus,
 )
 
 
@@ -24,6 +25,7 @@ def _make_object(
     *,
     visibility: MediaVisibility = MediaVisibility.PRIVATE,
     status: MediaObjectStatus = MediaObjectStatus.UPLOADED,
+    scan_status: ScanStatus = ScanStatus.CLEAN,
     deleted: bool = False,
 ) -> MediaObject:
     oid = uuid.uuid4()
@@ -38,6 +40,7 @@ def _make_object(
         mime_type="application/pdf",
         size_bytes=1024,
         status=status,
+        scan_status=scan_status,
         deleted_at=datetime.now(timezone.utc) if deleted else None,
     )
     session.add(obj)

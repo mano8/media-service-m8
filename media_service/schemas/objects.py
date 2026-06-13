@@ -11,6 +11,7 @@ from media_service.db_models.media_objects import (
     MediaObjectPublic,
     MediaObjectStatus,
     MediaVisibility,
+    ScanStatus,
 )
 
 SortField = Literal["created_at", "size_bytes"]
@@ -56,3 +57,9 @@ class ObjectListResponse(SQLModel):
     items: list[MediaObjectPublic]
     next_cursor: str | None = None
     count: int
+
+
+class ScanResultRequest(SQLModel):
+    """Internal worker callback carrying an antivirus verdict for an object."""
+
+    scan_status: ScanStatus

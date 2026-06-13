@@ -22,6 +22,7 @@ from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectStatus,
     MediaVisibility,
+    ScanStatus,
 )
 from media_service.schemas.objects import ObjectListParams
 
@@ -36,6 +37,7 @@ def _make_object(
     visibility: MediaVisibility = MediaVisibility.PRIVATE,
     tenant_id: uuid.UUID | None = None,
     status: MediaObjectStatus = MediaObjectStatus.UPLOADED,
+    scan_status: ScanStatus = ScanStatus.CLEAN,
 ) -> MediaObject:
     oid = uuid.uuid4()
     obj = MediaObject(
@@ -50,6 +52,7 @@ def _make_object(
         mime_type="application/pdf",
         size_bytes=1024,
         status=status,
+        scan_status=scan_status,
     )
     session.add(obj)
     session.commit()

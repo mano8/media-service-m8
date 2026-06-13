@@ -1,0 +1,116 @@
+"""Tests for POST /v1/objects/{id}/variants:generate (producer side)."""
+
+import uuid
+
+from fastapi.testclient import TestClient
+from sqlmodel import Session, select
+
+from media_service.core.arq import VARIANTS_TASK
+from media_service.db_models.media_objects import (
+    MediaObject,
+    MediaObjectStatus,
+    ScanStatus,
+)
+from media_service.db_models.variant_jobs import VariantJob, VariantJobStatus
+
+
+def _make_object(
+    session: Session,
+    owner_id: uuid.UUID,
+    *,
+    mime: str = "image/png",
+    status: MediaObjectStatus = MediaObjectStatus.UPLOADED,
+) -> MediaObject:
+    oid = uuid.uuid4()
+    obj = MediaObject(
+        id=oid,
+        owner_user_id=owner_id,
+        category="asset",
+        visibility="private",
+        storage_bucket="private-media",
+        object_key=f"users/{owner_id}/asset/{oid}/original/pic",
+        original_filename="pic.png",
+        mime_type=mime,
+        size_bytes=2048,
+        status=status,
+        scan_status=ScanStatus.CLEAN,
+    )
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return obj
+
+
+def _gen(client: TestClient, object_id: uuid.UUID, presets):
+    return client.post(
+        f"/media/v1/objects/{object_id}/variants:generate",
+        json={"presets": presets},
+    )
+
+
+def test_generate_creates_job_and_enqueues(
+    client: TestClient, session: Session, current_user, fake_arq_pool
+):
+    obj = _make_object(session, uuid.UUID(str(current_user.id)))
+    resp = _gen(client, obj.id, ["thumb", "large"])
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == VariantJobStatus.QUEUED
+    assert body["variants_expected"] == 2
+    assert body["requested_presets"] == ["thumb", "large"]
+
+    job = session.get(VariantJob, uuid.UUID(body["id"]))
+    assert job is not None
+    assert job.media_object_id == obj.id
+
+    fake_arq_pool.enqueue_job.assert_awaited_once()
+    args, kwargs = fake_arq_pool.enqueue_job.await_args
+    assert args[0] == VARIANTS_TASK
+    assert kwargs["_job_id"] == body["id"]
+    assert len(args[1].specs) == 2
+
+
+def test_generate_rejects_non_uploaded_object(
+    client: TestClient, session: Session, current_user
+):
+    obj = _make_object(
+        session, uuid.UUID(str(current_user.id)), status=MediaObjectStatus.READY
+    )
+    resp = _gen(client, obj.id, ["thumb"])
+    assert resp.status_code == 409
+
+
+def test_generate_rejects_non_image(client: TestClient, session: Session, current_user):
+    obj = _make_object(session, uuid.UUID(str(current_user.id)), mime="application/pdf")
+    resp = _gen(client, obj.id, ["thumb"])
+    assert resp.status_code == 422
+
+
+def test_generate_unknown_preset_returns_422(
+    client: TestClient, session: Session, current_user
+):
+    obj = _make_object(session, uuid.UUID(str(current_user.id)))
+    resp = _gen(client, obj.id, ["does-not-exist"])
+    assert resp.status_code == 422
+
+
+def test_generate_missing_object_returns_404(client: TestClient):
+    resp = _gen(client, uuid.uuid4(), ["thumb"])
+    assert resp.status_code == 404
+
+
+def test_generate_forbidden_for_non_owner(
+    client: TestClient, session: Session, superuser
+):
+    obj = _make_object(session, uuid.UUID(str(superuser.id)))
+    resp = _gen(client, obj.id, ["thumb"])
+    assert resp.status_code == 403
+
+
+def test_generate_no_job_created_on_validation_failure(
+    client: TestClient, session: Session, current_user
+):
+    obj = _make_object(session, uuid.UUID(str(current_user.id)), mime="application/pdf")
+    _gen(client, obj.id, ["thumb"])
+    rows = session.exec(select(VariantJob)).all()
+    assert rows == []

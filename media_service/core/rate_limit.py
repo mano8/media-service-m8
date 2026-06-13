@@ -1,7 +1,7 @@
 """Per-user Redis rate limiter for the media service."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, cast
 
 import redis as redis_lib
 from fastapi import Depends, HTTPException, Request, status
@@ -57,7 +57,9 @@ class RateLimiter:
 
     def _check(self, redis_client: redis_lib.Redis, key: str, limit: int) -> None:
         """Increment one window and raise 429 if it exceeds *limit*."""
-        count = redis_client.incr(key)
+        # The sync client returns an int; redis-py's shared sync/async typing
+        # widens INCR to ``Awaitable | int``, so narrow it for the comparisons.
+        count = cast(int, redis_client.incr(key))
         if count == 1:
             redis_client.expire(key, self.window_seconds)
         if count > limit:

@@ -5,6 +5,67 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased] — Phase 12 · worker backbone · antivirus · image variants · dynamic presets
+
+Media-service becomes the **producer** for asynchronous background work handled
+by `media-worker-m8`, consuming the shared `media-sdk-m8` for object storage and
+the producer↔consumer job contracts.
+
+### Added
+
+- **SDK consumption** — `media-sdk-m8>=0.1.0` and `arq>=0.26.0` added to
+  `requirements_base.txt`. `storage/client.py` is now a thin shim that builds an
+  `ObjectStorageConfig` from `settings` and re-exports the SDK's `ObjectStorage`
+  / `get_minio_client`; `app/deps.get_storage()` injects an SDK `ObjectStorage`
+  from that config.
+- **`core/arq.py`** — ARQ pool dependency (`get_arq_pool`, overridable in tests;
+  real `create_pool` is live-only) plus `enqueue_scan` / `enqueue_variants`
+  helpers built from `MEDIA_REDIS_*`.
+- **Internal service auth** — `core/deps.require_service_token` compares
+  `Authorization: Bearer <token>` to the new `MEDIA_INTERNAL_SERVICE_TOKEN`
+  setting via `secrets.compare_digest` (**403** otherwise). New
+  `app/routes/internal.py` router (all routes service-token guarded).
+- **Antivirus flow** — `complete_upload` enqueues a `scan_object` job (object is
+  `PENDING`); `POST /v1/internal/objects/{id}/scan-result` applies the verdict
+  (CLEAN → `READY`/downloadable, else `QUARANTINED`; idempotent).
+- **Download gating** — `…/download-url` now returns **409** until
+  `scan_status == CLEAN`.
+- **Image variants (producer)** — `core/media_types.py`
+  (`is_processable_image` / `content_type_for_format`),
+  `storage/keys.build_variant_key`, `db_models/variant_jobs.py` (`VariantJob`),
+  `schemas/variants.py`, `controllers/variants.py`, and `app/routes/variants.py`:
+  `POST /v1/objects/{id}/variants:generate` (202 + job, enqueues
+  `generate_variants`), `GET …/variants`, `GET …/variants/jobs/{jid}`,
+  `DELETE …/variants/{vid}`, plus internal register/job-status endpoints.
+- **Dynamic presets** — `db_models/image_presets.py` (`ImagePreset`),
+  `schemas/presets.py` (imgtools-free local mirror), `core/presets.py`
+  (`BUILTIN_PRESETS` thumb/small/medium/large + `resolve_presets` that merges
+  built-ins with user rows, user shadows same-named built-in, expands per format
+  into `VariantSpec`s), `controllers/presets.py`, and `app/routes/presets.py`
+  (`GET/POST /v1/presets`, `PATCH/DELETE /v1/presets/{id}`).
+- **Tests** — `test_arq`, `test_internal_scan`, `test_scan_gating`,
+  `test_media_types`, `test_variant_presets`, `test_variants_generate`,
+  `test_variants_query`, `test_variants_internal`, `test_presets`, extended
+  `test_storage_keys` / `test_core_deps`; `conftest` gains a `fake_arq_pool`
+  override and a `service_client`. **100% line+branch coverage** maintained.
+
+### Changed
+
+- **`storage/client.py`** reduced to the SDK shim (the `ObjectStorage` wrapper
+  now lives in and is tested by `media-sdk-m8`); `test_storage_client.py`
+  rewritten to cover the shim only.
+- **Config / env** — new `MEDIA_INTERNAL_SERVICE_TOKEN`, consumed by the
+  `media_service` container via its `media.env` env_file (added to
+  `media.env.example` as literal `changethis`, with entropy guidance in
+  comments). It is a service-level secret, not a compose-interpolated one, so it
+  is not added to the root `.env.example`.
+
+> New tables `app_variant_job` and `app_image_preset` are created by an Alembic
+> migration generated against the live database and applied automatically on
+> compose up.
+
+---
+
 ## [0.0.3] — 2026-06-13 · Phase 15a · access control — visibility & tenant enforcement
 
 ### Added

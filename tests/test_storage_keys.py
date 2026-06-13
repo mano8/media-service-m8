@@ -2,7 +2,7 @@
 
 import uuid
 
-from media_service.storage.keys import build_object_key
+from media_service.storage.keys import build_object_key, build_variant_key
 
 
 _OWNER = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -73,3 +73,43 @@ def test_key_falls_back_when_filename_empties_after_strip():
             filename=filename,
         )
         assert key == f"users/{_OWNER}/document/{_MEDIA}/original/file"
+
+
+# ── build_variant_key ─────────────────────────────────────────────────────────
+
+
+def test_variant_key_without_tenant():
+    key = build_variant_key(
+        owner_user_id=_OWNER,
+        media_id=_MEDIA,
+        category="document",
+        variant_name="web_webp",
+        filename="web_webp.webp",
+    )
+    assert key == (f"users/{_OWNER}/document/{_MEDIA}/variants/web_webp/web_webp.webp")
+
+
+def test_variant_key_with_tenant_and_normalisation():
+    key = build_variant_key(
+        owner_user_id=_OWNER,
+        media_id=_MEDIA,
+        category=" Chat Attachment ",
+        variant_name="Big Thumb",
+        filename="../x/out.webp",
+        tenant_id=_TENANT,
+    )
+    assert key == (
+        f"tenants/{_TENANT}/users/{_OWNER}/chat_attachment/"
+        f"{_MEDIA}/variants/big_thumb/out.webp"
+    )
+
+
+def test_variant_key_falls_back_when_filename_empties():
+    key = build_variant_key(
+        owner_user_id=_OWNER,
+        media_id=_MEDIA,
+        category="asset",
+        variant_name="thumb_webp",
+        filename="dir/",
+    )
+    assert key.endswith("/variants/thumb_webp/file")
