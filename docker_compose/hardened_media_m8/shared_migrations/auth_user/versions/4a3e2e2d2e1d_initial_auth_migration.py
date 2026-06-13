@@ -1,8 +1,8 @@
 """Initial auth migration
 
-Revision ID: ac4af1745df5
+Revision ID: 4a3e2e2d2e1d
 Revises: 
-Create Date: 2026-06-12 21:01:11.690838
+Create Date: 2026-06-13 01:25:24.364775
 
 """
 from typing import Sequence, Union
@@ -13,7 +13,7 @@ import sqlmodel
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'ac4af1745df5'
+revision: str = '4a3e2e2d2e1d'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -36,12 +36,14 @@ def upgrade() -> None:
     sa.Column('hashed_password', sqlmodel.sql.sqltypes.AutoString(length=255), nullable=True),
     sa.Column('oauth_user_id', sqlmodel.sql.sqltypes.AutoString(length=256), nullable=True),
     sa.Column('telegram_id', sqlmodel.sql.sqltypes.AutoString(length=256), nullable=True),
+    sa.Column('tenant_id', sa.Uuid(), nullable=True),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('oauth_user_id'),
     sa.UniqueConstraint('telegram_id')
     )
     op.create_index(op.f('ix_auth_user_email'), 'auth_user', ['email'], unique=True)
     op.create_index(op.f('ix_auth_user_id'), 'auth_user', ['id'], unique=False)
+    op.create_index(op.f('ix_auth_user_tenant_id'), 'auth_user', ['tenant_id'], unique=False)
     op.create_table('auth_api_key',
     sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
@@ -106,6 +108,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_auth_api_key_user_id'), table_name='auth_api_key')
     op.drop_index(op.f('ix_auth_api_key_id'), table_name='auth_api_key')
     op.drop_table('auth_api_key')
+    op.drop_index(op.f('ix_auth_user_tenant_id'), table_name='auth_user')
     op.drop_index(op.f('ix_auth_user_id'), table_name='auth_user')
     op.drop_index(op.f('ix_auth_user_email'), table_name='auth_user')
     op.drop_table('auth_user')
