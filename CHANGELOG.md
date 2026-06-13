@@ -123,7 +123,7 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
-## [Unreleased] — Phase 11 · upload validation & integrity hardening
+## [0.0.2] — 2026-06-12 · Phase 11 · upload validation & integrity hardening
 
 ### Added
 
