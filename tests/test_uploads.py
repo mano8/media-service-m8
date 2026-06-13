@@ -8,7 +8,11 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
+from auth_sdk_m8.schemas.user import UserModel
+
+from media_service.controllers.uploads import UploadsController
 from media_service.db_models.upload_sessions import UploadSession, UploadSessionStatus
+from media_service.schemas.uploads import UploadInitiateRequest
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -114,6 +118,28 @@ def test_initiate_upload_ignores_client_tenant_id(
     stored = session.get(UploadSession, sid)
     assert stored is not None
     assert stored.tenant_id is None
+
+
+def test_initiate_upload_stamps_tenant_from_claim(
+    mock_storage: MagicMock, session: Session
+):
+    # Tenancy comes from the authenticated principal's signed claim (not the
+    # request body): a tenanted caller's session is tagged with that tenant, so
+    # the promoted object inherits it and TENANT visibility resolves correctly.
+    tenant = uuid.uuid4()
+    user = UserModel(
+        id=uuid.uuid4(), email="tenant@example.com", is_active=True, tenant_id=tenant
+    )
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    resp = UploadsController.initiate_upload(
+        session=session,
+        current_user=user,
+        req=UploadInitiateRequest(**_INITIATE_BODY),
+        storage=mock_storage,
+    )
+    stored = session.get(UploadSession, resp.session_id)
+    assert stored is not None
+    assert stored.tenant_id == tenant
 
 
 def test_initiate_upload_rejects_disallowed_mime(

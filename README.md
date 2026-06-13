@@ -124,10 +124,12 @@ listing returns) is governed by each object's `visibility`:
 
 The owner and superusers always have access regardless of visibility. A caller
 with no tenant never matches a `TENANT` object. Mutations (`PATCH`/`DELETE`)
-remain owner-or-superuser only. Because `UserModel` does not yet carry a tenant
-claim (objects are created untenanted), `TENANT` currently behaves as
-owner/superuser-only; the rule activates unchanged once a tenant claim is wired
-through auth.
+remain owner-or-superuser only.
+
+Tenancy is taken from the caller's `tenant_id` claim (surfaced on `UserModel` by
+`auth-sdk-m8`, requires `fastapi-m8>=1.6.0`) and stamped onto each object at
+upload — never from the request body. Objects created by an untenanted caller
+stay `tenant_id IS NULL`, for which `TENANT` resolves as owner/superuser-only.
 
 ## Visibility → bucket mapping
 

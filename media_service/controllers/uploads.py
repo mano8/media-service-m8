@@ -149,12 +149,17 @@ class UploadsController:
             )
         media_id = uuid.uuid4()
         owner_id = uuid.UUID(str(current_user.id))
+        # Tenancy is taken from the authenticated principal's signed claim, never
+        # from the client request body (which is ignored). Untenanted callers
+        # yield None and behave exactly as before. This is what activates TENANT
+        # visibility and per-tenant quota scoping end to end.
+        tenant_id = current_user.tenant_id
         # Refuse before issuing a presigned URL if the declared upload would push
-        # this owner past their byte or object-count quota.
+        # this owner past their byte or object-count quota (scoped per tenant).
         check_quota(
             session,
             owner_user_id=owner_id,
-            tenant_id=None,
+            tenant_id=tenant_id,
             additional_bytes=req.expected_size_bytes,
         )
         object_key = build_object_key(
@@ -177,7 +182,7 @@ class UploadsController:
         upload_session = UploadSession(
             id=media_id,
             owner_user_id=owner_id,
-            tenant_id=None,
+            tenant_id=tenant_id,
             category=req.category,
             visibility=req.visibility,
             storage_bucket=bucket,
