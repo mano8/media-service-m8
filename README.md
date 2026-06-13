@@ -89,6 +89,55 @@ excluded unless a superuser passes `include_deleted=true`.
 The guard is applied at the router level via
 `dependencies=[Depends(get_current_active_superuser)]`.
 
+### Image variants — `/{prefix}/v1/objects/{id}/variants`
+
+| Method | Path | Auth | Rate limit | Purpose |
+| --- | --- | --- | --- | --- |
+| POST | `/v1/objects/{id}/variants:generate` | user | 30/min | Create a variant job from named presets (**202**) and enqueue it |
+| GET | `/v1/objects/{id}/variants` | user | — | List generated variants |
+| GET | `/v1/objects/{id}/variants/jobs/{jid}` | user | — | Variant job progress |
+| DELETE | `/v1/objects/{id}/variants/{vid}` | user | — | Delete a variant (row + bytes) |
+
+`:generate` accepts `{ "presets": ["thumb", "web", …] }`. The object must be
+`UPLOADED` (**409** otherwise) and a processable image (**422** otherwise);
+unknown preset names are **422**. The resolver expands each preset × format into
+the `VariantSpec`s carried by the enqueued `generate_variants` job — media-service
+never imports `imgtools_m8`.
+
+### Presets — `/{prefix}/v1/presets`
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/v1/presets` | user | Built-in presets merged with the caller's named presets |
+| POST | `/v1/presets` | user | Create a user-owned named preset (**201**) |
+| PATCH | `/v1/presets/{id}` | user | Replace a preset's recipe |
+| DELETE | `/v1/presets/{id}` | user | Delete a user preset |
+
+Built-in defaults (`thumb`/`small`/`medium`/`large`) ship as code constants; a
+user row of the same name shadows the built-in at resolve time. Each preset is a
+local, imgtools-free recipe: one geometry (`image_size`) rendered into one+
+formats (`ext` ∈ `WEBP|JPEG|PNG|GIF|AVIF`, `quality` 1–100).
+
+### Internal (service-to-service) — `/{prefix}/v1/internal`
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/v1/internal/objects/{id}/scan-result` | Apply an antivirus verdict (CLEAN → `READY`, else `QUARANTINED`) |
+| POST | `/v1/internal/objects/{id}/variants` | Register a worker-written variant (idempotent) |
+| PATCH | `/v1/internal/variant-jobs/{jid}` | Advance a variant job's status/progress |
+
+Every internal route requires `Authorization: Bearer <MEDIA_INTERNAL_SERVICE_TOKEN>`,
+compared in constant time (`secrets.compare_digest`); anything missing or
+mismatched is **403**. These routes are called only by `media-worker-m8`.
+
+## Antivirus scanning
+
+`complete_upload` leaves a new object `scan_status = PENDING` and enqueues a
+`scan_object` job on the media Redis queue. `…/download-url` returns **409** until
+the worker reports back via `scan-result`: a CLEAN verdict promotes the object to
+`READY` and makes it downloadable; an infected object is purged by the worker and
+marked `QUARANTINED`. The callback is idempotent.
+
 ## Storage quotas & accounting
 
 Every completed upload credits, and every soft-delete debits, a running
@@ -186,7 +235,17 @@ commented set of settings.
 
 Media-owned state (rate limits, queues, locks, caches) uses the `MEDIA_REDIS_*`
 settings and the `media:*` key namespace — **separate** from the auth Redis. Rate
-limiting fails open if the media Redis is unavailable.
+limiting fails open if the media Redis is unavailable. The same Redis backs the
+ARQ job queue (`scan_object`, `generate_variants`) consumed by `media-worker-m8`.
+
+## Worker integration
+
+Media-service is the **producer** for background work run by `media-worker-m8`,
+sharing storage + job contracts via `media-sdk-m8`. Two settings wire it up:
+
+- `MEDIA_INTERNAL_SERVICE_TOKEN` — shared bearer token the worker presents on the
+  `/v1/internal/*` callbacks (set the **same** value here and on the worker).
+- `MEDIA_REDIS_*` — the queue the worker reads jobs from.
 
 ## Observability
 

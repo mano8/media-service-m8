@@ -33,8 +33,10 @@ _TEST_ENV = {
     "MINIO_ACCESS_KEY": "minioadmin",
     "MINIO_SECRET_KEY": "TestMinio!Secret1",
     "MEDIA_REDIS_PASSWORD": "TestRedis!Pass1secure",
+    "MEDIA_INTERNAL_SERVICE_TOKEN": "TestService!Token1secure",
     "METRICS_ENABLED": "false",
 }
+SERVICE_TOKEN = _TEST_ENV["MEDIA_INTERNAL_SERVICE_TOKEN"]
 for _k, _v in _TEST_ENV.items():
     os.environ.setdefault(_k, _v)
 
@@ -50,18 +52,21 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 from sqlmodel.pool import StaticPool  # noqa: E402
-from unittest.mock import MagicMock  # noqa: E402
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 
 from auth_sdk_m8.schemas.user import UserModel  # noqa: E402
 
 # Import all table models so SQLModel.metadata is populated before create_all.
 import media_service.db_models.categories  # noqa: F401, E402
+import media_service.db_models.image_presets  # noqa: F401, E402
 import media_service.db_models.media_objects  # noqa: F401, E402
 import media_service.db_models.media_variants  # noqa: F401, E402
 import media_service.db_models.storage_usage  # noqa: F401, E402
 import media_service.db_models.upload_sessions  # noqa: F401, E402
+import media_service.db_models.variant_jobs  # noqa: F401, E402
 
 from media_service.app.deps import get_storage  # noqa: E402
+from media_service.core.arq import get_arq_pool  # noqa: E402
 from media_service.core.deps import get_current_user, get_db  # noqa: E402
 from media_service.core.rate_limit import get_redis_client  # noqa: E402
 from media_service.main import app  # noqa: E402
@@ -117,6 +122,14 @@ def mock_redis() -> MagicMock:
     return mock
 
 
+@pytest.fixture
+def fake_arq_pool() -> MagicMock:
+    """Fake ARQ pool whose ``enqueue_job`` is an awaitable spy."""
+    pool = MagicMock()
+    pool.enqueue_job = AsyncMock()
+    return pool
+
+
 def _make_user(
     is_superuser: bool = False, user_id: uuid.UUID | None = None
 ) -> UserModel:
@@ -147,6 +160,7 @@ def _make_client(
     mock_storage: MagicMock,
     user: UserModel,
     mock_redis: MagicMock,
+    fake_arq_pool: MagicMock,
 ) -> TestClient:
     def _override_db():
         yield session
@@ -160,10 +174,14 @@ def _make_client(
     def _override_redis():
         return mock_redis
 
+    async def _override_arq_pool():
+        return fake_arq_pool
+
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_storage] = _override_storage
     app.dependency_overrides[get_redis_client] = _override_redis
+    app.dependency_overrides[get_arq_pool] = _override_arq_pool
     return TestClient(app)
 
 
@@ -173,9 +191,10 @@ def client(
     mock_storage: MagicMock,
     current_user: UserModel,
     mock_redis: MagicMock,
+    fake_arq_pool: MagicMock,
 ):
     """TestClient authenticated as a regular user."""
-    tc = _make_client(session, mock_storage, current_user, mock_redis)
+    tc = _make_client(session, mock_storage, current_user, mock_redis, fake_arq_pool)
     with tc as c:
         yield c
     app.dependency_overrides.clear()
@@ -187,9 +206,32 @@ def superuser_client(
     mock_storage: MagicMock,
     superuser: UserModel,
     mock_redis: MagicMock,
+    fake_arq_pool: MagicMock,
 ):
     """TestClient authenticated as a superuser."""
-    tc = _make_client(session, mock_storage, superuser, mock_redis)
+    tc = _make_client(session, mock_storage, superuser, mock_redis, fake_arq_pool)
+    with tc as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def service_client(session: Session, mock_storage: MagicMock):
+    """TestClient for internal service-token routes (no user auth).
+
+    Sends a valid ``Authorization: Bearer`` service token by default; override
+    the header per-request to exercise the 403 path.
+    """
+
+    def _override_db():
+        yield session
+
+    def _override_storage():
+        return mock_storage
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_storage] = _override_storage
+    tc = TestClient(app, headers={"Authorization": f"Bearer {SERVICE_TOKEN}"})
     with tc as c:
         yield c
     app.dependency_overrides.clear()

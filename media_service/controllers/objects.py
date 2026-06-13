@@ -22,6 +22,7 @@ from media_service.db_models.media_objects import (
     MediaObjectPublic,
     MediaObjectStatus,
     MediaVisibility,
+    ScanStatus,
     utcnow,
 )
 from media_service.schemas.objects import (
@@ -330,6 +331,13 @@ class ObjectsController:
     ) -> DownloadUrlResponse:
         """Generate a presigned download URL for a media object."""
         obj = _load_object_for_read(session, current_user, object_id)
+        # Bytes are non-downloadable until an antivirus scan clears them; an
+        # unscanned/infected object must never hand out a working URL.
+        if obj.scan_status != ScanStatus.CLEAN:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Object is not available for download until it passes scanning.",
+            )
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
         url = create_download_url(
             storage=storage,
@@ -389,6 +397,31 @@ class ObjectsController:
                 object_key=obj.object_key,
                 context="visibility-relocation",
             )
+        return MediaObjectPublic.model_validate(obj)
+
+    @staticmethod
+    def apply_scan_result(
+        *,
+        session: Session,
+        object_id: uuid.UUID,
+        scan_status: ScanStatus,
+    ) -> MediaObjectPublic:
+        """Apply a worker antivirus verdict to an object (idempotent).
+
+        ``CLEAN`` promotes the object to ``READY`` and downloadable; any other
+        verdict (the worker purges infected bytes before calling back) marks it
+        ``QUARANTINED``. Re-applying the same verdict is a no-op.
+        """
+        obj = _fetch_object(session, object_id, include_deleted=True)
+        if scan_status == ScanStatus.CLEAN:
+            obj.scan_status = ScanStatus.CLEAN
+            obj.status = MediaObjectStatus.READY
+        else:
+            obj.scan_status = ScanStatus.QUARANTINED
+        obj.updated_at = utcnow()
+        session.add(obj)
+        session.commit()
+        session.refresh(obj)
         return MediaObjectPublic.model_validate(obj)
 
     @staticmethod

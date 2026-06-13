@@ -31,7 +31,13 @@ class Settings(ConsumerServiceSettings):
     secret_fields = ConsumerServiceSettings.secret_fields + [
         "MINIO_SECRET_KEY",
         "MEDIA_REDIS_PASSWORD",
+        "MEDIA_INTERNAL_SERVICE_TOKEN",
     ]
+
+    # ── Internal service auth ─────────────────────────────────────────────────
+    # Shared bearer token the worker presents on internal callbacks. Compared
+    # with secrets.compare_digest; must be a high-entropy random value in prod.
+    MEDIA_INTERNAL_SERVICE_TOKEN: SecretStr
 
     # ── MinIO ────────────────────────────────────────────────────────────────
     MINIO_HOST: str = "minio"
