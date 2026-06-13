@@ -5,7 +5,7 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
-## [Unreleased] — Phase 12 · worker backbone · antivirus · image variants · dynamic presets
+## [0.0.4] — 2026-06-14 · Phase 12 · worker backbone · antivirus · image variants · dynamic presets
 
 Media-service becomes the **producer** for asynchronous background work handled
 by `media-worker-m8`, consuming the shared `media-sdk-m8` for object storage and
