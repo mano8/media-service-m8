@@ -5,6 +5,47 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [0.0.3] — 2026-06-13 · Phase 15a · access control — visibility & tenant enforcement
+
+### Added
+
+- **`require_visibility_access(obj, current_user)`** in
+  `controllers/objects.py` — authorizes read/download by the object's
+  `visibility`: owner and superusers always pass; `PUBLIC` is readable by any
+  authenticated user; `TENANT` only by callers in the same (non-null) tenant;
+  `PRIVATE`/`SENSITIVE` by nobody else (**403** otherwise). A null caller tenant
+  never matches a `TENANT` object.
+- **Tenant stamping at `initiate_upload`** — the upload session (and the object
+  it promotes to) is now tagged with the caller's `tenant_id` taken from the
+  authenticated principal's signed claim (never the request body). Quota checks
+  are scoped to the same `(owner, tenant)`. This activates `TENANT` visibility
+  and per-tenant quota end to end; untenanted callers yield `None` and behave
+  exactly as before.
+- **`tests/test_access_control.py`** — full visibility matrix over the helper,
+  the `GET`/`download-url` routes, and list scoping (incl. tenant isolation);
+  plus a tenant-stamping upload test.
+
+### Changed
+
+- **`GET /v1/objects/{id}` and `…/download-url`** now enforce `visibility`
+  instead of bare ownership: previously every non-owner was refused, so `PUBLIC`
+  and same-tenant `TENANT` objects were unreachable by users entitled to them.
+- **`GET /v1/objects` (listing)** — a non-superuser now sees their own objects
+  **plus** anything `PUBLIC` and same-tenant `TENANT` objects, mirroring
+  `require_visibility_access` so the list never surfaces a row the caller could
+  not also fetch by id. `PRIVATE`/`SENSITIVE` objects of other owners stay
+  hidden. Owner-scoping and superuser scoping are unchanged.
+- **Requirements** — `fastapi-m8` floor bumped `>=1.5.0` → `>=1.6.0`, which
+  pins `auth-sdk-m8>=1.3.0` (the release that carries the `tenant_id` claim on
+  `UserModel`). No new direct dependency.
+
+> No schema change (`MediaObject.tenant_id` already existed). Tenant matching is
+> now live wherever the auth layer issues a `tenant_id` claim; objects created
+> by untenanted callers stay `tenant_id IS NULL` and `TENANT` behaves as
+> owner/superuser-only for them.
+
+---
+
 ## [Unreleased] — Phase 13 · storage quotas & accounting
 
 ### Added
@@ -82,7 +123,7 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
-## [Unreleased] — Phase 11 · upload validation & integrity hardening
+## [0.0.2] — 2026-06-12 · Phase 11 · upload validation & integrity hardening
 
 ### Added
 

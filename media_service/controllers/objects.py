@@ -89,8 +89,24 @@ def _scoped_query(
         if not params.include_deleted:
             statement = statement.where(col(MediaObject.deleted_at).is_(None))
         return statement
+    # Non-superusers see objects they are entitled to read: their own, anything
+    # PUBLIC, and TENANT objects within their own (non-null) tenant. This mirrors
+    # the per-object rule in require_visibility_access so the listing never
+    # surfaces a row the caller could not also fetch by id.
     owner_id = uuid.UUID(str(current_user.id))
-    statement = statement.where(col(MediaObject.owner_user_id) == owner_id)
+    visibility_clauses = [
+        col(MediaObject.owner_user_id) == owner_id,
+        col(MediaObject.visibility) == MediaVisibility.PUBLIC,
+    ]
+    user_tenant = _user_tenant_id(current_user)
+    if user_tenant is not None:
+        visibility_clauses.append(
+            and_(
+                col(MediaObject.visibility) == MediaVisibility.TENANT,
+                col(MediaObject.tenant_id) == user_tenant,
+            )
+        )
+    statement = statement.where(or_(*visibility_clauses))
     return statement.where(col(MediaObject.deleted_at).is_(None))
 
 
@@ -121,17 +137,24 @@ def _apply_filters(
     return statement
 
 
-def _load_object(
+def _user_tenant_id(current_user: UserModel) -> uuid.UUID | None:
+    """Return the caller's tenant as a UUID, or ``None`` when untenanted.
+
+    ``UserModel`` does not (yet) carry a tenant claim, so this reads it
+    defensively: callers without a tenant get ``None``, which never matches a
+    ``TENANT`` object (see :func:`require_visibility_access`).
+    """
+    raw = getattr(current_user, "tenant_id", None)
+    return uuid.UUID(str(raw)) if raw is not None else None
+
+
+def _fetch_object(
     session: Session,
-    current_user: UserModel,
     object_id: uuid.UUID,
     *,
     include_deleted: bool = False,
 ) -> MediaObject:
-    """Fetch a MediaObject, enforcing ownership for non-superusers.
-
-    Raises 404 for missing records (or soft-deleted unless include_deleted=True).
-    """
+    """Load a MediaObject by id, raising 404 for missing/soft-deleted rows."""
     obj = session.get(MediaObject, object_id)
     if obj is None:
         raise HTTPException(
@@ -141,11 +164,60 @@ def _load_object(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Media object not found."
         )
+    return obj
+
+
+def require_visibility_access(obj: MediaObject, current_user: UserModel) -> None:
+    """Authorize read/download access to ``obj`` by its visibility policy.
+
+    Superusers and the owner always pass. Otherwise: ``PUBLIC`` is readable by
+    any authenticated user; ``TENANT`` only by callers in the same (non-null)
+    tenant; ``PRIVATE``/``SENSITIVE`` by nobody else. Raises 403 when denied.
+    """
+    owner_id = uuid.UUID(str(current_user.id))
+    if current_user.is_superuser or obj.owner_user_id == owner_id:
+        return
+    if obj.visibility == MediaVisibility.PUBLIC:
+        return
+    if obj.visibility == MediaVisibility.TENANT:
+        user_tenant = _user_tenant_id(current_user)
+        if user_tenant is not None and obj.tenant_id == user_tenant:
+            return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions."
+    )
+
+
+def _load_object(
+    session: Session,
+    current_user: UserModel,
+    object_id: uuid.UUID,
+    *,
+    include_deleted: bool = False,
+) -> MediaObject:
+    """Fetch a MediaObject, enforcing ownership for non-superusers.
+
+    Used by mutating paths (update/delete) where only the owner or a superuser
+    may act. Raises 404 for missing records (or soft-deleted unless
+    include_deleted=True) and 403 when a non-owner is not a superuser.
+    """
+    obj = _fetch_object(session, object_id, include_deleted=include_deleted)
     owner_id = uuid.UUID(str(current_user.id))
     if not current_user.is_superuser and obj.owner_user_id != owner_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions."
         )
+    return obj
+
+
+def _load_object_for_read(
+    session: Session,
+    current_user: UserModel,
+    object_id: uuid.UUID,
+) -> MediaObject:
+    """Fetch a MediaObject for read/download, enforcing visibility access."""
+    obj = _fetch_object(session, object_id)
+    require_visibility_access(obj, current_user)
     return obj
 
 
@@ -245,7 +317,7 @@ class ObjectsController:
         object_id: uuid.UUID,
     ) -> MediaObjectPublic:
         """Return public metadata for a media object."""
-        obj = _load_object(session, current_user, object_id)
+        obj = _load_object_for_read(session, current_user, object_id)
         return MediaObjectPublic.model_validate(obj)
 
     @staticmethod
@@ -257,7 +329,7 @@ class ObjectsController:
         storage: ObjectStorage,
     ) -> DownloadUrlResponse:
         """Generate a presigned download URL for a media object."""
-        obj = _load_object(session, current_user, object_id)
+        obj = _load_object_for_read(session, current_user, object_id)
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
         url = create_download_url(
             storage=storage,

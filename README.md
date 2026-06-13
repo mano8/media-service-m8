@@ -64,8 +64,11 @@ On any failure the session is marked `ABORTED`, a `MediaObject` with
 | PATCH | `/v1/objects/{object_id}` | user | — | Update mutable metadata |
 | DELETE | `/v1/objects/{object_id}` | user | — | Soft-delete (idempotent) |
 
-`GET /v1/objects` is owner-scoped for regular users (superusers see all and may
-pass `owner_user_id` / `include_deleted`). Supported query parameters:
+`GET /v1/objects` returns, for a regular user, their own objects plus anything
+`PUBLIC` and same-tenant `TENANT` objects (superusers see all and may pass
+`owner_user_id` / `include_deleted`); `PRIVATE`/`SENSITIVE` objects of other
+owners stay hidden — see [Access control](#access-control--visibility). Supported
+query parameters:
 `category`, `visibility`, `status`, `mime_prefix` (e.g. `image/`),
 `created_from`/`created_to`, `q` (filename contains), `sort_by`
 (`created_at`|`size_bytes`), `order` (`asc`|`desc`), and `limit` (1–100).
@@ -107,6 +110,26 @@ inherited consumer-template routers retained for ecosystem parity.
 > **Note:** media variants (`db_models/media_variants.py`, `schemas/variants.py`,
 > `app/routes/variants.py`) are **reserved stubs** — the model exists but no
 > variant routes are wired yet.
+
+## Access control · visibility
+
+Read and download access (`GET /v1/objects/{id}`, `…/download-url`, and what a
+listing returns) is governed by each object's `visibility`:
+
+| Visibility | Who may read / download |
+| --- | --- |
+| `PUBLIC` | Any authenticated user |
+| `TENANT` | The owner, superusers, and callers in the **same (non-null) tenant** |
+| `PRIVATE` / `SENSITIVE` | The owner and superusers only |
+
+The owner and superusers always have access regardless of visibility. A caller
+with no tenant never matches a `TENANT` object. Mutations (`PATCH`/`DELETE`)
+remain owner-or-superuser only.
+
+Tenancy is taken from the caller's `tenant_id` claim (surfaced on `UserModel` by
+`auth-sdk-m8`, requires `fastapi-m8>=1.6.0`) and stamped onto each object at
+upload — never from the request body. Objects created by an untenanted caller
+stay `tenant_id IS NULL`, for which `TENANT` resolves as owner/superuser-only.
 
 ## Visibility → bucket mapping
 
