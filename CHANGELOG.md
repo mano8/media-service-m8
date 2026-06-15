@@ -5,7 +5,56 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
-## [Unreleased] — Phase 14 · lifecycle, retention & orphan reconciliation
+## [0.0.6] — 2026-06-15 · Phase 15b · share links
+
+Adds time-boxed, signed, shareable download links for a media object. The owner
+mints and revokes them; anyone holding the token resolves it to a presigned
+download — subject to the same antivirus scan-gating and after the visibility
+rules from Phase 15a.
+
+### Added
+
+- **`db_models/share_tokens.py`** — `ShareToken` table (multi-tenant scope
+  mirroring `StorageUsage`): `expires_at`, optional `max_uses` + `uses`
+  counter, `revoked` flag, `created_at`. The `media_object_id` foreign key is
+  **`ON DELETE CASCADE`** so Phase 14's hard-purge (a real `DELETE` on the
+  parent object) drops dependent tokens instead of stranding them.
+- **`schemas/shares.py`** — `ShareTokenCreate` (`expires_in?`, `max_uses?`),
+  `ShareTokenPublic` (embeds the signed token), and `ShareTokenListResponse`.
+  The caller chooses `expires_in`; the default and the upper bound are
+  operator-configurable (`MEDIA_SHARE_DEFAULT_EXPIRES_SECONDS` /
+  `MEDIA_SHARE_MAX_EXPIRES_SECONDS`), and a request above the cap is rejected
+  (**422**).
+- **`controllers/shares.py`** — `SharesController` with sync `@staticmethod`s:
+  - `create` / `list_for_object` / `revoke` — owner-only (reuse `_load_object`
+    ownership; superusers may also revoke).
+  - `resolve` — verifies the HMAC signature, rejects expired / revoked /
+    exhausted links (**403**), refuses objects that have not cleared antivirus
+    scanning (**409**), records one use, and returns a short-lived presigned
+    GET.
+  - Tokens are HMAC-SHA256 authenticators over the row id, signed with a
+    **dedicated, media-owned `MEDIA_SHARE_SIGNING_SECRET`** — kept independent of
+    any auth-sdk token secret (e.g. `ACCESS_SECRET_KEY`) so the auth layer's key
+    lifecycle/contract can never break share-link verification. Required setting
+    (fails validation at startup if unset); rotation invalidates open links.
+- **`app/routes/shares.py`** — `POST /v1/objects/{id}/shares` (201),
+  `GET /v1/objects/{id}/shares`, `DELETE /v1/shares/{token_id}` (204), and the
+  **public** `GET /v1/shares/{token}`; router registered in `app/main.py`.
+- **`tests/test_shares.py`** — create / list / revoke, expiry, `max_uses`
+  exhaustion, revoked + bad-signature rejection, scan-gating, and cascade-delete
+  on hard-purge. 100% line + branch coverage.
+
+### Notes
+
+- New settings in `docker_compose/hardened_media_m8/media.env.example`: required
+  `MEDIA_SHARE_SIGNING_SECRET` (literal `changethis`, complexity in the comment)
+  plus the operator-tunable `MEDIA_SHARE_DEFAULT_EXPIRES_SECONDS` /
+  `MEDIA_SHARE_MAX_EXPIRES_SECONDS`.
+- The `m8_app` Alembic migration for the `share_token` table is **generated and
+  applied automatically on `compose up`** (the hardened stack autoruns
+  migrations); it is not hand-authored here.
+
+## [0.0.5] — 2026-06-15 · Phase 14 · lifecycle, retention & orphan reconciliation
 
 Introduces a **service-owned arq maintenance worker** — a second run-mode of the
 *same* media-service image (no new build / Docker Hub publish), launched with a
@@ -164,7 +213,7 @@ the producer↔consumer job contracts.
 
 ---
 
-## [Unreleased] — Phase 13 · storage quotas & accounting
+## [0.0.3] — 2026-06-13 · Phase 13 · storage quotas & accounting
 
 ### Added
 
@@ -197,7 +246,7 @@ the producer↔consumer job contracts.
 
 ---
 
-## [Unreleased] — SD · auth event-stream consumer + platform alignment
+## [0.0.2] — 2026-06-12 · SD · auth event-stream consumer + platform alignment
 
 > Tracks **`fastapi-m8 1.5.0`** / **`auth-sdk-m8 1.2.1`** / **`fa-auth-m8`** latest.
 
@@ -288,7 +337,7 @@ the producer↔consumer job contracts.
 
 ---
 
-## [Unreleased] — Phase 10 · object listing, filtering & pagination
+## [0.0.1] — 2026-06-07 · Phase 10 · object listing, filtering & pagination
 
 ### Added
 

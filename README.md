@@ -76,6 +76,31 @@ Pagination is keyset/cursor based: the response carries an opaque `next_cursor`;
 pass it back as `?cursor=` to fetch the next page. Soft-deleted objects are
 excluded unless a superuser passes `include_deleted=true`.
 
+### Share links — `/{prefix}/v1/shares` & `/{prefix}/v1/objects/{id}/shares`
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/v1/objects/{object_id}/shares` | owner | Mint a time-boxed signed share link (**201**) |
+| GET | `/v1/objects/{object_id}/shares` | owner | List an object's share links |
+| DELETE | `/v1/shares/{token_id}` | owner | Revoke a share link (idempotent, **204**) |
+| GET | `/v1/shares/{token}` | **public** | Resolve a signed token → presigned download URL |
+
+Creation, listing and revocation are owner-only (superusers may revoke any
+link); resolution is **public** so a holder of the token needs no account. The
+token is an HMAC-signed authenticator over the link's row id — signed with a
+dedicated, media-service-owned `MEDIA_SHARE_SIGNING_SECRET` (kept independent of
+any auth-sdk token secret so the auth layer's key lifecycle never breaks share
+links; rotating it invalidates outstanding links). A link resolves only while
+it is **not expired**, **not revoked**, and **under
+`max_uses`**, and — like the owner-facing download path — only once the object
+has passed antivirus scanning (otherwise **409**); each successful resolution
+increments the use counter. `expires_in` (seconds) and `max_uses` are optional
+on create: the caller picks the lifetime, falling back to
+`MEDIA_SHARE_DEFAULT_EXPIRES_SECONDS` (default 7 days) and capped at
+`MEDIA_SHARE_MAX_EXPIRES_SECONDS` (default 30 days) — both operator-configurable;
+a request above the cap is rejected (**422**). Tokens carry an `ON DELETE CASCADE`
+foreign key, so a hard-purged object drops its links automatically.
+
 ### Admin — `/{prefix}/v1/admin` (superuser only)
 
 | Method | Path | Purpose |
