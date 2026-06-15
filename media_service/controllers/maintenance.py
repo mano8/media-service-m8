@@ -17,7 +17,7 @@ Two cross-cutting hazards are handled here deliberately:
 """
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlmodel import Session, col, select
 
@@ -130,8 +130,37 @@ class MaintenanceController:
         Rows younger than ``grace`` and keys belonging to still-INITIATED upload
         sessions are excluded so an in-flight upload is never flagged.
         """
-        cutoff = utcnow() - grace
+        db_orphans = MaintenanceController._find_db_orphans(
+            session=session, storage=storage, cutoff=utcnow() - grace, limit=limit
+        )
+        storage_orphans, repaired = MaintenanceController._find_storage_orphans(
+            session=session,
+            storage=storage,
+            buckets=buckets,
+            limit=limit,
+            repair=repair,
+        )
+        return OrphanReport(
+            db_orphans=db_orphans,
+            storage_orphans=storage_orphans,
+            db_orphan_count=len(db_orphans),
+            storage_orphan_count=len(storage_orphans),
+            repaired=repaired,
+        )
 
+    @staticmethod
+    def _find_db_orphans(
+        *,
+        session: Session,
+        storage: ObjectStorage,
+        cutoff: datetime,
+        limit: int,
+    ) -> list[OrphanRecord]:
+        """Direction (b): live rows whose bytes are missing (report-only).
+
+        Rows newer than ``cutoff`` (within the grace window) are skipped so an
+        in-flight upload is never flagged.
+        """
         db_orphans: list[OrphanRecord] = []
         live_rows = session.exec(
             select(MediaObject)
@@ -165,8 +194,22 @@ class MaintenanceController:
                         owner_user_id=obj.owner_user_id,
                     )
                 )
+        return db_orphans
 
-        # Keys still being uploaded (INITIATED) are not orphans yet.
+    @staticmethod
+    def _find_storage_orphans(
+        *,
+        session: Session,
+        storage: ObjectStorage,
+        buckets: list[str],
+        limit: int,
+        repair: bool,
+    ) -> tuple[list[OrphanRecord], int]:
+        """Direction (a): stored keys with no row; repaired only when ``repair``.
+
+        Keys of still-INITIATED upload sessions are excluded (not orphans yet).
+        Returns the orphan records and the count actually removed.
+        """
         pending_keys = {
             (s.storage_bucket, s.object_key)
             for s in session.exec(
@@ -198,14 +241,7 @@ class MaintenanceController:
                         storage, bucket=bucket, object_key=key
                     )
                     repaired += 1
-
-        return OrphanReport(
-            db_orphans=db_orphans,
-            storage_orphans=storage_orphans,
-            db_orphan_count=len(db_orphans),
-            storage_orphan_count=len(storage_orphans),
-            repaired=repaired,
-        )
+        return storage_orphans, repaired
 
     @staticmethod
     def _best_effort_remove(
