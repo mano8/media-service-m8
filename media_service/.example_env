@@ -128,6 +128,17 @@ MEDIA_MAX_UPLOAD_SIZE_BYTES=104857600
 # MEDIA_DEFAULT_QUOTA_BYTES=10737418240
 # MEDIA_DEFAULT_QUOTA_OBJECTS=10000
 
+# ── Events / outbox webhook delivery (Phase 16) ───────────────────────────────
+# Not secrets — literal tunables for the service-owned worker's deliver_outbox
+# cron, which drains PENDING outbox rows and POSTs each as a signed
+# OutboxEventPayload to matching subscribers. A subscription's signing secret is
+# stored per-row (created via POST /v1/admin/subscriptions), never set here.
+# OUTBOX_DELIVERY_CRON_SECOND=0          # second-of-minute the cron fires (runs once/min)
+# OUTBOX_BATCH_LIMIT=100                 # max events claimed per run
+# OUTBOX_MAX_ATTEMPTS=8                  # poison-message cap → terminal FAILED
+# OUTBOX_BACKOFF_BASE_SECONDS=30         # retry delay = base * 2**(attempts-1)
+# OUTBOX_DELIVERY_TIMEOUT_SECONDS=10.0   # per-subscriber POST timeout
+
 # ── Media Redis (media-owned queues, rate limits, locks, cache) ───────────────
 # Separate from the auth Redis; uses the media:* key namespace.
 MEDIA_REDIS_HOST=127.0.0.1

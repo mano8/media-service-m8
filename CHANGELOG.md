@@ -5,6 +5,67 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [0.0.7] — 2026-06-15 · Phase 16 · events / webhooks (transactional outbox)
+
+Reliable, at-least-once event delivery to subscriber URLs. Each state change
+writes an outbox row **in the same DB transaction** as the change, so no committed
+state change is ever silently un-notified; the service-owned maintenance worker
+drains and POSTs them, HMAC-signed, with retry/backoff and a poison-message cap.
+
+### Added
+
+- **`db_models/outbox.py`** — `OutboxEvent` (`event_type`, `object_id`, JSON
+  `payload`, `status` `PENDING|DELIVERED|FAILED`, `attempts`, `next_attempt_at`,
+  `created_at`, `delivered_at`) and `Subscription` (`url`, per-row signing
+  `secret`, `event_types` filter, `active`).
+- **`core/outbox.py`** — `record_event(session, ...)` stages an outbox row on the
+  caller's session **without committing**, so it flushes atomically with the
+  state change (and rolls back with it). Named `outbox` (not `events`) to avoid
+  colliding with `core/events.py`, the unrelated inbound auth event-stream.
+- **Transactional emit at every state change** — `object.ready` /
+  `scan.failed` (`ObjectsController.apply_scan_result`), `object.deleted`
+  (`delete_object`, guarded by the existing idempotency check), and
+  `variant.ready` (`VariantsController.register_variant`).
+- **`controllers/outbox.py`** — sync `OutboxDeliveryController.deliver_pending`:
+  claims due `PENDING` rows (batch-bounded), POSTs each as a signed
+  `OutboxEventPayload` to every active matching subscription (empty `event_types`
+  = all), settles `DELIVERED` else increments `attempts` with exponential backoff
+  (`base * 2**(attempts-1)`) until `OUTBOX_MAX_ATTEMPTS` marks it terminally
+  `FAILED`. The `X-Signature` header is `sha256=<HMAC-SHA256(body, secret)>`.
+- **`deliver_outbox` cron** added to `maintenance_worker.WorkerSettings`
+  (functions + cron). DB-heavy, so by the topology rule it lands in the
+  service-owned worker — **no new image, container, port, or credential surface**;
+  `media-worker-m8` stays DB-free. Runs once per minute (latency-sensitive).
+- **Subscription admin routes** (superuser): `POST /v1/admin/subscriptions`
+  (201; rejects non-HTTP(S) URLs and short secrets at validation),
+  `GET /v1/admin/subscriptions` (list), `DELETE /v1/admin/subscriptions/{id}`
+  (204; 404 unknown). Responses **never** include the signing secret.
+- **`schemas/admin.py`** — `SubscriptionCreateRequest` (URL-scheme validator),
+  `SubscriptionPublic`, `SubscriptionListResponse`.
+- **Settings** (non-secret literals): `OUTBOX_DELIVERY_CRON_SECOND`,
+  `OUTBOX_BATCH_LIMIT`, `OUTBOX_MAX_ATTEMPTS`, `OUTBOX_BACKOFF_BASE_SECONDS`,
+  `OUTBOX_DELIVERY_TIMEOUT_SECONDS`; documented in `.example_env`.
+- **`tests/test_outbox.py`**, **`tests/test_subscriptions.py`**, and an extended
+  `tests/test_maintenance_worker.py` — transactional writes (incl. rollback drops
+  the event), delivery happy-path with **signature verified by a fake subscriber**
+  (`httpx.MockTransport`), retry/backoff, connection-error retry, max-attempts
+  terminal, subscriber matching (filter / wildcard / inactive / multi-subscriber),
+  due/limit claiming, and the admin 201/403/404/422 paths. **100% line + branch**.
+
+### Changed
+
+- Pins **`media-sdk-m8>=0.3.0`** for the new `OutboxEventPayload` webhook contract
+  and adds **`httpx>=0.27.0`** (the delivery worker's outbound HTTP client).
+
+### Notes
+
+- The `m8_app` Alembic migration for the new `app_outbox_event` /
+  `app_subscription` tables is **generated and applied automatically on
+  `compose up`** (the hardened stack autoruns migrations); it is not hand-authored
+  here.
+- Delivery is at-least-once; subscribers dedupe on the event id and verify the
+  `X-Signature` header.
+
 ## [0.0.6] — 2026-06-15 · Phase 15b · share links
 
 Adds time-boxed, signed, shareable download links for a media object. The owner

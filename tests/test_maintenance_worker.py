@@ -4,16 +4,19 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from arq.connections import RedisSettings
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 import media_service.maintenance_worker as mw
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectStatus,
     MediaVisibility,
+    utcnow,
 )
+from media_service.db_models.outbox import OutboxEvent, OutboxStatus, Subscription
 from media_service.db_models.upload_sessions import UploadSession, UploadSessionStatus
 from media_service.storage.client import ObjectStorage
 
@@ -66,9 +69,10 @@ def test_worker_settings_wiring():
         mw.hard_purge_expired,
         mw.expire_stale_uploads,
         mw.reconcile_orphans,
+        mw.deliver_outbox,
     ]
-    # One scheduler, three crons (single replica prevents double-fire).
-    assert len(mw.WorkerSettings.cron_jobs) == 3
+    # One scheduler, four crons (single replica prevents double-fire).
+    assert len(mw.WorkerSettings.cron_jobs) == 4
 
 
 # ── startup / shutdown ───────────────────────────────────────────────────────
@@ -144,3 +148,48 @@ async def test_reconcile_cron_reports_orphans(
     # One storage-orphan per swept bucket; report-only (never deleted).
     assert total == len(mw._all_buckets())
     mock_storage.remove_object.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_deliver_outbox_cron_delivers_pending(session: Session, monkeypatch):
+    monkeypatch.setattr(mw, "engine", _fake_engine(session))
+    session.add(
+        Subscription(
+            url="https://hook.example.com/h",
+            secret="a-strong-subscriber-secret-123456",
+            event_types=[],
+            active=True,
+        )
+    )
+    session.add(
+        OutboxEvent(
+            event_type="object.ready",
+            object_id=uuid.uuid4(),
+            payload={"status": "ready"},
+            next_attempt_at=utcnow(),
+        )
+    )
+    session.commit()
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200)
+
+    # Route the cron's real httpx.Client through the in-process fake subscriber.
+    # Capture the real class first so the replacement does not recurse into itself.
+    real_client_cls = httpx.Client
+    monkeypatch.setattr(
+        mw.httpx,
+        "Client",
+        lambda **_kw: real_client_cls(transport=httpx.MockTransport(handler)),
+    )
+
+    delivered = await mw.deliver_outbox({})
+
+    assert delivered == 1
+    assert len(calls) == 1
+    event = session.exec(select(OutboxEvent)).first()
+    assert event is not None
+    assert event.status == OutboxStatus.DELIVERED

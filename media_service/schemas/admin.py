@@ -3,7 +3,8 @@
 import uuid
 from datetime import datetime
 
-from sqlmodel import SQLModel
+from pydantic import field_validator
+from sqlmodel import Field, SQLModel
 
 from media_service.db_models.media_objects import (
     MediaCategory,
@@ -91,3 +92,41 @@ class PurgeStaleResponse(SQLModel):
     """Result of a bulk purge of stale upload sessions."""
 
     purged: int
+
+
+class SubscriptionCreateRequest(SQLModel):
+    """Admin payload to register a webhook subscriber.
+
+    ``event_types`` is the dotted-name filter; an empty list subscribes to every
+    event type. ``secret`` is the per-subscriber HMAC key the delivery worker
+    signs each POST with — held only here, never exposed in any response.
+    """
+
+    url: str = Field(min_length=1, max_length=2048)
+    secret: str = Field(min_length=16, max_length=255)
+    event_types: list[str] = Field(default_factory=list)
+
+    @field_validator("url")
+    @classmethod
+    def _require_http_scheme(cls, value: str) -> str:
+        """Reject non-HTTP(S) callback URLs at request validation (422)."""
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("url must start with http:// or https://")
+        return value
+
+
+class SubscriptionPublic(SQLModel):
+    """Public view of a subscription — never includes the signing secret."""
+
+    id: uuid.UUID
+    url: str
+    event_types: list[str]
+    active: bool
+    created_at: datetime
+
+
+class SubscriptionListResponse(SQLModel):
+    """List of registered webhook subscriptions."""
+
+    count: int
+    items: list[SubscriptionPublic]

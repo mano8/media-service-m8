@@ -1,0 +1,151 @@
+# dynamic_conf.yml — Development
+tls:
+  # options.default is applied automatically to every router that does not name
+  # an explicit tls.options, so all HTTPS routes inherit this hardened baseline.
+  options:
+    default:
+      minVersion: VersionTLS12        # reject SSLv3/TLS1.0/1.1
+      cipherSuites:                    # strong AEAD suites only (TLS 1.2; TLS 1.3 suites are fixed)
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+      curvePreferences:
+        - X25519
+        - CurveP256
+  stores:
+    default:
+      defaultCertificate:
+        certFile: "/etc/traefik/certs/local.crt"
+        keyFile:  "/etc/traefik/certs/local.key"
+  certificates:
+    - certFile: "/etc/traefik/certs/local.crt"
+      keyFile:  "/etc/traefik/certs/local.key"
+http:
+
+  routers:
+    # Dashboard — localhost only: served on the built-in 'traefik' entrypoint
+    # (127.0.0.1:8080), Host-pinned and IP-restricted, over TLS.
+    # api.insecure is false, so this router is the ONLY way to reach api@internal.
+    traefik-dashboard:
+      entryPoints:
+        - traefik
+      rule: "Host(`localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+      service: api@internal
+      middlewares:
+        - ip-allowlist
+      tls: {}
+
+    # Auth-User-Service: public routes on HTTPS.
+    # SECURITY CONTRACT — paths below are NEVER routed from the public internet:
+    #   /user/health   — internal readiness probe only
+    #   /user/metrics  — Prometheus scrape endpoint, internal only
+    #   /user/private  — inter-service API; app also requires X-Internal-Token,
+    #                    but Traefik must block it first so the route is invisible.
+    # If you add new internal paths, add them here AND write a live test in
+    # tests/live/test_security_live.py (see TestAuth_PrivateAPI / TestAuth_MetricsAPI).
+    auth-public-router:
+      entryPoints:
+        - websecure
+      # LOCALHOST-ONLY by default: Host(`localhost`) limits this route to the Docker
+      # host. TO EXPOSE /user ON THE LAN, delete the `Host(`localhost`) && ` prefix.
+      # The path exclusions are the SECURITY CONTRACT and MUST stay regardless.
+      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
+      service: auth-service
+      middlewares:
+        - security-headers
+      tls: {}
+      priority: 2
+
+    # Auth-User-Service: all routes on the localhost-bound api entryPoint (port 9000)
+    auth-internal-router:
+      entryPoints:
+        - api
+      rule: "PathPrefix(`/user`)"
+      service: auth-service
+      middlewares:
+        - security-headers
+        - internal-only
+
+    # Media-Service: public routes on HTTPS.
+    # SECURITY CONTRACT — paths below are NEVER routed from the public internet:
+    #   /media/health  — internal readiness probe only
+    #   /media/metrics — Prometheus scrape endpoint, internal only
+    # If you add new internal paths, add them here AND write a live test in
+    # tests/live/test_security_live.py (see TestMedia_MetricsAPI).
+    media-public-router:
+      entryPoints:
+        - websecure
+      # LOCALHOST-ONLY by default: Host(`localhost`) limits this route to the Docker
+      # host. TO EXPOSE /media ON THE LAN, delete the `Host(`localhost`) && ` prefix.
+      # The path exclusions are the SECURITY CONTRACT and MUST stay regardless.
+      rule: "Host(`localhost`) && PathPrefix(`/media`) && !(PathPrefix(`/media/health`) || PathPrefix(`/media/metrics`))"
+      service: media-service
+      middlewares:
+        - security-headers
+      tls: {}
+
+    # Media-Service: all routes on the localhost-bound api entryPoint (port 9000)
+    media-internal-router:
+      entryPoints:
+        - api
+      rule: "PathPrefix(`/media`)"
+      service: media-service
+      middlewares:
+        - security-headers
+        - internal-only
+
+  services:
+    auth-service:
+      loadBalancer:
+        servers:
+          - url: "http://auth_user_service:8000"
+    media-service:
+      loadBalancer:
+        servers:
+          - url: "http://media_service:8000"
+
+  middlewares:
+    ip-allowlist:
+      IPAllowList:
+        # Dashboard: localhost only. The host reaches the loopback-published :8080 via
+        # the bridge gateway (SNAT), so only the gateway + loopback are trusted. Sibling
+        # containers (172.16.0.x, x>1) and anything on the host's LAN are NOT allowed.
+        sourceRange:
+          - "127.0.0.1/32"
+          - "172.16.0.1/32"   # this stack's pinned bridge gateway == the Docker host
+          - "::1/128"
+
+    internal-only:
+      IPAllowList:
+        # Internal routes (health/metrics/private): host + sibling containers in this
+        # stack's pinned subnet only — never the host's LAN.
+        sourceRange:
+          - "127.0.0.1/32"
+          - "172.16.0.0/16"   # this stack's pinned Docker network (host + sibling containers)
+          - "::1/128"
+
+    security-headers:
+      headers:
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex,nofollow"
+          Server: ""
+        # ── HSTS — opt-in, public/production deployments only ────────────────
+        # WARNING: enabling HSTS instructs browsers to refuse all HTTP connections
+        # to this host for the duration of stsSeconds — even after you disable it.
+        # Do NOT enable unless:
+        #   - TLS is correctly configured with a stable, trusted certificate
+        #   - this hostname will remain HTTPS-only for the full stsSeconds period
+        # In self-hosted / LAN deployments, enabling HSTS prematurely can lock
+        # browsers out until the HSTS cache expires (up to 1 year).
+        # Uncomment the block below only when the above conditions are met:
+        #
+        # stsSeconds: 31536000       # 1 year
+        # stsIncludeSubdomains: true
+        # stsPreload: false          # only set true after submitting to HSTS preload list
