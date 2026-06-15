@@ -1,8 +1,8 @@
 """Initial m8 migration
 
-Revision ID: 8f331444d386
+Revision ID: 026bec1b7966
 Revises: 
-Create Date: 2026-06-13 01:25:28.034732
+Create Date: 2026-06-15 12:02:44.843062
 
 """
 from typing import Sequence, Union
@@ -13,7 +13,7 @@ import sqlmodel
 import media_service.core.db_models
 
 # revision identifiers, used by Alembic.
-revision: str = '8f331444d386'
+revision: str = '026bec1b7966'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -37,6 +37,23 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_app_category_id'), 'app_category', ['id'], unique=False)
     op.create_index(op.f('ix_app_category_owner_id'), 'app_category', ['owner_id'], unique=False)
+    op.create_table('app_image_preset',
+    sa.Column('owner_user_id', sa.Uuid(), nullable=False),
+    sa.Column('tenant_id', sa.Uuid(), nullable=True),
+    sa.Column('name', sqlmodel.sql.sqltypes.AutoString(length=64), nullable=False),
+    sa.Column('spec', sa.JSON(), nullable=False),
+    sa.Column('id', sa.Uuid(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('owner_user_id', 'tenant_id', 'name', name='uq_image_preset_scope_name'),
+    mysql_charset='utf8mb4',
+    mysql_engine='InnoDB'
+    )
+    op.create_index(op.f('ix_app_image_preset_id'), 'app_image_preset', ['id'], unique=False)
+    op.create_index(op.f('ix_app_image_preset_name'), 'app_image_preset', ['name'], unique=False)
+    op.create_index(op.f('ix_app_image_preset_owner_user_id'), 'app_image_preset', ['owner_user_id'], unique=False)
+    op.create_index(op.f('ix_app_image_preset_tenant_id'), 'app_image_preset', ['tenant_id'], unique=False)
     op.create_table('app_media_object',
     sa.Column('tenant_id', sa.Uuid(), nullable=True),
     sa.Column('owner_user_id', sa.Uuid(), nullable=False),
@@ -142,11 +159,63 @@ def upgrade() -> None:
     op.create_index(op.f('ix_app_media_variant_id'), 'app_media_variant', ['id'], unique=False)
     op.create_index(op.f('ix_app_media_variant_media_object_id'), 'app_media_variant', ['media_object_id'], unique=False)
     op.create_index(op.f('ix_app_media_variant_variant_name'), 'app_media_variant', ['variant_name'], unique=False)
+    op.create_table('app_share_token',
+    sa.Column('media_object_id', sa.Uuid(), nullable=False),
+    sa.Column('owner_user_id', sa.Uuid(), nullable=False),
+    sa.Column('tenant_id', sa.Uuid(), nullable=True),
+    sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('max_uses', sa.Integer(), nullable=True),
+    sa.Column('uses', sa.Integer(), nullable=False),
+    sa.Column('revoked', sa.Boolean(), nullable=False),
+    sa.Column('id', sa.Uuid(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['media_object_id'], ['app_media_object.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id'),
+    mysql_charset='utf8mb4',
+    mysql_engine='InnoDB'
+    )
+    op.create_index(op.f('ix_app_share_token_id'), 'app_share_token', ['id'], unique=False)
+    op.create_index(op.f('ix_app_share_token_media_object_id'), 'app_share_token', ['media_object_id'], unique=False)
+    op.create_index(op.f('ix_app_share_token_owner_user_id'), 'app_share_token', ['owner_user_id'], unique=False)
+    op.create_index(op.f('ix_app_share_token_tenant_id'), 'app_share_token', ['tenant_id'], unique=False)
+    op.create_table('app_variant_job',
+    sa.Column('media_object_id', sa.Uuid(), nullable=False),
+    sa.Column('owner_user_id', sa.Uuid(), nullable=False),
+    sa.Column('tenant_id', sa.Uuid(), nullable=True),
+    sa.Column('status', sa.String(length=32), nullable=False),
+    sa.Column('requested_presets', sa.JSON(), nullable=False),
+    sa.Column('variants_expected', sa.Integer(), nullable=False),
+    sa.Column('variants_created', sa.Integer(), nullable=False),
+    sa.Column('error', sqlmodel.sql.sqltypes.AutoString(length=1024), nullable=True),
+    sa.Column('id', sa.Uuid(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['media_object_id'], ['app_media_object.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    mysql_charset='utf8mb4',
+    mysql_engine='InnoDB'
+    )
+    op.create_index(op.f('ix_app_variant_job_id'), 'app_variant_job', ['id'], unique=False)
+    op.create_index(op.f('ix_app_variant_job_media_object_id'), 'app_variant_job', ['media_object_id'], unique=False)
+    op.create_index(op.f('ix_app_variant_job_owner_user_id'), 'app_variant_job', ['owner_user_id'], unique=False)
+    op.create_index(op.f('ix_app_variant_job_status'), 'app_variant_job', ['status'], unique=False)
+    op.create_index(op.f('ix_app_variant_job_tenant_id'), 'app_variant_job', ['tenant_id'], unique=False)
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index(op.f('ix_app_variant_job_tenant_id'), table_name='app_variant_job')
+    op.drop_index(op.f('ix_app_variant_job_status'), table_name='app_variant_job')
+    op.drop_index(op.f('ix_app_variant_job_owner_user_id'), table_name='app_variant_job')
+    op.drop_index(op.f('ix_app_variant_job_media_object_id'), table_name='app_variant_job')
+    op.drop_index(op.f('ix_app_variant_job_id'), table_name='app_variant_job')
+    op.drop_table('app_variant_job')
+    op.drop_index(op.f('ix_app_share_token_tenant_id'), table_name='app_share_token')
+    op.drop_index(op.f('ix_app_share_token_owner_user_id'), table_name='app_share_token')
+    op.drop_index(op.f('ix_app_share_token_media_object_id'), table_name='app_share_token')
+    op.drop_index(op.f('ix_app_share_token_id'), table_name='app_share_token')
+    op.drop_table('app_share_token')
     op.drop_index(op.f('ix_app_media_variant_variant_name'), table_name='app_media_variant')
     op.drop_index(op.f('ix_app_media_variant_media_object_id'), table_name='app_media_variant')
     op.drop_index(op.f('ix_app_media_variant_id'), table_name='app_media_variant')
@@ -177,6 +246,11 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_app_media_object_id'), table_name='app_media_object')
     op.drop_index(op.f('ix_app_media_object_category'), table_name='app_media_object')
     op.drop_table('app_media_object')
+    op.drop_index(op.f('ix_app_image_preset_tenant_id'), table_name='app_image_preset')
+    op.drop_index(op.f('ix_app_image_preset_owner_user_id'), table_name='app_image_preset')
+    op.drop_index(op.f('ix_app_image_preset_name'), table_name='app_image_preset')
+    op.drop_index(op.f('ix_app_image_preset_id'), table_name='app_image_preset')
+    op.drop_table('app_image_preset')
     op.drop_index(op.f('ix_app_category_owner_id'), table_name='app_category')
     op.drop_index(op.f('ix_app_category_id'), table_name='app_category')
     op.drop_table('app_category')

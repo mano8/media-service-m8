@@ -273,6 +273,10 @@ services:
   # variants, and reports results back to media-service over its INTERNAL HTTP
   # API (Bearer MEDIA_INTERNAL_SERVICE_TOKEN).
   #
+  # Uses the published Docker Hub image (NOT built from source): this dev stack
+  # builds only media_service from /workspace/media-service-m8/media_service; the
+  # worker lives in the separate media-worker-m8 repo.
+  #
   # INBOUND-FREE BY DESIGN — like media_service_worker, this process runs no HTTP
   # server (its only entrypoint is `arq worker.settings.WorkerSettings`). It is
   # reached purely as a Redis queue consumer, so it carries NO Traefik label and
@@ -330,7 +334,9 @@ services:
       - scan_net
 
   media_service:
-    image: tepochtli/media-service-m8:latest
+    build:
+      context: ../../
+      dockerfile: ./media_service/Dockerfile
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -378,7 +384,9 @@ services:
   # this command override bypasses docker_start.sh. Outbound-only: no Traefik
   # label, no exposed port.
   media_service_worker:
-    image: tepochtli/media-service-m8:latest
+    build:
+      context: ../../
+      dockerfile: ./media_service/Dockerfile
     command: ["arq", "media_service.maintenance_worker.WorkerSettings"]
     security_opt:
       - no-new-privileges:true

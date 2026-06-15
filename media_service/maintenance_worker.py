@@ -19,13 +19,16 @@ Deployed ``replicas: 1`` so arq's cron fires exactly once per schedule.
 from datetime import timedelta
 from typing import Any
 
+import httpx
 from arq import cron
 from arq.connections import RedisSettings
 
 from media_service.controllers.maintenance import MaintenanceController
+from media_service.controllers.outbox import OutboxDeliveryController
 from media_service.core.arq import get_arq_redis_settings
 from media_service.core.config import settings
 from media_service.core.deps import engine
+from media_service.db_models.media_objects import utcnow
 from media_service.storage.client import ObjectStorage, get_storage_config
 
 
@@ -85,6 +88,26 @@ async def reconcile_orphans(ctx: dict[str, Any]) -> int:
     return report.db_orphan_count + report.storage_orphan_count
 
 
+async def deliver_outbox(ctx: dict[str, Any]) -> int:
+    """Cron body: deliver due PENDING outbox events to matching subscribers.
+
+    DB-heavy (claims/settles rows) and so lands in the service-owned worker, not
+    the DB-free media-worker-m8. A short-lived ``httpx.Client`` POSTs each signed
+    event; the controller settles every row with retry/backoff in one commit.
+    """
+    with engine.session() as session:
+        with httpx.Client(timeout=settings.OUTBOX_DELIVERY_TIMEOUT_SECONDS) as client:
+            report = OutboxDeliveryController.deliver_pending(
+                session=session,
+                client=client,
+                now=utcnow(),
+                limit=settings.OUTBOX_BATCH_LIMIT,
+                max_attempts=settings.OUTBOX_MAX_ATTEMPTS,
+                backoff_base_seconds=settings.OUTBOX_BACKOFF_BASE_SECONDS,
+            )
+    return report.delivered
+
+
 class WorkerSettings:
     """ARQ ``WorkerSettings`` consumed by the ``arq`` CLI (single scheduler)."""
 
@@ -92,9 +115,16 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     # Exposed as functions too so an operator can enqueue them on demand.
-    functions = [hard_purge_expired, expire_stale_uploads, reconcile_orphans]
+    functions = [
+        hard_purge_expired,
+        expire_stale_uploads,
+        reconcile_orphans,
+        deliver_outbox,
+    ]
     cron_jobs = [
         cron(hard_purge_expired, hour=settings.MEDIA_PURGE_CRON_HOUR, minute=0),
         cron(expire_stale_uploads, minute=settings.MEDIA_STALE_CRON_MINUTE),
         cron(reconcile_orphans, hour=settings.MEDIA_PURGE_CRON_HOUR, minute=30),
+        # Latency-sensitive: fires once per minute (unlike the housekeeping crons).
+        cron(deliver_outbox, second=settings.OUTBOX_DELIVERY_CRON_SECOND),
     ]

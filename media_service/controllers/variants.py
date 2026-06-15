@@ -16,6 +16,7 @@ from media_service.controllers.objects import (
     _load_object_for_read,
 )
 from media_service.core.media_types import is_processable_image
+from media_service.core.outbox import EVENT_VARIANT_READY, record_event
 from media_service.core.presets import resolve_presets
 from media_service.db_models.media_objects import MediaObjectStatus, utcnow
 from media_service.db_models.media_variants import MediaVariant
@@ -180,6 +181,13 @@ class VariantsController:
         variant.size_bytes = req.size_bytes
         variant.format = req.format
         session.add(variant)
+        # Emit variant.ready in the same transaction as the variant upsert.
+        record_event(
+            session,
+            event_type=EVENT_VARIANT_READY,
+            object_id=object_id,
+            payload={"variant_name": variant.variant_name, "format": variant.format},
+        )
         session.commit()
         session.refresh(variant)
         return VariantPublic.model_validate(variant)

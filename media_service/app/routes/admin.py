@@ -3,7 +3,7 @@
 import uuid
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 
 from auth_sdk_m8.controllers.base import BaseController
 
@@ -18,6 +18,9 @@ from media_service.schemas.admin import (
     StaleUploadsResponse,
     StorageStatsResponse,
     StorageUsagePublic,
+    SubscriptionCreateRequest,
+    SubscriptionListResponse,
+    SubscriptionPublic,
 )
 from media_service.schemas.maintenance import HardPurgeResponse, OrphanReport
 
@@ -162,4 +165,39 @@ def purge_expired(*, session: SessionDep, storage: StorageDep) -> HardPurgeRespo
         storage=storage,
         older_than=timedelta(days=settings.MEDIA_RETENTION_PURGE_DAYS),
         limit=settings.MEDIA_PURGE_BATCH_LIMIT,
+    )
+
+
+@router.post(
+    "/subscriptions",
+    response_model=SubscriptionPublic,
+    status_code=status.HTTP_201_CREATED,
+    responses=BaseController.get_error_responses(),
+)
+def create_subscription(
+    *, session: SessionDep, body: SubscriptionCreateRequest
+) -> SubscriptionPublic:
+    """Register a webhook subscriber for outbound media events."""
+    return AdminController.create_subscription(session=session, req=body)
+
+
+@router.get(
+    "/subscriptions",
+    response_model=SubscriptionListResponse,
+    responses=BaseController.get_error_responses(),
+)
+def list_subscriptions(*, session: SessionDep) -> SubscriptionListResponse:
+    """List every registered webhook subscription (signing secrets omitted)."""
+    return AdminController.list_subscriptions(session=session)
+
+
+@router.delete(
+    "/subscriptions/{subscription_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses=BaseController.get_error_responses(),
+)
+def delete_subscription(*, session: SessionDep, subscription_id: uuid.UUID) -> None:
+    """Delete a webhook subscription by id (404 when it does not exist)."""
+    AdminController.delete_subscription(
+        session=session, subscription_id=subscription_id
     )

@@ -4,6 +4,7 @@ import logging
 import uuid
 from datetime import datetime
 
+from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlmodel import Session, col, select
 
@@ -19,6 +20,7 @@ from media_service.db_models.media_objects import (
     MediaVisibility,
     utcnow,
 )
+from media_service.db_models.outbox import Subscription
 from media_service.db_models.storage_usage import StorageUsage
 from media_service.db_models.upload_sessions import UploadSession, UploadSessionStatus
 from media_service.schemas.admin import (
@@ -30,6 +32,9 @@ from media_service.schemas.admin import (
     StorageStatsByStatus,
     StorageStatsResponse,
     StorageUsagePublic,
+    SubscriptionCreateRequest,
+    SubscriptionListResponse,
+    SubscriptionPublic,
 )
 from media_service.storage.client import ObjectStorage
 
@@ -45,6 +50,17 @@ def _usage_public(usage: StorageUsage) -> StorageUsagePublic:
         quota_objects=usage.quota_objects,
         effective_quota_bytes=effective_quota_bytes(usage),
         effective_quota_objects=effective_quota_objects(usage),
+    )
+
+
+def _subscription_public(sub: Subscription) -> SubscriptionPublic:
+    """Project a Subscription row into its public view (secret omitted)."""
+    return SubscriptionPublic(
+        id=sub.id,
+        url=sub.url,
+        event_types=sub.event_types,
+        active=sub.active,
+        created_at=sub.created_at,
     )
 
 
@@ -212,3 +228,36 @@ class AdminController:
             session.add(stale)
         session.commit()
         return PurgeStaleResponse(purged=len(sessions))
+
+    @staticmethod
+    def create_subscription(
+        *, session: Session, req: SubscriptionCreateRequest
+    ) -> SubscriptionPublic:
+        """Register a webhook subscriber (URL + signing secret + event filter)."""
+        sub = Subscription(url=req.url, secret=req.secret, event_types=req.event_types)
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+        return _subscription_public(sub)
+
+    @staticmethod
+    def list_subscriptions(*, session: Session) -> SubscriptionListResponse:
+        """List every registered webhook subscription (secrets omitted)."""
+        subs = session.exec(
+            select(Subscription).order_by(col(Subscription.created_at))
+        ).all()
+        return SubscriptionListResponse(
+            count=len(subs), items=[_subscription_public(s) for s in subs]
+        )
+
+    @staticmethod
+    def delete_subscription(*, session: Session, subscription_id: uuid.UUID) -> None:
+        """Delete a webhook subscription, 404 when it does not exist."""
+        sub = session.get(Subscription, subscription_id)
+        if sub is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Subscription not found.",
+            )
+        session.delete(sub)
+        session.commit()

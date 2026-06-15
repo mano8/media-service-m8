@@ -113,6 +113,9 @@ foreign key, so a hard-purged object drops its links automatically.
 | GET | `/v1/admin/maintenance/orphans` | Reconciliation report — storage/DB orphans, both directions (read-only) |
 | POST | `/v1/admin/maintenance/orphans/repair?confirm=true` | Delete **storage-orphans** only; dry-run unless `confirm=true` |
 | POST | `/v1/admin/maintenance/purge-expired` | Hard-delete soft-deleted objects past the retention window |
+| POST | `/v1/admin/subscriptions` | Register a webhook subscriber (**201**) — URL + signing secret + event filter |
+| GET | `/v1/admin/subscriptions` | List webhook subscriptions (signing secrets never returned) |
+| DELETE | `/v1/admin/subscriptions/{id}` | Delete a webhook subscription (**204**) |
 
 The guard is applied at the router level via
 `dependencies=[Depends(get_current_active_superuser)]`.
@@ -157,6 +160,29 @@ formats (`ext` ∈ `WEBP|JPEG|PNG|GIF|AVIF`, `quality` 1–100).
 Every internal route requires `Authorization: Bearer <MEDIA_INTERNAL_SERVICE_TOKEN>`,
 compared in constant time (`secrets.compare_digest`); anything missing or
 mismatched is **403**. These routes are called only by `media-worker-m8`.
+
+## Events / webhooks (transactional outbox)
+
+At each state change media-service writes an **outbox row in the same DB
+transaction** as the change (`core/outbox.record_event`), so a committed change is
+never silently un-notified and a rolled-back transaction drops the event too.
+Emitted events: `object.ready`, `object.deleted`, `scan.failed`, `variant.ready`.
+
+The service-owned maintenance worker's `deliver_outbox` cron drains `PENDING`
+rows and POSTs each as a signed [`OutboxEventPayload`](https://pypi.org/project/media-sdk-m8/)
+(`{ event_id, event_type, object_id, payload, created_at }`) to every **active**
+subscription whose `event_types` filter matches (an empty filter matches all).
+Delivery is **at-least-once** (subscribers dedupe on `event_id`); each POST carries
+`X-Signature: sha256=<HMAC-SHA256(body, subscription.secret)>` for verification.
+Failures retry with exponential backoff (`OUTBOX_BACKOFF_BASE_SECONDS * 2**(attempts-1)`)
+until `OUTBOX_MAX_ATTEMPTS`, after which the event is terminally `FAILED`
+(poison-message guard). Delivery is DB-heavy, so by the topology rule it runs in
+the service-owned worker — **not** the DB-free `media-worker-m8` — adding no new
+image, container, port, or credential surface. Each subscription's signing
+`secret` is stored per-row (set at create time), never a global env secret.
+
+Manage subscribers via the superuser `POST/GET/DELETE /v1/admin/subscriptions`
+routes above; tunables are the non-secret `OUTBOX_*` settings.
 
 ## Antivirus scanning
 

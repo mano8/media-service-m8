@@ -20,10 +20,14 @@ redis>=5.3.1,<6.0.0
 minio>=7.2.18
 
 # Shared media SDK: object-storage client + producer↔consumer job contracts
-media-sdk-m8>=0.2.0
+# (incl. OutboxEventPayload — the Phase 16 outbound webhook contract)
+media-sdk-m8>=0.3.0
 
 # Background-job producer: enqueues scan + variant jobs for media-worker-m8
 arq>=0.28.0
+
+# Outbound webhook delivery: the maintenance worker POSTs signed outbox events
+httpx>=0.27.0
 
 python-slugify>=8.0.4
 

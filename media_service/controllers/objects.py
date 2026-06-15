@@ -16,6 +16,12 @@ from sqlmodel.sql.expression import SelectOfScalar
 from auth_sdk_m8.schemas.user import UserModel
 
 from media_service.core.config import settings
+from media_service.core.outbox import (
+    EVENT_OBJECT_DELETED,
+    EVENT_OBJECT_READY,
+    EVENT_SCAN_FAILED,
+    record_event,
+)
 from media_service.core.quotas import record_object_removed
 from media_service.db_models.media_objects import (
     MediaObject,
@@ -416,10 +422,27 @@ class ObjectsController:
         if scan_status == ScanStatus.CLEAN:
             obj.scan_status = ScanStatus.CLEAN
             obj.status = MediaObjectStatus.READY
+            record_event(
+                session,
+                event_type=EVENT_OBJECT_READY,
+                object_id=obj.id,
+                payload={
+                    "status": str(obj.status),
+                    "scan_status": str(obj.scan_status),
+                },
+            )
         else:
             obj.scan_status = ScanStatus.QUARANTINED
+            record_event(
+                session,
+                event_type=EVENT_SCAN_FAILED,
+                object_id=obj.id,
+                payload={"scan_status": str(obj.scan_status)},
+            )
         obj.updated_at = utcnow()
         session.add(obj)
+        # The outbox row is staged on this session, so it commits atomically with
+        # the verdict below (or rolls back with it) — no verdict goes un-notified.
         session.commit()
         session.refresh(obj)
         return MediaObjectPublic.model_validate(obj)
@@ -453,6 +476,14 @@ class ObjectsController:
             owner_user_id=obj.owner_user_id,
             tenant_id=obj.tenant_id,
             size_bytes=obj.size_bytes,
+        )
+        # Notify subscribers in the same transaction as the soft-delete; the early
+        # return above keeps a repeat delete from emitting a duplicate event.
+        record_event(
+            session,
+            event_type=EVENT_OBJECT_DELETED,
+            object_id=obj.id,
+            payload={"visibility": str(obj.visibility)},
         )
         session.commit()
         if obj.visibility == MediaVisibility.PUBLIC:

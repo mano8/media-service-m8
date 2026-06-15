@@ -94,6 +94,25 @@ class Settings(ConsumerServiceSettings):
     MEDIA_PURGE_CRON_HOUR: int = Field(default=3, ge=0, le=23)
     MEDIA_STALE_CRON_MINUTE: int = Field(default=15, ge=0, le=59)
 
+    # ── Events / outbox webhook delivery (Phase 16) ──────────────────────────
+    # Not secrets — literal defaults. The service-owned arq worker's
+    # ``deliver_outbox`` cron drains PENDING outbox rows and POSTs each as a
+    # signed OutboxEventPayload to matching subscribers. A subscription's signing
+    # ``secret`` is per-row (DB), never a global env secret.
+    # Second-of-minute the delivery cron fires; it runs once per minute so events
+    # drain promptly (delivery is latency-sensitive, unlike the housekeeping crons).
+    OUTBOX_DELIVERY_CRON_SECOND: int = Field(default=0, ge=0, le=59)
+    # Max events claimed per delivery run (bounds work + outbound request volume).
+    OUTBOX_BATCH_LIMIT: int = Field(default=100, ge=1)
+    # Poison-message cap: after this many failed attempts an event is marked
+    # terminally FAILED and never retried again.
+    OUTBOX_MAX_ATTEMPTS: int = Field(default=8, ge=1)
+    # Exponential-backoff base: a failed event's retry delay is
+    # ``base * 2 ** (attempts - 1)`` seconds.
+    OUTBOX_BACKOFF_BASE_SECONDS: int = Field(default=30, ge=1)
+    # Per-request timeout (seconds) for a single subscriber POST.
+    OUTBOX_DELIVERY_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0)
+
     # ── Media Redis ──────────────────────────────────────────────────────────
     MEDIA_REDIS_HOST: str = "media_redis_cache"
     MEDIA_REDIS_PORT: int = Field(default=6379, ge=1, le=65535)
