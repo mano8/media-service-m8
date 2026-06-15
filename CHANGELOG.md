@@ -44,6 +44,15 @@ schedule with direct DB + storage access; `media-worker-m8` stays DB-free.
 - Pins **`media-sdk-m8>=0.2.0`** for the new `ObjectStorage.list_object_keys`
   primitive the orphan reconciler needs.
 
+### Changed
+
+- Bumped `arq>=0.28.0` (from `>=0.26.0`) — adds Python 3.14 support (the service
+  Dockerfile base image) and pulls the cron-freeze (0.26.3) and task-retry
+  race-condition (0.26.2) fixes, which directly harden the new
+  `maintenance_worker` cron jobs and the producer pool; no API changes. Pinned
+  `redis` to `>=5.3.1,<6.0.0`, making arq's hard `redis<6` constraint
+  explicit/fail-closed.
+
 ### Notes
 
 - **Audit** is structured-log-only this phase (no new model/migration); the

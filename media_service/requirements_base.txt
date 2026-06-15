@@ -15,15 +15,15 @@ bcrypt>=5.0.0
 python-multipart>=0.0.28
 itsdangerous>=2.2.0
 
-# important: arq require redis <6.0.0
-redis>=5.3.1
+# important: arq requires redis <6.0.0
+redis>=5.3.1,<6.0.0
 minio>=7.2.18
 
 # Shared media SDK: object-storage client + producer↔consumer job contracts
 media-sdk-m8>=0.2.0
 
 # Background-job producer: enqueues scan + variant jobs for media-worker-m8
-arq>=0.26.0
+arq>=0.28.0
 
 python-slugify>=8.0.4
 
