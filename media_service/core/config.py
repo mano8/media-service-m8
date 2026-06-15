@@ -32,12 +32,27 @@ class Settings(ConsumerServiceSettings):
         "MINIO_SECRET_KEY",
         "MEDIA_REDIS_PASSWORD",
         "MEDIA_INTERNAL_SERVICE_TOKEN",
+        "MEDIA_SHARE_SIGNING_SECRET",
     ]
 
     # ── Internal service auth ─────────────────────────────────────────────────
     # Shared bearer token the worker presents on internal callbacks. Compared
     # with secrets.compare_digest; must be a high-entropy random value in prod.
     MEDIA_INTERNAL_SERVICE_TOKEN: SecretStr
+
+    # ── Share links ───────────────────────────────────────────────────────────
+    # Independent HMAC key for signing share-link tokens. Owned by this service
+    # (never reuse an auth-sdk token secret like ACCESS_SECRET_KEY, whose
+    # lifecycle and contract belong to the auth layer). Required, so a missing
+    # key fails settings validation at startup rather than minting unverifiable
+    # links. Rotate independently; rotation invalidates outstanding links.
+    MEDIA_SHARE_SIGNING_SECRET: SecretStr
+    # Lifetime applied when a caller omits ``expires_in`` on create (default 7d).
+    MEDIA_SHARE_DEFAULT_EXPIRES_SECONDS: int = Field(default=604_800, ge=1)
+    # Operator ceiling on a caller-requested ``expires_in`` (default 30d); a
+    # request above this is rejected at create time. Bounds how long a leaked
+    # link stays useful.
+    MEDIA_SHARE_MAX_EXPIRES_SECONDS: int = Field(default=2_592_000, ge=1)
 
     # ── MinIO ────────────────────────────────────────────────────────────────
     MINIO_HOST: str = "minio"

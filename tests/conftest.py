@@ -34,6 +34,7 @@ _TEST_ENV = {
     "MINIO_SECRET_KEY": "TestMinio!Secret1",
     "MEDIA_REDIS_PASSWORD": "TestRedis!Pass1secure",
     "MEDIA_INTERNAL_SERVICE_TOKEN": "TestService!Token1secure",
+    "MEDIA_SHARE_SIGNING_SECRET": "TestShare!Signing1secureKey0987",
     "METRICS_ENABLED": "false",
 }
 SERVICE_TOKEN = _TEST_ENV["MEDIA_INTERNAL_SERVICE_TOKEN"]
@@ -61,6 +62,7 @@ import media_service.db_models.categories  # noqa: F401, E402
 import media_service.db_models.image_presets  # noqa: F401, E402
 import media_service.db_models.media_objects  # noqa: F401, E402
 import media_service.db_models.media_variants  # noqa: F401, E402
+import media_service.db_models.share_tokens  # noqa: F401, E402
 import media_service.db_models.storage_usage  # noqa: F401, E402
 import media_service.db_models.upload_sessions  # noqa: F401, E402
 import media_service.db_models.variant_jobs  # noqa: F401, E402

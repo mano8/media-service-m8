@@ -9,6 +9,7 @@ from media_service.app.routes import (
     internal,
     objects,
     presets,
+    shares,
     uploads,
     variants,
 )
@@ -18,6 +19,7 @@ api_router.include_router(dashboard.router)
 api_router.include_router(category.router)
 api_router.include_router(uploads.router, prefix="/v1")
 api_router.include_router(objects.router, prefix="/v1")
+api_router.include_router(shares.router, prefix="/v1")
 api_router.include_router(variants.router, prefix="/v1")
 api_router.include_router(presets.router, prefix="/v1")
 api_router.include_router(internal.router, prefix="/v1")
