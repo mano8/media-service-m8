@@ -85,6 +85,9 @@ excluded unless a superuser passes `include_deleted=true`.
 | POST | `/v1/admin/uploads/purge-stale` | Bulk-expire stale sessions |
 | GET | `/v1/admin/quotas/{owner_user_id}` | Usage totals and effective quotas for a scope |
 | PUT | `/v1/admin/quotas/{owner_user_id}` | Set per-scope `quota_bytes` / `quota_objects` overrides |
+| GET | `/v1/admin/maintenance/orphans` | Reconciliation report — storage/DB orphans, both directions (read-only) |
+| POST | `/v1/admin/maintenance/orphans/repair?confirm=true` | Delete **storage-orphans** only; dry-run unless `confirm=true` |
+| POST | `/v1/admin/maintenance/purge-expired` | Hard-delete soft-deleted objects past the retention window |
 
 The guard is applied at the router level via
 `dependencies=[Depends(get_current_active_superuser)]`.
@@ -246,6 +249,34 @@ sharing storage + job contracts via `media-sdk-m8`. Two settings wire it up:
 - `MEDIA_INTERNAL_SERVICE_TOKEN` — shared bearer token the worker presents on the
   `/v1/internal/*` callbacks (set the **same** value here and on the worker).
 - `MEDIA_REDIS_*` — the queue the worker reads jobs from.
+
+## Maintenance worker (lifecycle & retention)
+
+DB-coupled housekeeping runs in a **service-owned arq worker** — the *same*
+media-service image launched with a command override (no separate build):
+
+```bash
+arq media_service.maintenance_worker.WorkerSettings
+```
+
+In the hardened compose stack this is the `media_service_worker` container
+(`deploy.replicas: 1` — a single scheduler so arq cron never double-fires; runs
+**no** migrations). It owns three jobs, on cron and on-demand via the admin
+routes above:
+
+- **hard-purge** (daily) — removes bytes + row for objects soft-deleted longer
+  than `MEDIA_RETENTION_PURGE_DAYS` (this is the only true hard-delete; the API
+  only soft-deletes). Quota is not re-debited.
+- **stale-upload expiry** (hourly) — the scheduled form of
+  `/v1/admin/uploads/purge-stale`.
+- **orphan reconciliation** (daily, report-only) — storage-keys-without-rows and
+  DB-rows-without-bytes; repair is opt-in and deletes storage-orphans only.
+
+Unlike `media-worker-m8` (DB-free, enqueue-driven), this worker has direct DB +
+storage access and makes no HTTP callbacks, so it needs **no**
+`MEDIA_INTERNAL_SERVICE_TOKEN`. Tunables: `MEDIA_PURGE_BATCH_LIMIT`,
+`MEDIA_RECONCILE_GRACE_MINUTES`, `MEDIA_RECONCILE_BATCH_LIMIT`,
+`MEDIA_PURGE_CRON_HOUR`, `MEDIA_STALE_CRON_MINUTE`.
 
 ## Observability
 

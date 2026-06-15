@@ -1,6 +1,7 @@
 """Admin routes — superuser-only storage inspection and housekeeping."""
 
 import uuid
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends
 
@@ -8,6 +9,8 @@ from auth_sdk_m8.controllers.base import BaseController
 
 from media_service.app.deps import SessionDep, StorageDep
 from media_service.controllers.admin import AdminController
+from media_service.controllers.maintenance import MaintenanceController
+from media_service.core.config import settings
 from media_service.core.deps import auth
 from media_service.schemas.admin import (
     PurgeStaleResponse,
@@ -16,6 +19,19 @@ from media_service.schemas.admin import (
     StorageStatsResponse,
     StorageUsagePublic,
 )
+from media_service.schemas.maintenance import HardPurgeResponse, OrphanReport
+
+
+def _all_buckets() -> list[str]:
+    """Every configured bucket the reconciler must sweep for orphan bytes."""
+    return [
+        settings.MINIO_BUCKET_PUBLIC,
+        settings.MINIO_BUCKET_PRIVATE,
+        settings.MINIO_BUCKET_SENSITIVE,
+        settings.MINIO_BUCKET_TEMP,
+        settings.MINIO_BUCKET_ARCHIVE,
+    ]
+
 
 router = APIRouter(
     prefix="/admin",
@@ -91,4 +107,59 @@ def set_quota(
         owner_user_id=owner_user_id,
         update=body,
         tenant_id=tenant_id,
+    )
+
+
+@router.get(
+    "/maintenance/orphans",
+    response_model=OrphanReport,
+    responses=BaseController.get_error_responses(),
+)
+def get_orphans(*, session: SessionDep, storage: StorageDep) -> OrphanReport:
+    """Report storage/DB orphans in both directions (read-only, never deletes)."""
+    return MaintenanceController.reconcile_orphans(
+        session=session,
+        storage=storage,
+        buckets=_all_buckets(),
+        grace=timedelta(minutes=settings.MEDIA_RECONCILE_GRACE_MINUTES),
+        limit=settings.MEDIA_RECONCILE_BATCH_LIMIT,
+        repair=False,
+    )
+
+
+@router.post(
+    "/maintenance/orphans/repair",
+    response_model=OrphanReport,
+    responses=BaseController.get_error_responses(),
+)
+def repair_orphans(
+    *, session: SessionDep, storage: StorageDep, confirm: bool = False
+) -> OrphanReport:
+    """Reconcile orphans; delete storage-orphans only when ``confirm=true``.
+
+    Defaults to a dry-run (report-only) so an accidental POST never destroys
+    bytes; DB-orphans are *never* deleted regardless of ``confirm``.
+    """
+    return MaintenanceController.reconcile_orphans(
+        session=session,
+        storage=storage,
+        buckets=_all_buckets(),
+        grace=timedelta(minutes=settings.MEDIA_RECONCILE_GRACE_MINUTES),
+        limit=settings.MEDIA_RECONCILE_BATCH_LIMIT,
+        repair=confirm,
+    )
+
+
+@router.post(
+    "/maintenance/purge-expired",
+    response_model=HardPurgeResponse,
+    responses=BaseController.get_error_responses(),
+)
+def purge_expired(*, session: SessionDep, storage: StorageDep) -> HardPurgeResponse:
+    """Hard-delete soft-deleted objects past the retention window (operator run)."""
+    return MaintenanceController.hard_purge_expired(
+        session=session,
+        storage=storage,
+        older_than=timedelta(days=settings.MEDIA_RETENTION_PURGE_DAYS),
+        limit=settings.MEDIA_PURGE_BATCH_LIMIT,
     )

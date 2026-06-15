@@ -289,6 +289,55 @@ services:
       - app_net
       - data_net
 
+  # Service-owned arq maintenance worker — the SAME image as media_service, run
+  # with a command override (no new build / no new Docker Hub publish). Owns the
+  # DB-coupled housekeeping crons (hard-purge, stale-upload expiry, orphan
+  # reconcile). replicas: 1 keeps a single scheduler so arq cron never
+  # double-fires. Runs NO migrations — the web container applies them on startup;
+  # this command override bypasses docker_start.sh. Outbound-only: no Traefik
+  # label, no exposed port.
+  media_service_worker:
+    build:
+      context: ../../
+      dockerfile: ./media_service/Dockerfile
+    command: ["arq", "media_service.maintenance_worker.WorkerSettings"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    env_file:
+      - ./media.env
+    volumes:
+      - ../../media_service:/opt/media_service
+      - ./media.env:/opt/media_service/.env:ro
+    depends_on:
+      m8_db:
+        condition: service_healthy
+      media_redis_cache:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      media_service:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - app_net
+      - data_net
+
 # app_net: external-facing — Traefik, app services, observability.
 # data_net: internal only (no gateway) — DB and Redis are not reachable from app_net.
 # App services sit on both networks; Traefik sits on app_net only and cannot reach DB/Redis.

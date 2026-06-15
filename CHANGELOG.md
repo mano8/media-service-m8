@@ -5,6 +5,54 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased] — Phase 14 · lifecycle, retention & orphan reconciliation
+
+Introduces a **service-owned arq maintenance worker** — a second run-mode of the
+*same* media-service image (no new build / Docker Hub publish), launched with a
+command override. It owns the DB-coupled housekeeping jobs that must run on a
+schedule with direct DB + storage access; `media-worker-m8` stays DB-free.
+
+### Added
+
+- **`controllers/maintenance.py`** — sync controller with three operations:
+  - `hard_purge_expired` — the **true hard-delete** the API never performed
+    (it only soft-deletes). Removes bytes (from the bucket *as stored*) **and**
+    the row for DELETED objects past `MEDIA_RETENTION_PURGE_DAYS`, batch-bounded,
+    with an execution-time invariant re-check guarding against a restore racing
+    the delete. Does **not** re-debit quota (already debited at soft-delete).
+  - `expire_stale_uploads` — thin pass-through to
+    `AdminController.purge_stale_uploads` (single code path) for scheduled runs.
+  - `reconcile_orphans` — both directions: DB-rows-without-bytes (report-only)
+    and storage-keys-without-rows (opt-in repair). Excludes rows within a grace
+    window and keys of in-flight (`INITIATED`) uploads.
+- **`maintenance_worker.py`** — the only async surface: arq `WorkerSettings`
+  reusing `core/arq.get_arq_redis_settings()`, with daily hard-purge / reconcile
+  and hourly stale-expiry crons, each calling straight into the sync controller.
+- **Admin routes** (superuser): `GET /v1/admin/maintenance/orphans` (report),
+  `POST …/orphans/repair?confirm=true` (dry-run unless confirmed; only deletes
+  storage-orphans), `POST …/maintenance/purge-expired` (operator parity). No new
+  internal-HTTP / service-token surface — the worker runs in-process.
+- **`schemas/maintenance.py`** — `HardPurgeResponse`, `OrphanRecord`,
+  `OrphanReport`.
+- **Settings** (not secrets — literal defaults): `MEDIA_RETENTION_PURGE_DAYS`,
+  `MEDIA_PURGE_BATCH_LIMIT`, `MEDIA_RECONCILE_GRACE_MINUTES`,
+  `MEDIA_RECONCILE_BATCH_LIMIT`, `MEDIA_PURGE_CRON_HOUR`, `MEDIA_STALE_CRON_MINUTE`.
+- **Compose** — `media_service_worker` service: same image, command override to
+  `arq media_service.maintenance_worker.WorkerSettings`, `deploy.replicas: 1`
+  (single scheduler — prevents arq cron double-fire), hardened opts
+  (`no-new-privileges`, `cap_drop: ALL`, `read_only`), runs **no** migrations.
+- Pins **`media-sdk-m8>=0.2.0`** for the new `ObjectStorage.list_object_keys`
+  primitive the orphan reconciler needs.
+
+### Notes
+
+- **Audit** is structured-log-only this phase (no new model/migration); the
+  immutable `audit_log` table is deferred to Phase 17.
+- Destructive datetime comparisons run in SQL with an **aware** cutoff so they
+  behave identically under SQLite (naive read-back) and Postgres (aware).
+
+---
+
 ## [0.0.4] — 2026-06-14 · Phase 12 · worker backbone · antivirus · image variants · dynamic presets
 
 Media-service becomes the **producer** for asynchronous background work handled
