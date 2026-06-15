@@ -63,6 +63,22 @@ class Settings(ConsumerServiceSettings):
     MEDIA_DEFAULT_QUOTA_BYTES: Optional[int] = Field(default=None, ge=1)
     MEDIA_DEFAULT_QUOTA_OBJECTS: Optional[int] = Field(default=None, ge=1)
 
+    # ── Lifecycle / retention (Phase 14 maintenance worker) ──────────────────
+    # Not secrets — literal defaults. The service-owned arq worker uses these to
+    # drive scheduled hard-purge, stale-upload expiry, and orphan reconciliation.
+    # Age (days) a soft-deleted object must exceed before its bytes + row are
+    # hard-deleted; bounded per run by the batch limit.
+    MEDIA_RETENTION_PURGE_DAYS: int = Field(default=30, ge=1)
+    MEDIA_PURGE_BATCH_LIMIT: int = Field(default=500, ge=1)
+    # Safety window: objects/keys younger than this are skipped by the reconciler
+    # so an in-flight upload (row or bytes mid-creation) is never flagged orphan.
+    MEDIA_RECONCILE_GRACE_MINUTES: int = Field(default=60, ge=0)
+    MEDIA_RECONCILE_BATCH_LIMIT: int = Field(default=1000, ge=1)
+    # Cron cadence: hard-purge runs daily at this hour; stale-upload expiry runs
+    # hourly at this minute.
+    MEDIA_PURGE_CRON_HOUR: int = Field(default=3, ge=0, le=23)
+    MEDIA_STALE_CRON_MINUTE: int = Field(default=15, ge=0, le=59)
+
     # ── Media Redis ──────────────────────────────────────────────────────────
     MEDIA_REDIS_HOST: str = "media_redis_cache"
     MEDIA_REDIS_PORT: int = Field(default=6379, ge=1, le=65535)
