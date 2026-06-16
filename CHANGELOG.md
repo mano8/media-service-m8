@@ -5,6 +5,32 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [0.0.8] — 2026-06-16 · Service `/meta` + `/ping` routes (contract discoverability)
+
+Closes item 6 of `dev-stack-runtime-errors.md`: the service exposed no
+service/contract version metadata for clients to assert compatibility.
+
+> **Requires `fastapi-m8 >= 2.0.0`** (which auto-mounts the routes from
+> `ConsumerServiceSettings`, in turn requiring `auth-sdk-m8 >= 1.4.0`).
+
+### Added
+
+- **`GET /media/meta`** — static, cacheable service identity
+  (`service`/`version`/`api_version`/`contract`) read by clients pre-auth;
+  satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`.
+  Contract `media-service-m8@1.0`, service-version range `>=0.0.8 <0.1.0`
+  (0.0.8 is the first release exposing the route).
+- **`GET /ping`** — prefix-independent, dependency-free liveness (`{"status": "ok"}`),
+  kept separate from the dependency-aware `/media/health/` readiness probe.
+
+### Changed
+
+- `fastapi-m8` dependency bumped to `>=2.0.0,<3.0.0`; the now-required
+  `SERVICE_VERSION` / `CONTRACT_VERSION` / `CONTRACT_RANGE` (+ `CONTRACT_NAME`)
+  settings are declared in `.env`.
+
+---
+
 ## [0.0.7] — 2026-06-15 · Phase 16 · events / webhooks (transactional outbox)
 
 Reliable, at-least-once event delivery to subscriber URLs. Each state change

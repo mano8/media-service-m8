@@ -13,6 +13,8 @@ from pydantic_settings import SettingsConfigDict
 from auth_sdk_m8.utils.paths import find_dotenv
 from fastapi_m8 import ConsumerServiceSettings
 
+from media_service import __version__
+
 # pylint: disable=invalid-name
 
 
@@ -27,6 +29,15 @@ class Settings(ConsumerServiceSettings):
         env_ignore_empty=True,
         extra="forbid",
     )
+
+    # ── Service/contract metadata (GET {API_PREFIX}/meta) ─────────────────────
+    # fastapi-m8 >= 2.0.0 requires these; declared here (not env) so the service
+    # version tracks the package and the contract id matches the astro-media
+    # plugin. Overridable from the environment for non-default deployments.
+    SERVICE_VERSION: str = __version__
+    CONTRACT_NAME: str = "media-service-m8"
+    CONTRACT_VERSION: str = "1.0"
+    CONTRACT_RANGE: str = ">=0.0.8 <0.1.0"
 
     secret_fields = ConsumerServiceSettings.secret_fields + [
         "MINIO_SECRET_KEY",
