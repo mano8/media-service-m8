@@ -36,7 +36,9 @@ class Settings(ConsumerServiceSettings):
     # plugin. Overridable from the environment for non-default deployments.
     SERVICE_VERSION: str = __version__
     CONTRACT_NAME: str = "media-service-m8"
-    CONTRACT_VERSION: str = "1.0"
+    # Contract major.minor tracks the package (0.0.x) — pre-1.0, not the
+    # aspirational "1.0"; kept in lockstep with astro-media-m8's contract pin.
+    CONTRACT_VERSION: str = "0.0"
     CONTRACT_RANGE: str = ">=0.0.8 <0.1.0"
 
     secret_fields = ConsumerServiceSettings.secret_fields + [

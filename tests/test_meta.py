@@ -21,7 +21,7 @@ def test_meta_route_exposes_service_contract() -> None:
         "api_version": "v1",
         "contract": {
             "name": "media-service-m8",
-            "version": "1.0",
+            "version": "0.0",
             "range": ">=0.0.8 <0.1.0",
         },
     }
