@@ -110,7 +110,10 @@ links; rotating it invalidates outstanding links). A link resolves only while
 it is **not expired**, **not revoked**, and **under
 `max_uses`**, and — like the owner-facing download path — only once the object
 has passed antivirus scanning (otherwise **409**); each successful resolution
-increments the use counter. `expires_in` (seconds) and `max_uses` are optional
+consumes one use via a single atomic conditional `UPDATE`, so concurrent
+resolves of a `max_uses`-bounded link can never overshoot the limit — exactly
+one wins the last use and the rest get **403**. `expires_in` (seconds) and
+`max_uses` are optional
 on create: the caller picks the lifetime, falling back to
 `MEDIA_SHARE_DEFAULT_EXPIRES_SECONDS` (default 7 days) and capped at
 `MEDIA_SHARE_MAX_EXPIRES_SECONDS` (default 30 days) — both operator-configurable;

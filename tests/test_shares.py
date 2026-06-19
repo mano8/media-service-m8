@@ -243,6 +243,24 @@ def test_resolve_max_uses_exhausted(client: TestClient, session: Session, curren
     assert resp.status_code == 403
 
 
+def test_resolve_lost_race_returns_403(
+    client: TestClient, mock_storage, session: Session, current_user, monkeypatch
+):
+    # A link that passes the read-time check but whose last use is consumed by a
+    # concurrent resolve (modelled here by ``_consume_use`` returning ``False``)
+    # must be rejected with 403 rather than handing out a presigned URL.
+    obj = _make_object(session, current_user.id)
+    share = _make_share(
+        session, media_object_id=obj.id, owner_id=current_user.id, max_uses=1, uses=0
+    )
+    monkeypatch.setattr(
+        SharesController, "_consume_use", staticmethod(lambda *_a, **_kw: False)
+    )
+    resp = client.get(f"/media/v1/shares/{_sign(share.id)}")
+    assert resp.status_code == 403
+    mock_storage.presigned_get_object.assert_not_called()
+
+
 def test_resolve_expired(client: TestClient, session: Session, current_user):
     obj = _make_object(session, current_user.id)
     share = _make_share(
@@ -348,6 +366,59 @@ def test_as_aware_coerces_naive_to_utc():
     naive = datetime(2026, 1, 1)
     coerced = _as_aware(naive)
     assert coerced.tzinfo is timezone.utc
+
+
+# ── unit: atomic use consumption (6.x.4) ──────────────────────────────────────
+
+
+def test_consume_use_concurrent_single_winner(session: Session, current_user):
+    # The race fixed by 6.x.4: two callers each run the atomic conditional
+    # UPDATE against a ``max_uses=1`` link. Because each call is a single
+    # statement, exactly one wins the use regardless of interleaving — never
+    # both — and ``uses`` never overshoots ``max_uses``.
+    obj = _make_object(session, current_user.id)
+    share = _make_share(
+        session, media_object_id=obj.id, owner_id=current_user.id, max_uses=1, uses=0
+    )
+    first = SharesController._consume_use(session, share.id)
+    second = SharesController._consume_use(session, share.id)
+    assert [first, second] == [True, False]
+    session.refresh(share)
+    assert share.uses == 1
+
+
+def test_consume_use_unlimited_always_succeeds(session: Session, current_user):
+    obj = _make_object(session, current_user.id)
+    share = _make_share(
+        session, media_object_id=obj.id, owner_id=current_user.id, max_uses=None
+    )
+    assert SharesController._consume_use(session, share.id) is True
+    assert SharesController._consume_use(session, share.id) is True
+    session.refresh(share)
+    assert share.uses == 2
+
+
+def test_consume_use_rejects_revoked(session: Session, current_user):
+    obj = _make_object(session, current_user.id)
+    share = _make_share(
+        session, media_object_id=obj.id, owner_id=current_user.id, revoked=True
+    )
+    assert SharesController._consume_use(session, share.id) is False
+    session.refresh(share)
+    assert share.uses == 0
+
+
+def test_consume_use_rejects_expired(session: Session, current_user):
+    obj = _make_object(session, current_user.id)
+    share = _make_share(
+        session,
+        media_object_id=obj.id,
+        owner_id=current_user.id,
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+    assert SharesController._consume_use(session, share.id) is False
+    session.refresh(share)
+    assert share.uses == 0
 
 
 def test_create_controller_uses_explicit_expiry(session: Session, current_user):

@@ -9,6 +9,21 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **6.x.4 Atomic share `max_uses` consumption.** Resolving a share link no
+  longer reads `uses`, checks it against `max_uses`, and writes back in separate
+  steps — a window in which two concurrent resolves of a `max_uses`-bounded link
+  could both pass the check and both increment, overshooting the limit. A use is
+  now consumed by a single conditional `UPDATE ... SET uses = uses + 1 WHERE
+  id = ? AND NOT revoked AND expires_at > now AND (max_uses IS NULL OR uses <
+  max_uses)` (`SharesController._consume_use`). The database evaluates the
+  predicate and the increment as one statement, so concurrent resolves serialise
+  there: exactly one caller wins the last use and any loser — having passed the
+  read-time check — gets a uniform `403`. The read-time check in
+  `_load_active_share` is retained purely to return a precise reason for an
+  already-dead link. New tests cover the single-winner guarantee, unlimited
+  links, and revoked/expired rejection at the DB layer. Full suite 468 tests,
+  100% coverage, ruff + mypy + bandit green.
+
 - **6.x.3 Streaming SHA-256 upload verification.** The optional integrity check
   on `complete` no longer downloads the whole object into memory
   (`get_object` → `verify_sha256(content, expected)`). It now streams the object

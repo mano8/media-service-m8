@@ -17,8 +17,10 @@ import hmac
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 from fastapi import HTTPException, status
+from sqlalchemy import CursorResult, or_, update
 from sqlmodel import Session, col, select
 
 from auth_sdk_m8.schemas.user import UserModel
@@ -193,6 +195,13 @@ class SharesController:
         Rejects expired / revoked / exhausted links (403) and objects that have
         not cleared antivirus scanning (409), then records one use and returns a
         short-lived presigned GET.
+
+        The read-time check in :meth:`_load_active_share` gives a precise reason
+        for an already-dead link, but the use is only *consumed* by the atomic
+        conditional update in :meth:`_consume_use`. That update is the real guard
+        against concurrent resolves of a ``max_uses``-bounded link overshooting
+        the limit: exactly one of two racing callers wins the last use, and the
+        loser — having passed the read check — gets a uniform 403 here.
         """
         share = SharesController._load_active_share(session, token)
         obj = session.get(MediaObject, share.media_object_id)
@@ -203,9 +212,8 @@ class SharesController:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Object is not available for download until it passes scanning.",
             )
-        share.uses += 1
-        session.add(share)
-        session.commit()
+        if not SharesController._consume_use(session, share.id):
+            raise _rejected("Share link has reached its usage limit.")
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
         url = create_download_url(
             storage=storage,
@@ -247,6 +255,35 @@ class SharesController:
         if share.max_uses is not None and share.uses >= share.max_uses:
             raise _rejected("Share link has reached its usage limit.")
         return share
+
+    @staticmethod
+    def _consume_use(session: Session, token_id: uuid.UUID) -> bool:
+        """Atomically record one use, only while the link is still resolvable.
+
+        A single conditional ``UPDATE`` increments ``uses`` exactly when the row
+        is not revoked, not expired, and still under ``max_uses`` (or unbounded).
+        The database evaluates the predicate and the increment as one statement,
+        so concurrent resolves of a ``max_uses``-bounded link serialise there:
+        one update matches the row, every other sees ``rowcount == 0``. Returns
+        whether this caller won a use.
+        """
+        statement = (
+            update(ShareToken)
+            .where(col(ShareToken.id) == token_id)
+            .where(col(ShareToken.revoked).is_(False))
+            .where(col(ShareToken.expires_at) > utcnow())
+            .where(
+                or_(
+                    col(ShareToken.max_uses).is_(None),
+                    col(ShareToken.uses) < col(ShareToken.max_uses),
+                )
+            )
+            .values(uses=col(ShareToken.uses) + 1)
+            .execution_options(synchronize_session=False)
+        )
+        result = cast("CursorResult[Any]", session.execute(statement))
+        session.commit()
+        return result.rowcount == 1
 
 
 def _rejected(detail: str) -> HTTPException:
