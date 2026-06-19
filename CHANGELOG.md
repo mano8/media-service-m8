@@ -5,6 +5,21 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- **0.2 MinIO host-port exposure removed** (P0 stop-the-bleed).
+  `hardened_media_m8`: MinIO `ports:` block removed entirely — the API
+  (`:9000`) and console (`:9001`) are reachable only on the Docker network
+  (`minio:9000`), never from the host or LAN.
+  `dev_media_m8`: ports bound to loopback (`127.0.0.1:9005:9000`,
+  `127.0.0.1:9006:9001`) for local tooling; no LAN exposure.
+  Static compose-policy tests added (`tests/test_compose_minio_policy.py`,
+  5 tests) asserting the above for both stacks.
+
+---
+
 ## [0.0.8] — 2026-06-16 · Service `/meta` + `/ping` routes (contract discoverability)
 
 Closes item 6 of `dev-stack-runtime-errors.md`: the service exposed no

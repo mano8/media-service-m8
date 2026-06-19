@@ -129,9 +129,6 @@ services:
   minio:
     image: quay.io/minio/minio
     container_name: minio
-    ports:
-      - "9005:9000"
-      - "9006:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -201,7 +198,7 @@ services:
     depends_on:
       - prometheus
     env_file:
-      - ./grafana/config.monitoring
+      - ./grafana.env
     volumes:
       - ./grafana/data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
@@ -212,7 +209,7 @@ services:
     restart: unless-stopped
 
   auth_user_service:
-    image: tepochtli/fa-auth-m8:latest
+    image: tepochtli/fa-auth-m8:0.9.8
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -286,7 +283,7 @@ services:
   # repo, not under this stack). Only the .env file is mounted, matching the
   # media_service pattern.
   media_worker:
-    image: tepochtli/media-worker-m8:latest
+    image: tepochtli/media-worker-m8:0.2.0
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -330,7 +327,7 @@ services:
       - scan_net
 
   media_service:
-    image: tepochtli/media-service-m8:latest
+    image: tepochtli/media-service-m8:0.0.8
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -378,7 +375,7 @@ services:
   # this command override bypasses docker_start.sh. Outbound-only: no Traefik
   # label, no exposed port.
   media_service_worker:
-    image: tepochtli/media-service-m8:latest
+    image: tepochtli/media-service-m8:0.0.8
     command: ["arq", "media_service.maintenance_worker.WorkerSettings"]
     security_opt:
       - no-new-privileges:true
