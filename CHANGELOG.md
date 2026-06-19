@@ -7,6 +7,16 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Pin `media-sdk-m8>=0.4.0`** (from `>=0.3.0`) — the streaming SHA-256
+  verification (6.x.3) calls the SDK's new chunked `ObjectStorage.stream_object`
+  primitive, which first ships in 0.4.0, so the floor is now a hard requirement,
+  not just an alignment. The `media-sdk-m8` pin in `constraints.txt` /
+  `constraints-all.txt` is moved to `==0.4.0` to keep the lockfiles consistent
+  with the floor; both should be regenerated via `pip-compile` against the
+  published 0.4.0 release as part of the final remediation PR.
+
 ### Security
 
 - **4.3 Dependency constraint files for reproducible builds.** `constraints.txt`

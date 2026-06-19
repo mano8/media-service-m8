@@ -20,8 +20,10 @@ redis>=5.3.1,<6.0.0
 minio>=7.2.18
 
 # Shared media SDK: object-storage client + producer↔consumer job contracts
-# (incl. OutboxEventPayload — the Phase 16 outbound webhook contract)
-media-sdk-m8>=0.3.0
+# (incl. OutboxEventPayload — the Phase 16 outbound webhook contract, and the
+# 0.4.0 chunked ObjectStorage.stream_object primitive used by streaming SHA-256
+# verification, plan item 6.x.3)
+media-sdk-m8>=0.4.0
 
 # Background-job producer: enqueues scan + variant jobs for media-worker-m8
 arq>=0.28.0

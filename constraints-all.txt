@@ -130,7 +130,7 @@ markupsafe==3.0.3
     #   mako
 mdurl==0.1.2
     # via markdown-it-py
-media-sdk-m8==0.3.0
+media-sdk-m8==0.4.0
     # via -r media_service/requirements_base.txt
 minio==7.2.20
     # via
