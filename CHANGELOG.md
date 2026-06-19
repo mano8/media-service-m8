@@ -9,6 +9,18 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **0.4 Advisory deployment preflight wired into init** (P0 consolidation).
+  `docker_compose/shared/scripts/init-common.sh` now shells out to the
+  `security-tests-m8 preflight` Python scanner after copying env files. The
+  invocation is **advisory only** — a non-zero exit is captured, reported, and
+  ignored; `compose up` is never blocked. When `security-tests-m8` is not
+  installed a clear install note is printed instead. The scanner (updated in
+  `security-tests-m8`) now covers two new P0 generic gates that apply to this
+  stack: Docker socket mounts and `0.0.0.0` public-bind for any service in
+  hardened/production stacks. MinIO-specific compose-policy tests (stronger
+  "no `ports:` at all" assertion) are already owned by this repo
+  (`tests/test_compose_minio_policy.py`) from item 0.2.
+
 - **0.2 MinIO host-port exposure removed** (P0 stop-the-bleed).
   `hardened_media_m8`: MinIO `ports:` block removed entirely — the API
   (`:9000`) and console (`:9001`) are reachable only on the Docker network
