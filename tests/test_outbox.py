@@ -121,6 +121,11 @@ def _recorder(calls: list, status: int = 200):
     return handler
 
 
+def _allow_all(_url: str) -> bool:
+    """Permissive SSRF guard for delivery tests not exercising the guard itself."""
+    return True
+
+
 def _deliver(
     session: Session,
     client: httpx.Client,
@@ -129,6 +134,7 @@ def _deliver(
     limit: int = 50,
     max_attempts: int = 5,
     backoff_base_seconds: int = 30,
+    url_guard=_allow_all,
 ) -> OutboxDeliveryReport:
     return OutboxDeliveryController.deliver_pending(
         session=session,
@@ -137,6 +143,7 @@ def _deliver(
         limit=limit,
         max_attempts=max_attempts,
         backoff_base_seconds=backoff_base_seconds,
+        url_guard=url_guard,
     )
 
 
@@ -442,3 +449,39 @@ def test_subscription_event_filter_matrix(
     _deliver(session, _client(_recorder(calls)))
 
     assert (len(calls) == 1) is should_match
+
+
+# ── delivery: SSRF guard (send-time) ─────────────────────────────────────────
+
+
+def test_deliver_ssrf_blocked_target_is_not_posted(session: Session):
+    """A target the guard rejects is never POSTed and settles via retry/backoff."""
+    _subscription(session, url="https://blocked.example.com/h")
+    event = _pending_event(session)
+    calls: list[httpx.Request] = []
+
+    report = _deliver(session, _client(_recorder(calls)), url_guard=lambda _url: False)
+
+    assert calls == []  # blocked before any request left the process
+    assert report.retried == 1
+    session.refresh(event)
+    assert event.status == OutboxStatus.PENDING
+    assert event.attempts == 1
+
+
+def test_deliver_ssrf_guard_consulted_per_target_url(session: Session):
+    """The guard sees each subscriber URL; only allowed ones are delivered."""
+    _subscription(session, url="https://ok.example.com/h")
+    _subscription(session, url="https://blocked.example.com/h")
+    _pending_event(session)
+    seen: list[str] = []
+
+    def guard(url: str) -> bool:
+        seen.append(url)
+        return "ok" in url
+
+    report = _deliver(session, _client(lambda r: httpx.Response(200)), url_guard=guard)
+
+    assert set(seen) == {"https://ok.example.com/h", "https://blocked.example.com/h"}
+    # One target blocked → event not fully delivered → retried.
+    assert report.retried == 1

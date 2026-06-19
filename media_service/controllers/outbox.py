@@ -20,6 +20,7 @@ from sqlmodel import Session, col, select
 
 from media_sdk_m8 import OutboxEventPayload
 
+from media_service.core.ssrf import WebhookUrlGuard
 from media_service.db_models.outbox import OutboxEvent, OutboxStatus, Subscription
 
 _logger = logging.getLogger(__name__)
@@ -85,9 +86,23 @@ def _serialize(event: OutboxEvent) -> bytes:
 
 
 def _post_one(
-    client: httpx.Client, sub: Subscription, event: OutboxEvent, body: bytes
+    client: httpx.Client,
+    sub: Subscription,
+    event: OutboxEvent,
+    body: bytes,
+    url_guard: WebhookUrlGuard,
 ) -> bool:
-    """POST one signed event to one subscriber; True only on a 2xx response."""
+    """POST one signed event to one subscriber; True only on a 2xx response.
+
+    The target URL is re-validated against the SSRF guard immediately before the
+    request (host resolved + every IP inspected), so a subscriber that points at
+    an internal address is never POSTed to and settles via the retry/backoff path.
+    """
+    if not url_guard(sub.url):
+        _logger.warning(
+            "outbox delivery blocked by SSRF guard event=%s url=%s", event.id, sub.url
+        )
+        return False
     headers = {
         "Content-Type": "application/json",
         SIGNATURE_HEADER: sign_payload(sub.secret, body),
@@ -111,7 +126,10 @@ def _post_one(
 
 
 def _deliver_event(
-    client: httpx.Client, event: OutboxEvent, subs: list[Subscription]
+    client: httpx.Client,
+    event: OutboxEvent,
+    subs: list[Subscription],
+    url_guard: WebhookUrlGuard,
 ) -> bool:
     """Deliver one event to every matching subscriber; True iff all accepted.
 
@@ -122,7 +140,7 @@ def _deliver_event(
     if not targets:
         return True
     body = _serialize(event)
-    return all([_post_one(client, sub, event, body) for sub in targets])
+    return all([_post_one(client, sub, event, body, url_guard) for sub in targets])
 
 
 class OutboxDeliveryController:
@@ -137,13 +155,14 @@ class OutboxDeliveryController:
         limit: int,
         max_attempts: int,
         backoff_base_seconds: int,
+        url_guard: WebhookUrlGuard,
     ) -> OutboxDeliveryReport:
         """Claim, deliver, and settle due PENDING outbox events in one run."""
         events = _claim_due(session, now=now, limit=limit)
         subs = _active_subscriptions(session)
         delivered = retried = failed = 0
         for event in events:
-            if _deliver_event(client, event, subs):
+            if _deliver_event(client, event, subs, url_guard):
                 event.status = OutboxStatus.DELIVERED
                 event.delivered_at = now
                 delivered += 1

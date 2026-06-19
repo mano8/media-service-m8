@@ -135,6 +135,14 @@ class Settings(ConsumerServiceSettings):
     OUTBOX_BACKOFF_BASE_SECONDS: int = Field(default=30, ge=1)
     # Per-request timeout (seconds) for a single subscriber POST.
     OUTBOX_DELIVERY_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0)
+    # SSRF allowlist: exact hostnames a webhook subscriber may target even when
+    # they resolve to a private/internal address (and exempt from the
+    # production HTTPS rule). Use for trusted in-cluster subscribers — e.g.
+    # ["media_worker"]. Everything else is gated by core.ssrf: loopback/
+    # link-local/metadata are always blocked; private ranges and plain http
+    # are rejected only under production/strict (Docker-network targets stay
+    # reachable in local/dev).
+    MEDIA_WEBHOOK_ALLOWED_INTERNAL_HOSTS: list[str] = Field(default_factory=list)
 
     # ── Rate-limiter Redis-error policy ──────────────────────────────────────
     # Controls what happens when the Redis backing the rate limiter is

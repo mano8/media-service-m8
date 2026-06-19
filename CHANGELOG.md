@@ -9,6 +9,27 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **6.x.5 Outbound webhook SSRF controls.** Webhook subscriber URLs are
+  operator-supplied, so the transactional-outbox delivery path could otherwise be
+  steered at the cloud-metadata endpoint, a loopback admin port, or an internal
+  service. A new guard (`core/ssrf.py`) validates a target by **resolving its host
+  at send time and inspecting every resolved IP** — DNS rebinding included — and is
+  applied at two points: a static pass at subscription create time (scheme, the
+  production HTTPS rule, and literal-IP targets; a loopback/metadata literal is now
+  rejected with `400`) and the authoritative pass before every delivery POST
+  (`OutboxDeliveryController` threads a `url_guard`; a blocked target is never
+  requested and settles via the existing retry/backoff path). Honouring the
+  home-lab rule, the posture degrades gracefully: loopback, link-local, the
+  `169.254.169.254` cloud-metadata address, multicast and reserved ranges are
+  **always** blocked, while private (RFC1918/ULA/CGNAT) targets and plain `http://`
+  are allowed in local/dev but **rejected under production/strict** — so a
+  Docker-network subscriber still works in dev without weakening production. A
+  trusted in-cluster subscriber can be exempted by exact hostname via the new
+  `MEDIA_WEBHOOK_ALLOWED_INTERNAL_HOSTS` setting (documented in the dev + hardened
+  `media.env.example`). New `tests/test_ssrf.py` plus create-time and send-time
+  cases in `test_subscriptions.py` / `test_outbox.py`. Full suite 510 tests, 100%
+  coverage, ruff + mypy + bandit green.
+
 - **6.x.4 Atomic share `max_uses` consumption.** Resolving a share link no
   longer reads `uses`, checks it against `max_uses`, and writes back in separate
   steps — a window in which two concurrent resolves of a `max_uses`-bounded link

@@ -8,11 +8,13 @@ from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlmodel import Session, col, select
 
+from media_service.core.config import settings
 from media_service.core.quotas import (
     effective_quota_bytes,
     effective_quota_objects,
     get_or_create_usage,
 )
+from media_service.core.ssrf import WebhookPolicy, WebhookTargetError, check_webhook_url
 from media_service.db_models.media_objects import (
     MediaCategory,
     MediaObject,
@@ -233,7 +235,18 @@ class AdminController:
     def create_subscription(
         *, session: Session, req: SubscriptionCreateRequest
     ) -> SubscriptionPublic:
-        """Register a webhook subscriber (URL + signing secret + event filter)."""
+        """Register a webhook subscriber (URL + signing secret + event filter).
+
+        The URL is screened against the SSRF guard up front (literal-IP, scheme,
+        and the production HTTPS rule); names are re-resolved and validated at
+        send time, where DNS rebinding is also caught.
+        """
+        try:
+            check_webhook_url(req.url, policy=WebhookPolicy.from_settings(settings))
+        except WebhookTargetError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
         sub = Subscription(url=req.url, secret=req.secret, event_types=req.event_types)
         session.add(sub)
         session.commit()

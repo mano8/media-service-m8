@@ -28,6 +28,7 @@ from media_service.controllers.outbox import OutboxDeliveryController
 from media_service.core.arq import get_arq_redis_settings
 from media_service.core.config import settings
 from media_service.core.deps import engine
+from media_service.core.ssrf import WebhookPolicy, build_url_guard
 from media_service.db_models.media_objects import utcnow
 from media_service.storage.client import ObjectStorage, get_storage_config
 
@@ -95,6 +96,7 @@ async def deliver_outbox(ctx: dict[str, Any]) -> int:
     the DB-free media-worker-m8. A short-lived ``httpx.Client`` POSTs each signed
     event; the controller settles every row with retry/backoff in one commit.
     """
+    url_guard = build_url_guard(WebhookPolicy.from_settings(settings))
     with engine.session() as session:
         with httpx.Client(timeout=settings.OUTBOX_DELIVERY_TIMEOUT_SECONDS) as client:
             report = OutboxDeliveryController.deliver_pending(
@@ -104,6 +106,7 @@ async def deliver_outbox(ctx: dict[str, Any]) -> int:
                 limit=settings.OUTBOX_BATCH_LIMIT,
                 max_attempts=settings.OUTBOX_MAX_ATTEMPTS,
                 backoff_base_seconds=settings.OUTBOX_BACKOFF_BASE_SECONDS,
+                url_guard=url_guard,
             )
     return report.delivered
 

@@ -203,6 +203,22 @@ image, container, port, or credential surface. Each subscription's signing
 Manage subscribers via the superuser `POST/GET/DELETE /v1/admin/subscriptions`
 routes above; tunables are the non-secret `OUTBOX_*` settings.
 
+### Outbound SSRF protection
+
+Subscriber URLs are operator-supplied, so delivery is gated by an SSRF guard
+(`core/ssrf.py`) at **two points**: a static pass at create time (scheme, the
+production HTTPS rule, and literal-IP targets — a loopback/metadata literal is
+rejected with **400**) and the authoritative pass before every POST, which
+**re-resolves the host and inspects every resolved IP** (so DNS rebinding is
+caught and a blocked target is never requested — it settles via retry/backoff).
+Honouring the home-lab rule, the posture degrades gracefully: loopback,
+link-local, the `169.254.169.254` cloud-metadata address, multicast and reserved
+ranges are **always** blocked, while private (RFC1918/ULA/CGNAT) targets and
+plain `http://` are allowed in local/dev but **rejected under production/strict**
+— so a Docker-network subscriber works in dev without weakening production. Exempt
+a trusted in-cluster subscriber by exact hostname via
+`MEDIA_WEBHOOK_ALLOWED_INTERNAL_HOSTS` (e.g. `["media_worker"]`).
+
 ## Antivirus scanning
 
 `complete_upload` leaves a new object `scan_status = PENDING` and enqueues a
