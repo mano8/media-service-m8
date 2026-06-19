@@ -9,6 +9,21 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **6.x.2 Rate-limiter Redis-error failure mode** (`MEDIA_RATE_LIMIT_FAILURE_MODE`).
+  Adds an explicit, observable policy for what the rate limiter does when its
+  Redis backend is unreachable.
+  - `fail_open` (default, backward-compatible): traffic passes through; a Redis
+    outage never blocks media uploads, but limits are temporarily unenforced.
+  - `fail_closed`: returns HTTP 503 on Redis error; prevents unenforced upload
+    bursts during outages. **Recommended for production.**
+  Both modes emit a `{api_prefix}_media_rate_limit_redis_errors_total{mode=…}`
+  Prometheus counter on every Redis error so outages and policy decisions are
+  observable. `hardened_media_m8/media.env.example` sets `fail_closed`;
+  `dev_media_m8/media.env.example` documents the option (commented out,
+  defaults to `fail_open`).
+  7 new tests (both modes, metric emission, settings-read-at-call-time, no-metric
+  on success); full suite 457 tests, 100% coverage, ruff + mypy + bandit green.
+
 - **0.4 Advisory deployment preflight wired into init** (P0 consolidation).
   `docker_compose/shared/scripts/init-common.sh` now shells out to the
   `security-tests-m8 preflight` Python scanner after copying env files. The

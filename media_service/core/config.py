@@ -5,7 +5,7 @@ are all inherited from ConsumerServiceSettings (fastapi-m8).
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field, SecretStr
 from pydantic_settings import SettingsConfigDict
@@ -125,6 +125,14 @@ class Settings(ConsumerServiceSettings):
     OUTBOX_BACKOFF_BASE_SECONDS: int = Field(default=30, ge=1)
     # Per-request timeout (seconds) for a single subscriber POST.
     OUTBOX_DELIVERY_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0)
+
+    # ── Rate-limiter Redis-error policy ──────────────────────────────────────
+    # Controls what happens when the Redis backing the rate limiter is
+    # unreachable. "fail_open" (default) lets traffic through so a Redis outage
+    # never blocks media uploads. "fail_closed" returns HTTP 503 on Redis
+    # error, preventing unenforced bursts during outages. Recommended:
+    # fail_closed in production, fail_open in dev/local.
+    MEDIA_RATE_LIMIT_FAILURE_MODE: Literal["fail_open", "fail_closed"] = "fail_open"
 
     # ── Media Redis ──────────────────────────────────────────────────────────
     MEDIA_REDIS_HOST: str = "media_redis_cache"
