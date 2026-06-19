@@ -105,7 +105,9 @@ class RateLimiter:
         if self._failure_mode is not None:
             mode = self._failure_mode
         else:
-            from media_service.core.config import settings  # lazy — avoids circular import at module load
+            from media_service.core.config import (
+                settings,
+            )  # lazy — avoids circular import at module load
 
             mode = settings.MEDIA_RATE_LIMIT_FAILURE_MODE
         try:

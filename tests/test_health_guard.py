@@ -74,9 +74,7 @@ def test_health_always_answers_even_without_secret_configured():
     app = create_app(
         settings,
         APIRouter(),
-        health=HealthConfig(
-            detail_authorizer=make_internal_token_authorizer(None)
-        ),
+        health=HealthConfig(detail_authorizer=make_internal_token_authorizer(None)),
     )
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get(f"{settings.API_PREFIX}/health/")

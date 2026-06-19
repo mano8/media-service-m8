@@ -145,10 +145,9 @@ def test_rate_limiter_reads_failure_mode_from_settings_when_not_set():
     limiter = RateLimiter("test:action", limit=5)  # no explicit failure_mode
     mock_settings = MagicMock()
     mock_settings.MEDIA_RATE_LIMIT_FAILURE_MODE = "fail_open"
-    with patch(
-        "media_service.core.rate_limit._metrics"
-    ) as mock_metrics, patch(
-        "media_service.core.config.settings", mock_settings
+    with (
+        patch("media_service.core.rate_limit._metrics") as mock_metrics,
+        patch("media_service.core.config.settings", mock_settings),
     ):
         limiter(request=_make_request(), current_user=_make_user(), redis_client=redis)
     mock_metrics.inc_rate_limit_redis_error.assert_called_once_with("fail_open")
