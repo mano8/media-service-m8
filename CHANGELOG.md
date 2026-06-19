@@ -9,6 +9,24 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **6.x.3 Streaming SHA-256 upload verification.** The optional integrity check
+  on `complete` no longer downloads the whole object into memory
+  (`get_object` → `verify_sha256(content, expected)`). It now streams the object
+  from storage in bounded chunks via the new SDK primitive
+  `ObjectStorage.stream_object(...)` and hashes incrementally
+  (`verify_sha256_stream`), so a large (size-capped) upload is never buffered
+  whole. Hard max-size enforcement still runs **before** hashing (step 1), so
+  only size-validated objects are read. A process-wide
+  `sha256_verification_guard()` (bounded semaphore) caps how many verifications
+  run at once, preventing a burst of completions from fanning out into
+  unbounded concurrent full-object reads. Two new settings (both defaulted,
+  backward-compatible): `MEDIA_SHA256_VERIFY_CHUNK_SIZE` (default 1 MiB) and
+  `MEDIA_SHA256_VERIFY_MAX_CONCURRENCY` (default 4); documented in both
+  `dev_media_m8` / `hardened_media_m8` `media.env.example`. New tests cover
+  streamed valid/invalid/empty hashes, a `tracemalloc`-asserted no-full-buffer
+  guarantee, and the concurrency cap. Full suite 461 tests, 100% coverage,
+  ruff + mypy + bandit green.
+
 - **6.x.2 Rate-limiter Redis-error failure mode** (`MEDIA_RATE_LIMIT_FAILURE_MODE`).
   Adds an explicit, observable policy for what the rate limiter does when its
   Redis backend is unreachable.

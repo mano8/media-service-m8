@@ -61,8 +61,10 @@ the `MediaObject` from `PENDING_UPLOAD` to `UPLOADED`:
 2. **Magic-byte MIME** — the object's leading bytes are sniffed with `filetype`;
    the detected type must be compatible with the declared `mime_type` (same major
    type for `image/*`, `video/*`, `audio/*`; exact match otherwise).
-3. **SHA-256** — when `sha256` is present in the complete request, the full object
-   is streamed and the digest verified.
+3. **SHA-256** — when `sha256` is present in the complete request, the object is
+   streamed from storage in bounded chunks (`MEDIA_SHA256_VERIFY_CHUNK_SIZE`) and
+   hashed incrementally, so it is never buffered whole in memory; a process-wide
+   semaphore (`MEDIA_SHA256_VERIFY_MAX_CONCURRENCY`) caps concurrent verifications.
 
 On any failure the session is marked `ABORTED`, a `MediaObject` with
 `status=REJECTED` is persisted for the audit trail, and a

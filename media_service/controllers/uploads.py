@@ -28,8 +28,9 @@ from media_service.core.validation import (
     is_allowed_declared_mime,
     max_size_for_category,
     mime_consistent,
+    sha256_verification_guard,
     sniff_mime,
-    verify_sha256,
+    verify_sha256_stream,
 )
 from media_service.metrics import (
     inc_upload_completed,
@@ -253,19 +254,24 @@ class UploadsController:
         if not mime_consistent(declared_mime, sniff_mime(head)):
             _reject_upload(**_reject_kw, reason="mime_mismatch")
 
-        # 3. SHA-256 verification
+        # 3. SHA-256 verification — streamed from storage so the (size-capped,
+        # see step 1) object is hashed in bounded chunks and never buffered whole
+        # in memory; the guard caps how many verifications run concurrently.
         if req.sha256:
             try:
-                content = storage.get_object(
-                    bucket=upload_session.storage_bucket,
-                    object_key=upload_session.object_key,
-                )
+                with sha256_verification_guard():
+                    chunks = storage.stream_object(
+                        bucket=upload_session.storage_bucket,
+                        object_key=upload_session.object_key,
+                        chunk_size=settings.MEDIA_SHA256_VERIFY_CHUNK_SIZE,
+                    )
+                    digest_ok = verify_sha256_stream(chunks, req.sha256)
             except Exception as exc:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="Failed to read object for SHA-256 verification.",
                 ) from exc
-            if not verify_sha256(content, req.sha256):
+            if not digest_ok:
                 _reject_upload(**_reject_kw, reason="sha256_mismatch")
 
         # 4. Pin the stored Content-Type to the server-validated declared type.

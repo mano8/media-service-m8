@@ -1,7 +1,9 @@
 """Tests for Phase 11: upload integrity validation."""
 
 import hashlib
+import tracemalloc
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -12,8 +14,9 @@ from media_service.core.config import settings
 from media_service.core.validation import (
     max_size_for_category,
     mime_consistent,
+    sha256_verification_guard,
     sniff_mime,
-    verify_sha256,
+    verify_sha256_stream,
 )
 from media_service.db_models.media_objects import MediaObject, MediaObjectStatus
 from media_service.db_models.upload_sessions import UploadSession, UploadSessionStatus
@@ -138,23 +141,73 @@ def test_mime_consistent_text_vs_image():
     assert mime_consistent("text/plain", "image/png") is False
 
 
-# ── verify_sha256 ─────────────────────────────────────────────────────────────
+# ── verify_sha256_stream ──────────────────────────────────────────────────────
 
 
-def test_verify_sha256_correct():
+def test_verify_sha256_stream_correct():
     data = b"hello world"
     digest = hashlib.sha256(data).hexdigest()
-    assert verify_sha256(data, digest) is True
+    chunks = [data[:4], data[4:8], data[8:]]
+    assert verify_sha256_stream(iter(chunks), digest) is True
 
 
-def test_verify_sha256_wrong_digest():
-    assert verify_sha256(b"hello", "a" * 64) is False
+def test_verify_sha256_stream_wrong_digest():
+    assert verify_sha256_stream(iter([b"hello"]), "a" * 64) is False
 
 
-def test_verify_sha256_case_insensitive():
+def test_verify_sha256_stream_case_insensitive():
     data = b"test"
     digest = hashlib.sha256(data).hexdigest().upper()
-    assert verify_sha256(data, digest) is True
+    assert verify_sha256_stream(iter([data]), digest) is True
+
+
+def test_verify_sha256_stream_empty_object():
+    digest = hashlib.sha256(b"").hexdigest()
+    assert verify_sha256_stream(iter([]), digest) is True
+
+
+def test_verify_sha256_stream_does_not_buffer_whole_object():
+    # An 8 MiB object hashed in 64 KiB chunks must never allocate the full
+    # payload at once: peak tracked allocation stays far below the object size.
+    chunk = b"\xab" * (64 * 1024)
+    total_chunks = 128  # 8 MiB logical object
+    digest = hashlib.sha256()
+
+    def _lazy_chunks() -> Iterator[bytes]:
+        for _ in range(total_chunks):
+            block = bytes(chunk)
+            digest.update(block)
+            yield block
+
+    expected = hashlib.sha256(chunk * total_chunks).hexdigest()
+    tracemalloc.start()
+    try:
+        assert verify_sha256_stream(_lazy_chunks(), expected) is True
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Peak well under the 8 MiB object — only a handful of chunks live at once.
+    assert peak < 1024 * 1024
+
+
+def test_sha256_verification_guard_caps_concurrency():
+    # The guard is a bounded semaphore: once its slots are exhausted, a further
+    # non-blocking acquire fails — proving simultaneous verifications are capped.
+    guard = sha256_verification_guard()
+    acquired = []
+    try:
+        while guard.acquire(blocking=False):
+            acquired.append(True)
+        # At least one slot existed, and the guard is now saturated.
+        assert acquired
+        assert guard.acquire(blocking=False) is False
+    finally:
+        for _ in acquired:
+            guard.release()
+
+
+def test_sha256_verification_guard_is_stable_singleton():
+    assert sha256_verification_guard() is sha256_verification_guard()
 
 
 # ── max_size_for_category ─────────────────────────────────────────────────────
@@ -209,7 +262,7 @@ def test_complete_upload_rejects_sha256_mismatch(
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat()
     mock_storage.get_object_head.return_value = _PDF_BYTES
-    mock_storage.get_object.return_value = b"real-content"
+    mock_storage.stream_object.return_value = iter([b"real-", b"content"])
     wrong_sha256 = "b" * 64
     resp = client.post(
         f"/media/v1/uploads/{us.id}/complete", json={"sha256": wrong_sha256}
@@ -225,7 +278,7 @@ def test_complete_upload_passes_with_correct_sha256(
     content = b"verified-file-content"
     mock_storage.stat_object.return_value = _stat()
     mock_storage.get_object_head.return_value = _PDF_BYTES
-    mock_storage.get_object.return_value = content
+    mock_storage.stream_object.return_value = iter([content])
     correct_sha256 = hashlib.sha256(content).hexdigest()
     resp = client.post(
         f"/media/v1/uploads/{us.id}/complete", json={"sha256": correct_sha256}
@@ -242,7 +295,7 @@ def test_complete_upload_skips_sha256_when_not_provided(
     mock_storage.get_object_head.return_value = _PDF_BYTES
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 200
-    mock_storage.get_object.assert_not_called()
+    mock_storage.stream_object.assert_not_called()
 
 
 def test_complete_upload_passes_when_sniff_unrecognised(
@@ -267,13 +320,13 @@ def test_complete_upload_rejects_when_get_object_head_raises(
     assert "mime_mismatch" in resp.json()["detail"]
 
 
-def test_complete_upload_sha256_get_object_raises_422(
+def test_complete_upload_sha256_stream_raises_422(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat()
     mock_storage.get_object_head.return_value = b""
-    mock_storage.get_object.side_effect = Exception("storage read error")
+    mock_storage.stream_object.side_effect = Exception("storage read error")
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={"sha256": "a" * 64})
     assert resp.status_code == 422
 

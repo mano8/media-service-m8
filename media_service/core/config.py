@@ -85,6 +85,16 @@ class Settings(ConsumerServiceSettings):
         default_factory=dict
     )
 
+    # ── SHA-256 upload verification ──────────────────────────────────────────
+    # When a client supplies an expected SHA-256 on complete, the object is
+    # streamed from storage and hashed in chunks of this many bytes, so a large
+    # (but size-capped) object is never buffered whole in memory (default 1 MiB).
+    MEDIA_SHA256_VERIFY_CHUNK_SIZE: int = Field(default=1_048_576, ge=1)
+    # Process-wide ceiling on concurrent SHA-256 verifications. Bounds how many
+    # objects are streamed + hashed at once so a burst of completions cannot
+    # fan out into unbounded concurrent full-object reads.
+    MEDIA_SHA256_VERIFY_MAX_CONCURRENCY: int = Field(default=4, ge=1)
+
     # ── Storage quotas ───────────────────────────────────────────────────────
     # Default ceilings applied to every owner/tenant scope without an explicit
     # admin override. ``None`` means unlimited (no enforcement).
