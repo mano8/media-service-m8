@@ -1,6 +1,6 @@
 """Tests for the service /media/meta + /ping routes (item 6).
 
-create_app (fastapi-m8 >= 2.0.0) auto-mounts these from ConsumerServiceSettings;
+create_app (fastapi-m8 >= 2.1.0) auto-mounts these from ConsumerServiceSettings;
 this verifies media-service supplies valid values and the routes are reachable
 unauthenticated.
 """
@@ -36,3 +36,23 @@ def test_ping_route_prefix_independent() -> None:
     resp = client.get("/ping")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+def test_ping_route_reachable_under_media_prefix() -> None:
+    resp = client.get("/media/ping")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_ping_schema_carries_single_operation() -> None:
+    ping_routes = [
+        route for route in app.routes if getattr(route, "path", "").endswith("/ping")
+    ]
+    schema_paths = [
+        route.path
+        for route in ping_routes
+        if getattr(route, "include_in_schema", False)
+    ]
+
+    assert {route.path for route in ping_routes} == {"/ping", "/media/ping"}
+    assert schema_paths == ["/ping"]

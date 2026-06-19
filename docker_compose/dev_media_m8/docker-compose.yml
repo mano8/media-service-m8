@@ -3,7 +3,7 @@ services:
   # Traefik waits for this before starting. Skipped automatically when certs already exist.
   # For browser-trusted certs: install mkcert, then run: bash init.sh --rotate-certs
   cert-init:
-    image: alpine
+    image: alpine:3.21.3
     volumes:
       - ./traefik/certs:/certs
     command:
@@ -127,7 +127,7 @@ services:
       - data_net
 
   minio:
-    image: quay.io/minio/minio
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     container_name: minio
     ports:
       - "127.0.0.1:9005:9000"
@@ -152,7 +152,7 @@ services:
   # Reads MinIO root creds from .env and the media service creds from media.env.
   # media_service waits for this to complete successfully before starting.
   minio-init:
-    image: minio/mc
+    image: quay.io/minio/mc:RELEASE.2025-04-03T17-07-38Z
     depends_on:
       minio:
         condition: service_healthy

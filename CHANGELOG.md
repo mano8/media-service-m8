@@ -9,6 +9,30 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **4.3 Dependency constraint files for reproducible builds.** `constraints.txt`
+  and `constraints-all.txt` generated via `pip-compile` (pip-tools) from
+  `requirements_base.txt` and `requirements_dev.txt` respectively, pinning every
+  transitive dependency to a specific version. CI already runs `pip-audit`,
+  `bandit`, and Trivy fs+image scans; the constraint files add a reproducible
+  build surface so deployable images can be assembled from a fully pinned
+  dependency set. Locked by `tests/test_dependency_constraints.py` (6 tests):
+  both files exist, carry the pip-compile autogeneration header, and pin every
+  direct dependency (excluding pip-compile "unsafe" packages `pip`/`setuptools`
+  which are intentionally omitted). 523 tests, 100% coverage, ruff + mypy +
+  bandit green.
+
+- **4.1 Pin all bare/unversioned image references.** Both `dev_media_m8` and
+  `hardened_media_m8` compose stacks previously referenced three images without
+  any version tag: `alpine` (cert-init), `quay.io/minio/minio`, and `minio/mc`
+  (untagged = pulls whatever `latest` is at pull time, non-reproducible and
+  unauditable). All three are now pinned to explicit version tags:
+  `alpine:3.21.3`, `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z`,
+  `quay.io/minio/mc:RELEASE.2025-04-03T17-07-38Z` (switched from Docker Hub
+  `minio/mc` to `quay.io/minio/mc` for registry consistency with the server
+  image). Static policy tests in `tests/test_compose_image_pins.py` (13 tests)
+  assert both stacks: no bare image names, no `:latest` tag, and the three
+  previously-bare images resolve to the expected pinned prefixes.
+
 - **6.x.5 Outbound webhook SSRF controls.** Webhook subscriber URLs are
   operator-supplied, so the transactional-outbox delivery path could otherwise be
   steered at the cloud-metadata endpoint, a loopback admin port, or an internal
@@ -44,6 +68,13 @@ All notable changes to `media-service-m8` are documented here.
   already-dead link. New tests cover the single-winner guarantee, unlimited
   links, and revoked/expired rejection at the DB layer. Full suite 468 tests,
   100% coverage, ruff + mypy + bandit green.
+
+- **Proxy-routable media liveness probe.** Bumped the `fastapi-m8` floor to
+  `>=2.1.0`, which guarantees `auth-sdk-m8 >= 1.5.0` and the shared
+  dual-mounted ping route. Media-service now serves both root `GET /ping` for
+  direct container probes and `GET /media/ping` for Traefik routes that only
+  forward `PathPrefix(/media)`. The prefixed copy is hidden from OpenAPI, so the
+  schema still carries a single `ping` operation.
 
 - **6.x.3 Streaming SHA-256 upload verification.** The optional integrity check
   on `complete` no longer downloads the whole object into memory

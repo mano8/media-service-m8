@@ -32,15 +32,16 @@ All routes are mounted under `API_PREFIX` (default `/media`). Domain routers:
 
 ### Service metadata & health
 
-Auto-mounted by `fastapi-m8` (≥ 2.0.0) `create_app` — the standard m8 triad:
+Auto-mounted by `fastapi-m8` (≥ 2.1.0) `create_app` — the standard m8 triad:
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@0.0`, service-version range `>=0.0.8 <0.1.0`. |
-| GET | `/ping` | — | Dependency-free **liveness** → `{"status": "ok"}` (prefix-independent, **not** under `API_PREFIX`). |
+| GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
 | GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / MinIO). |
 
-Point container **liveness** probes at `/ping` and **readiness** probes at `/{prefix}/health/`.
+Point direct container **liveness** probes at `/ping`, gateway/proxy liveness
+probes at `/{prefix}/ping`, and **readiness** probes at `/{prefix}/health/`.
 The `/meta` values come from `Settings` (`SERVICE_VERSION` tracks the package version),
 so the service fails closed at boot if its identity is undeclared.
 
