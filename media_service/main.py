@@ -3,12 +3,14 @@
 All CORS, health, lifespan, and the shared metrics middleware/collectors are
 wired by ``create_app`` (which calls ``auth_sdk_m8.observability.metrics.setup``
 itself when ``METRICS_ENABLED``). Only media-specific additions live here: the
-media-owned counters and the read-only ``/metrics`` endpoint.
+media-owned counters and the ``/metrics`` endpoint (guarded by an optional
+scrape credential via ``METRICS_SCRAPE_CREDENTIAL``).
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
+from auth_sdk_m8.security.guards import make_scrape_credential_guard
 from fastapi_m8 import (
     AppLifecycle,
     HealthCheckResult,
@@ -54,19 +56,28 @@ async def minio_health_check() -> HealthCheckResult:
         )
 
 
-def _register_metrics_endpoint(router: APIRouter, *, enabled: bool) -> None:
+def _register_metrics_endpoint(
+    router: APIRouter, *, enabled: bool, credential: str | None = None
+) -> None:
     """Expose Prometheus metrics under the API prefix when enabled.
 
     ``create_app`` installs the metrics middleware and registers the shared
     collectors; this only adds the read endpoint that renders ``REGISTRY``
     (shared HTTP metrics plus the media-owned counters).
+
+    When ``credential`` is set, requests must present
+    ``Authorization: Bearer <credential>`` (constant-time match) or receive
+    ``401``. When unset the network boundary (internal entrypoint) is the sole
+    control, matching the confirmed fleet posture (item 1.4).
     """
     if not enabled:
         return
 
     from auth_sdk_m8.observability.metrics import render as _render_metrics  # noqa: PLC0415
 
-    @router.get("/metrics", include_in_schema=False)
+    guard = make_scrape_credential_guard(credential)
+
+    @router.get("/metrics", include_in_schema=False, dependencies=[Depends(guard)])
     def metrics_endpoint() -> Response:
         data, content_type = _render_metrics()
         return Response(content=data, media_type=content_type)
@@ -74,7 +85,12 @@ def _register_metrics_endpoint(router: APIRouter, *, enabled: bool) -> None:
 
 api_router = APIRouter(prefix=settings.API_PREFIX)
 api_router.include_router(domain_router)
-_register_metrics_endpoint(api_router, enabled=settings.METRICS_ENABLED)
+_cred = settings.METRICS_SCRAPE_CREDENTIAL
+_register_metrics_endpoint(
+    api_router,
+    enabled=settings.METRICS_ENABLED,
+    credential=_cred.get_secret_value() if _cred else None,
+)
 
 app = create_app(
     settings,
