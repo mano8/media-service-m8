@@ -220,3 +220,9 @@ __marimo__/
 # Claude
 CLAUDE.md
 .claude/
+
+# Local-only workspace dev compose stack — never committed.
+# Holds live runtime data (db/grafana/redis) and local-only tweaks; the tracked
+# stacks are dev_media_m8 / hardened_media_m8. Compose-policy tests only assert
+# tracked stacks, so this never affects CI on a fresh checkout.
+docker_compose/worspace_dev_media_m8/
