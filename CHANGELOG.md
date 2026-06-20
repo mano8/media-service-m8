@@ -19,6 +19,24 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **6.x.1 Per-service scoped Redis ACLs.** Both compose stacks (`dev_media_m8`,
+  `hardened_media_m8`) replaced the open `appuser ~* +@all` ACL on **both** Redis
+  services with scoped per-service users. `redis_cache` (the bundled auth
+  service's Redis) now creates a scoped `auth` user restricted to the auth key
+  prefixes (`oauth_session:`/`auth_code:`/`login:`/`refresh:`/`exchange:`/`rt:`/
+  `jwt:blacklist:`/`rate:`/`api_key:`), mirroring fa-auth-m8. `media_redis_cache`
+  (the media-owned Redis) creates a scoped `media` user restricted to the
+  `media:*` namespace plus the `arq:*` queue keys. Both grant only the command
+  categories the apps use (`+@read +@write +@transaction +@connection +eval
+  -@dangerous +client|setinfo`) and the `default` user is locked to
+  `resetkeys -@all +@connection -@dangerous` (healthcheck `PING` only). Env
+  examples wire `REDIS_USER=auth` / `MEDIA_REDIS_USER=media` (auth.env, media.env,
+  worker.env), and the `MEDIA_REDIS_USER` settings default moved `appuser`→`media`.
+  Locked by `tests/test_compose_redis_acl_policy.py` (no open ACL, scoped key
+  patterns, category allow/deny, default-user lockdown, env wiring, + source-linked
+  guards re-deriving the media namespace default and ARQ usage). 100% coverage,
+  ruff + mypy + bandit green.
+
 - **4.3 Dependency constraint files for reproducible builds.** `constraints.txt`
   and `constraints-all.txt` generated via `pip-compile` (pip-tools) from
   `requirements_base.txt` and `requirements_dev.txt` respectively, pinning every

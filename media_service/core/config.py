@@ -155,7 +155,7 @@ class Settings(ConsumerServiceSettings):
     # ── Media Redis ──────────────────────────────────────────────────────────
     MEDIA_REDIS_HOST: str = "media_redis_cache"
     MEDIA_REDIS_PORT: int = Field(default=6379, ge=1, le=65535)
-    MEDIA_REDIS_USER: str = "appuser"
+    MEDIA_REDIS_USER: str = "media"
     MEDIA_REDIS_PASSWORD: Optional[SecretStr] = None
     MEDIA_REDIS_NAMESPACE: str = "media"
 

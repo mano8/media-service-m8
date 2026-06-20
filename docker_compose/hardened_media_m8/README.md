@@ -198,6 +198,13 @@ controlled by `grafana/config.monitoring`.
 - Only `auth_user_service` connects to the auth Redis (`redis_cache`). The media
   service reaches the auth service over HTTP (`INTROSPECTION_URL`) for revocation.
 - Use `MEDIA_REDIS_*` (→ `media_redis_cache`) for media-owned runtime state.
+- **Per-service scoped Redis ACLs (plan 6.x.1).** Each Redis bootstraps a scoped
+  ACL user instead of an open `~* +@all`: `redis_cache` creates `auth` (locked to
+  the auth service's own key prefixes) and `media_redis_cache` creates `media`
+  (locked to the `media:*` namespace + the `arq:*` queue keys). Both grant only
+  the command categories the apps use and deny `@dangerous`/admin; the `default`
+  user is stripped to connection-only so the healthcheck `PING` still works.
+  `REDIS_USER=auth` / `MEDIA_REDIS_USER=media` wire the apps to those users.
 - `.env`, `auth.env`, and `media.env` hold secrets and are git-ignored (`*.env`);
   only the `*.example` files are tracked.
 - The media service base path is `/media`.
