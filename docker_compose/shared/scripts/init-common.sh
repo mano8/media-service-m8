@@ -50,6 +50,23 @@ if [[ ${#_copied[@]} -gt 0 ]]; then
     echo ""
 fi
 
+# --- Deployment security preflight (advisory — never blocks compose up) ---
+# Shells out to the security-tests-m8 Python scanner.  The scanner's non-zero
+# exit is captured and reported; init always proceeds regardless.
+_preflight_rc=0
+if command -v security-tests-m8 &>/dev/null; then
+    security-tests-m8 preflight --deployment-root "$(pwd)" || _preflight_rc=$?
+    if [[ $_preflight_rc -ne 0 ]]; then
+        echo ""
+        echo "NOTE: preflight found issues (see above) — fix all ERROR findings before production deployment."
+        echo "      init will proceed regardless."
+        echo ""
+    fi
+else
+    echo "NOTE: security-tests-m8 not installed — skipping deployment preflight."
+    echo "      Install: pip install security-tests-m8"
+fi
+
 # --- DB reset (destructive, confirmation-gated) ---
 if [[ "$RESET_DB" == "true" ]]; then
     echo ""

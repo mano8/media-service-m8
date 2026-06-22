@@ -1,13 +1,17 @@
-# hardened_media_m8
+# dev_media_m8
 
-Local hardened stack for `auth_user_service` + `media_service`.
+Local dev stack for `auth_user_service` + `media_service`.
 
-Includes PostgreSQL 18, two Redis instances (auth + media), MinIO, Traefik,
-Prometheus, Grafana, RS256/JWKS auth integration, hardened containers, and
-network segmentation.
+Same hardened posture as `hardened_media_m8` (PostgreSQL 18, two Redis instances
+(auth + media), MinIO, Traefik, Prometheus, Grafana, RS256/JWKS auth, container
+hardening, network segmentation), with two developer conveniences:
 
-Use this example while developing the media microservice. Other compose examples
-are intentionally not aligned until this one is working.
+- **`media_service` and `media_service_worker` are built from local source**
+  (`../../media_service`) instead of pulling the published image.
+- **MinIO is published on loopback** (`127.0.0.1:9005`/`9006`) so you can reach
+  the API/console from the host while iterating.
+
+`auth_user_service` and `media_worker` still use the published Docker Hub images.
 
 ## Architecture
 
@@ -29,7 +33,8 @@ Browser / Frontend
 
 `app_net` is external-facing for Traefik, app services, and observability.
 `data_net` is internal and has no gateway; DB, Redis, and MinIO are not exposed
-through that network.
+through that network (MinIO additionally publishes loopback-only host ports for
+dev convenience).
 
 > **Token revocation:** the media service does **not** connect to the auth
 > Redis. In `stateful` mode it queries the auth service's private introspection
@@ -41,19 +46,25 @@ through that network.
 | Service | Image/build | Local access |
 | --- | --- | --- |
 | traefik | `traefik:v3.7.5` | `:8000`, `:4430`, `127.0.0.1:9000`, `127.0.0.1:8080` |
-| auth_user_service | `tepochtli/fa-auth-m8:latest` | `/user` via Traefik |
+| auth_user_service | `tepochtli/fa-auth-m8:0.9.9` | `/user` via Traefik |
 | media_service | local `../../media_service` build | `/media` via Traefik |
+| media_service_worker | local `../../media_service` build (arq command override) | internal — no port; lifecycle/outbox crons |
+| media_worker | `tepochtli/media-worker-m8:0.2.0` | internal — enqueue-driven (scan + variants) |
+| clamav | `clamav/clamav:1.5-debian13-slim` | internal `scan_net` only |
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
-| minio | `quay.io/minio/minio` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
-| minio-init | `minio/mc` | one-shot: buckets + `media-rw` policy |
+| minio | `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
+| minio-init | `quay.io/minio/mc:RELEASE.2025-04-03T17-07-38Z` | one-shot: buckets + `media-rw` policy |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 
+A one-shot `cert-init` (`alpine:3.21.3`) generates local TLS certs before
+Traefik starts.
+
 ## Setup
 
-From `docker_compose/hardened_media_m8`:
+From `docker_compose/dev_media_m8`:
 
 ```sh
 cp .env.example .env
@@ -198,10 +209,18 @@ controlled by `grafana/config.monitoring`.
 - Only `auth_user_service` connects to the auth Redis (`redis_cache`). The media
   service reaches the auth service over HTTP (`INTROSPECTION_URL`) for revocation.
 - Use `MEDIA_REDIS_*` (→ `media_redis_cache`) for media-owned runtime state.
+- **Per-service scoped Redis ACLs (plan 6.x.1).** Each Redis bootstraps a scoped
+  ACL user instead of an open `~* +@all`: `redis_cache` creates `auth` (locked to
+  the auth service's own key prefixes) and `media_redis_cache` creates `media`
+  (locked to the `media:*` namespace + the `arq:*` queue keys). Both grant only
+  the command categories the apps use and deny `@dangerous`/admin; the `default`
+  user is stripped to connection-only so the healthcheck `PING` still works.
+  `REDIS_USER=auth` / `MEDIA_REDIS_USER=media` wire the apps to those users.
 - `.env`, `auth.env`, and `media.env` hold secrets and are git-ignored (`*.env`);
   only the `*.example` files are tracked.
 - The media service base path is `/media`.
-- Other compose examples are not updated by this hardened example.
+- This dev stack builds `media_service` from source; the published-image
+  equivalent is `hardened_media_m8`.
 
 ## Common Commands
 

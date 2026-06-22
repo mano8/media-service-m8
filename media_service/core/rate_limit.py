@@ -6,6 +6,7 @@ from typing import Annotated, cast
 import redis as redis_lib
 from fastapi import Depends, HTTPException, Request, status
 
+import media_service.metrics as _metrics
 from media_service.core.deps import CurrentUser
 from media_service.core.media_redis import get_media_redis_config
 
@@ -47,13 +48,31 @@ class RateLimiter:
     * a coarse per-source-IP window (``limit × _IP_LIMIT_FACTOR``) that catches
       a single source spraying the endpoint across many accounts.
 
-    Fails open on Redis errors so a cache outage never blocks media traffic.
+    On Redis errors the behaviour is controlled by *failure_mode*:
+
+    * ``"fail_open"`` (default) — lets traffic through; a Redis outage never
+      blocks media traffic, but rate limits are temporarily unenforced.
+    * ``"fail_closed"`` — returns HTTP 503; prevents unenforced bursts during
+      Redis outages.  Recommended for production (set via
+      ``MEDIA_RATE_LIMIT_FAILURE_MODE=fail_closed``).
+
+    When *failure_mode* is ``None`` the value is read at call time from
+    ``settings.MEDIA_RATE_LIMIT_FAILURE_MODE``, letting callers pick up runtime
+    configuration without needing to pass it at instantiation.
     """
 
-    def __init__(self, action: str, limit: int, window_seconds: int = 60) -> None:
+    def __init__(
+        self,
+        action: str,
+        limit: int,
+        window_seconds: int = 60,
+        *,
+        failure_mode: str | None = None,
+    ) -> None:
         self.action = action
         self.limit = limit
         self.window_seconds = window_seconds
+        self._failure_mode = failure_mode
 
     def _check(self, redis_client: redis_lib.Redis, key: str, limit: int) -> None:
         """Increment one window and raise 429 if it exceeds *limit*."""
@@ -83,10 +102,31 @@ class RateLimiter:
         peer = request.client.host if request.client else "unknown"
         ip = "".join(c for c in peer if c.isprintable())[:_MAX_IP_LEN]
         ip_key = _config.key(f"ratelimit:ip:{self.action}", ip)
+        if self._failure_mode is not None:
+            mode = self._failure_mode
+        else:
+            from media_service.core.config import (
+                settings,
+            )  # lazy — avoids circular import at module load
+
+            mode = settings.MEDIA_RATE_LIMIT_FAILURE_MODE
         try:
             self._check(redis_client, user_key, self.limit)
             self._check(redis_client, ip_key, self.limit * _IP_LIMIT_FACTOR)
         except HTTPException:
             raise
         except Exception:
-            _logger.warning("rate_limit.redis_error action=%s", self.action)
+            _metrics.inc_rate_limit_redis_error(mode)
+            if mode == "fail_closed":
+                _logger.error(
+                    "rate_limit.redis_error action=%s mode=fail_closed → 503",
+                    self.action,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Rate limiter temporarily unavailable. Please retry.",
+                )
+            _logger.warning(
+                "rate_limit.redis_error action=%s mode=fail_open → pass",
+                self.action,
+            )

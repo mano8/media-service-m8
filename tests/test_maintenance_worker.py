@@ -9,6 +9,7 @@ import pytest
 from arq.connections import RedisSettings
 from sqlmodel import Session, select
 
+import media_service.core.ssrf as ssrf
 import media_service.maintenance_worker as mw
 from media_service.db_models.media_objects import (
     MediaObject,
@@ -176,6 +177,10 @@ async def test_deliver_outbox_cron_delivers_pending(session: Session, monkeypatc
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
         return httpx.Response(200)
+
+    # Resolve the subscriber host to a public IP without touching real DNS so the
+    # send-time SSRF guard (local posture) admits it deterministically offline.
+    monkeypatch.setattr(ssrf, "_default_resolver", lambda _host: ["93.184.216.34"])
 
     # Route the cron's real httpx.Client through the in-process fake subscriber.
     # Capture the real class first so the replacement does not recurse into itself.

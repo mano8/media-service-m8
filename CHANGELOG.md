@@ -5,6 +5,202 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Service version → `0.0.9`** (`media_service.__version__`, from `0.0.8`). The
+  `GET {prefix}/meta` contract id stays `media-service-m8@0.0` (the whole pre-1.0
+  line shares contract `0.0`); its service-version `range` tracks the bump to
+  `>=0.0.9 <0.1.0` (`CONTRACT_RANGE` in `core/config.py`). The hardened compose
+  stack pins the matching published image `tepochtli/media-service-m8:0.0.9`
+  (alongside `tepochtli/fa-auth-m8:0.9.9` and `tepochtli/media-worker-m8:0.2.0`).
+- **`/health` + OpenAPI now report the package version.** `create_app` in
+  `main.py` was passing a hard-coded `service_version="1.0.0"`; it now passes
+  `settings.SERVICE_VERSION`, so the readiness body and the OpenAPI `info.version`
+  agree with `GET {prefix}/meta` (`0.0.9`) instead of reporting a stale `1.0.0`.
+- **Bundled `fa-auth-m8` image bumped `0.9.8` → `0.9.9`** in the `dev_media_m8`
+  and `hardened_media_m8` compose stacks (`worspace_dev_media_m8` builds
+  `fa-auth-m8` from source and is unaffected).
+- **`docker_compose` documentation realigned with the stacks.** All compose
+  READMEs were rewritten to match the actual services and pins: stale per-stack
+  titles fixed (`dev_media_m8` / `worspace_dev_media_m8` were copies of the
+  hardened README), the previously-undocumented `clamav` / `media_worker` /
+  `media_service_worker` services added, MinIO image tags + the `quay.io/minio/mc`
+  registry corrected, and the hardened README no longer advertises the MinIO host
+  ports removed in security item 0.2. The top-level `docker_compose/README.md`
+  (a leftover `fa-auth-m8` template listing stacks that do not exist here) now
+  describes the three real media stacks. The `worspace_dev_media_m8` local
+  cross-repo dev stack is now tracked (config only — `*.env`, generated keys, and
+  runtime volume data stay git-ignored).
+- **Standalone `media_service/.example_env` completed.** Added the two required
+  secrets it was missing (`MEDIA_INTERNAL_SERVICE_TOKEN`,
+  `MEDIA_SHARE_SIGNING_SECRET`) and corrected `MEDIA_REDIS_USER` from the
+  retired `appuser` default to the scoped `media` user, so the non-Docker local
+  example boots without the fail-closed settings error.
+
+### Fixed
+
+- **`/ping` schema assertion is FastAPI 0.137+ compatible.** `test_meta.py` read
+  `app.routes` to assert the prefixed `/media/ping` copy stays out of the schema;
+  FastAPI 0.137 stopped flattening included routers onto `app.routes` (they become
+  nested entries with `path=None`), so the walk found nothing. The test now asserts
+  the schema contract through the public `app.openapi()["paths"]` document instead.
+
+- **Pin `media-sdk-m8>=0.4.0`** (from `>=0.3.0`) — the streaming SHA-256
+  verification (6.x.3) calls the SDK's new chunked `ObjectStorage.stream_object`
+  primitive, which first ships in 0.4.0, so the floor is now a hard requirement,
+  not just an alignment. The `media-sdk-m8` pin in `constraints.txt` /
+  `constraints-all.txt` is moved to `==0.4.0` to keep the lockfiles consistent
+  with the floor; both should be regenerated via `pip-compile` against the
+  published 0.4.0 release as part of the final remediation PR.
+
+### Security
+
+- **6.x.1 Per-service scoped Redis ACLs.** Both compose stacks (`dev_media_m8`,
+  `hardened_media_m8`) replaced the open `appuser ~* +@all` ACL on **both** Redis
+  services with scoped per-service users. `redis_cache` (the bundled auth
+  service's Redis) now creates a scoped `auth` user restricted to the auth key
+  prefixes (`oauth_session:`/`auth_code:`/`login:`/`refresh:`/`exchange:`/`rt:`/
+  `jwt:blacklist:`/`rate:`/`api_key:`), mirroring fa-auth-m8. `media_redis_cache`
+  (the media-owned Redis) creates a scoped `media` user restricted to the
+  `media:*` namespace plus the `arq:*` queue keys. Both grant only the command
+  categories the apps use (`+@read +@write +@transaction +@connection +eval
+  -@dangerous +client|setinfo`); the `media` user additionally re-grants `+info`
+  **after** `-@dangerous` (ACL rules apply left-to-right) because ARQ issues
+  `INFO server` on startup to read the Redis version — without it the worker dies
+  with `NoPermissionError running 'info'`. The `default` user is locked to
+  `resetkeys -@all +@connection -@dangerous` (healthcheck `PING` only). Env
+  examples wire `REDIS_USER=auth` / `MEDIA_REDIS_USER=media` (auth.env, media.env,
+  worker.env), and the `MEDIA_REDIS_USER` settings default moved `appuser`→`media`.
+  Locked by `tests/test_compose_redis_acl_policy.py` (no open ACL, scoped key
+  patterns, category allow/deny, default-user lockdown, env wiring, + source-linked
+  guards re-deriving the media namespace default and ARQ usage). 100% coverage,
+  ruff + mypy + bandit green.
+
+- **4.3 Dependency constraint files for reproducible builds.** `constraints.txt`
+  and `constraints-all.txt` generated via `pip-compile` (pip-tools) from
+  `requirements_base.txt` and `requirements_dev.txt` respectively, pinning every
+  transitive dependency to a specific version. CI already runs `pip-audit`,
+  `bandit`, and Trivy fs+image scans; the constraint files add a reproducible
+  build surface so deployable images can be assembled from a fully pinned
+  dependency set. Locked by `tests/test_dependency_constraints.py` (6 tests):
+  both files exist, carry the pip-compile autogeneration header, and pin every
+  direct dependency (excluding pip-compile "unsafe" packages `pip`/`setuptools`
+  which are intentionally omitted). 523 tests, 100% coverage, ruff + mypy +
+  bandit green.
+
+- **4.1 Pin all bare/unversioned image references.** Both `dev_media_m8` and
+  `hardened_media_m8` compose stacks previously referenced three images without
+  any version tag: `alpine` (cert-init), `quay.io/minio/minio`, and `minio/mc`
+  (untagged = pulls whatever `latest` is at pull time, non-reproducible and
+  unauditable). All three are now pinned to explicit version tags:
+  `alpine:3.21.3`, `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z`,
+  `quay.io/minio/mc:RELEASE.2025-04-03T17-07-38Z` (switched from Docker Hub
+  `minio/mc` to `quay.io/minio/mc` for registry consistency with the server
+  image). Static policy tests in `tests/test_compose_image_pins.py` (13 tests)
+  assert both stacks: no bare image names, no `:latest` tag, and the three
+  previously-bare images resolve to the expected pinned prefixes.
+
+- **6.x.5 Outbound webhook SSRF controls.** Webhook subscriber URLs are
+  operator-supplied, so the transactional-outbox delivery path could otherwise be
+  steered at the cloud-metadata endpoint, a loopback admin port, or an internal
+  service. A new guard (`core/ssrf.py`) validates a target by **resolving its host
+  at send time and inspecting every resolved IP** — DNS rebinding included — and is
+  applied at two points: a static pass at subscription create time (scheme, the
+  production HTTPS rule, and literal-IP targets; a loopback/metadata literal is now
+  rejected with `400`) and the authoritative pass before every delivery POST
+  (`OutboxDeliveryController` threads a `url_guard`; a blocked target is never
+  requested and settles via the existing retry/backoff path). Honouring the
+  home-lab rule, the posture degrades gracefully: loopback, link-local, the
+  `169.254.169.254` cloud-metadata address, multicast and reserved ranges are
+  **always** blocked, while private (RFC1918/ULA/CGNAT) targets and plain `http://`
+  are allowed in local/dev but **rejected under production/strict** — so a
+  Docker-network subscriber still works in dev without weakening production. A
+  trusted in-cluster subscriber can be exempted by exact hostname via the new
+  `MEDIA_WEBHOOK_ALLOWED_INTERNAL_HOSTS` setting (documented in the dev + hardened
+  `media.env.example`). New `tests/test_ssrf.py` plus create-time and send-time
+  cases in `test_subscriptions.py` / `test_outbox.py`. Full suite 510 tests, 100%
+  coverage, ruff + mypy + bandit green.
+
+- **6.x.4 Atomic share `max_uses` consumption.** Resolving a share link no
+  longer reads `uses`, checks it against `max_uses`, and writes back in separate
+  steps — a window in which two concurrent resolves of a `max_uses`-bounded link
+  could both pass the check and both increment, overshooting the limit. A use is
+  now consumed by a single conditional `UPDATE ... SET uses = uses + 1 WHERE
+  id = ? AND NOT revoked AND expires_at > now AND (max_uses IS NULL OR uses <
+  max_uses)` (`SharesController._consume_use`). The database evaluates the
+  predicate and the increment as one statement, so concurrent resolves serialise
+  there: exactly one caller wins the last use and any loser — having passed the
+  read-time check — gets a uniform `403`. The read-time check in
+  `_load_active_share` is retained purely to return a precise reason for an
+  already-dead link. New tests cover the single-winner guarantee, unlimited
+  links, and revoked/expired rejection at the DB layer. Full suite 468 tests,
+  100% coverage, ruff + mypy + bandit green.
+
+- **Proxy-routable media liveness probe.** Bumped the `fastapi-m8` floor to
+  `>=2.1.0`, which guarantees `auth-sdk-m8 >= 1.5.0` and the shared
+  dual-mounted ping route. Media-service now serves both root `GET /ping` for
+  direct container probes and `GET /media/ping` for Traefik routes that only
+  forward `PathPrefix(/media)`. The prefixed copy is hidden from OpenAPI, so the
+  schema still carries a single `ping` operation.
+
+- **6.x.3 Streaming SHA-256 upload verification.** The optional integrity check
+  on `complete` no longer downloads the whole object into memory
+  (`get_object` → `verify_sha256(content, expected)`). It now streams the object
+  from storage in bounded chunks via the new SDK primitive
+  `ObjectStorage.stream_object(...)` and hashes incrementally
+  (`verify_sha256_stream`), so a large (size-capped) upload is never buffered
+  whole. Hard max-size enforcement still runs **before** hashing (step 1), so
+  only size-validated objects are read. A process-wide
+  `sha256_verification_guard()` (bounded semaphore) caps how many verifications
+  run at once, preventing a burst of completions from fanning out into
+  unbounded concurrent full-object reads. Two new settings (both defaulted,
+  backward-compatible): `MEDIA_SHA256_VERIFY_CHUNK_SIZE` (default 1 MiB) and
+  `MEDIA_SHA256_VERIFY_MAX_CONCURRENCY` (default 4); documented in both
+  `dev_media_m8` / `hardened_media_m8` `media.env.example`. New tests cover
+  streamed valid/invalid/empty hashes, a `tracemalloc`-asserted no-full-buffer
+  guarantee, and the concurrency cap. Full suite 461 tests, 100% coverage,
+  ruff + mypy + bandit green.
+
+- **6.x.2 Rate-limiter Redis-error failure mode** (`MEDIA_RATE_LIMIT_FAILURE_MODE`).
+  Adds an explicit, observable policy for what the rate limiter does when its
+  Redis backend is unreachable.
+  - `fail_open` (default, backward-compatible): traffic passes through; a Redis
+    outage never blocks media uploads, but limits are temporarily unenforced.
+  - `fail_closed`: returns HTTP 503 on Redis error; prevents unenforced upload
+    bursts during outages. **Recommended for production.**
+  Both modes emit a `{api_prefix}_media_rate_limit_redis_errors_total{mode=…}`
+  Prometheus counter on every Redis error so outages and policy decisions are
+  observable. `hardened_media_m8/media.env.example` sets `fail_closed`;
+  `dev_media_m8/media.env.example` documents the option (commented out,
+  defaults to `fail_open`).
+  7 new tests (both modes, metric emission, settings-read-at-call-time, no-metric
+  on success); full suite 457 tests, 100% coverage, ruff + mypy + bandit green.
+
+- **0.4 Advisory deployment preflight wired into init** (P0 consolidation).
+  `docker_compose/shared/scripts/init-common.sh` now shells out to the
+  `security-tests-m8 preflight` Python scanner after copying env files. The
+  invocation is **advisory only** — a non-zero exit is captured, reported, and
+  ignored; `compose up` is never blocked. When `security-tests-m8` is not
+  installed a clear install note is printed instead. The scanner (updated in
+  `security-tests-m8`) now covers two new P0 generic gates that apply to this
+  stack: Docker socket mounts and `0.0.0.0` public-bind for any service in
+  hardened/production stacks. MinIO-specific compose-policy tests (stronger
+  "no `ports:` at all" assertion) are already owned by this repo
+  (`tests/test_compose_minio_policy.py`) from item 0.2.
+
+- **0.2 MinIO host-port exposure removed** (P0 stop-the-bleed).
+  `hardened_media_m8`: MinIO `ports:` block removed entirely — the API
+  (`:9000`) and console (`:9001`) are reachable only on the Docker network
+  (`minio:9000`), never from the host or LAN.
+  `dev_media_m8`: ports bound to loopback (`127.0.0.1:9005:9000`,
+  `127.0.0.1:9006:9001`) for local tooling; no LAN exposure.
+  Static compose-policy tests added (`tests/test_compose_minio_policy.py`,
+  5 tests) asserting the above for both stacks.
+
+---
+
 ## [0.0.8] — 2026-06-16 · Service `/meta` + `/ping` routes (contract discoverability)
 
 Closes item 6 of `dev-stack-runtime-errors.md`: the service exposed no

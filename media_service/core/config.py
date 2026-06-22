@@ -5,7 +5,7 @@ are all inherited from ConsumerServiceSettings (fastapi-m8).
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field, SecretStr
 from pydantic_settings import SettingsConfigDict
@@ -39,7 +39,7 @@ class Settings(ConsumerServiceSettings):
     # Contract major.minor tracks the package (0.0.x) — pre-1.0, not the
     # aspirational "1.0"; kept in lockstep with astro-media-m8's contract pin.
     CONTRACT_VERSION: str = "0.0"
-    CONTRACT_RANGE: str = ">=0.0.8 <0.1.0"
+    CONTRACT_RANGE: str = ">=0.0.9 <0.1.0"
 
     secret_fields = ConsumerServiceSettings.secret_fields + [
         "MINIO_SECRET_KEY",
@@ -85,6 +85,16 @@ class Settings(ConsumerServiceSettings):
         default_factory=dict
     )
 
+    # ── SHA-256 upload verification ──────────────────────────────────────────
+    # When a client supplies an expected SHA-256 on complete, the object is
+    # streamed from storage and hashed in chunks of this many bytes, so a large
+    # (but size-capped) object is never buffered whole in memory (default 1 MiB).
+    MEDIA_SHA256_VERIFY_CHUNK_SIZE: int = Field(default=1_048_576, ge=1)
+    # Process-wide ceiling on concurrent SHA-256 verifications. Bounds how many
+    # objects are streamed + hashed at once so a burst of completions cannot
+    # fan out into unbounded concurrent full-object reads.
+    MEDIA_SHA256_VERIFY_MAX_CONCURRENCY: int = Field(default=4, ge=1)
+
     # ── Storage quotas ───────────────────────────────────────────────────────
     # Default ceilings applied to every owner/tenant scope without an explicit
     # admin override. ``None`` means unlimited (no enforcement).
@@ -125,11 +135,27 @@ class Settings(ConsumerServiceSettings):
     OUTBOX_BACKOFF_BASE_SECONDS: int = Field(default=30, ge=1)
     # Per-request timeout (seconds) for a single subscriber POST.
     OUTBOX_DELIVERY_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0)
+    # SSRF allowlist: exact hostnames a webhook subscriber may target even when
+    # they resolve to a private/internal address (and exempt from the
+    # production HTTPS rule). Use for trusted in-cluster subscribers — e.g.
+    # ["media_worker"]. Everything else is gated by core.ssrf: loopback/
+    # link-local/metadata are always blocked; private ranges and plain http
+    # are rejected only under production/strict (Docker-network targets stay
+    # reachable in local/dev).
+    MEDIA_WEBHOOK_ALLOWED_INTERNAL_HOSTS: list[str] = Field(default_factory=list)
+
+    # ── Rate-limiter Redis-error policy ──────────────────────────────────────
+    # Controls what happens when the Redis backing the rate limiter is
+    # unreachable. "fail_open" (default) lets traffic through so a Redis outage
+    # never blocks media uploads. "fail_closed" returns HTTP 503 on Redis
+    # error, preventing unenforced bursts during outages. Recommended:
+    # fail_closed in production, fail_open in dev/local.
+    MEDIA_RATE_LIMIT_FAILURE_MODE: Literal["fail_open", "fail_closed"] = "fail_open"
 
     # ── Media Redis ──────────────────────────────────────────────────────────
     MEDIA_REDIS_HOST: str = "media_redis_cache"
     MEDIA_REDIS_PORT: int = Field(default=6379, ge=1, le=65535)
-    MEDIA_REDIS_USER: str = "appuser"
+    MEDIA_REDIS_USER: str = "media"
     MEDIA_REDIS_PASSWORD: Optional[SecretStr] = None
     MEDIA_REDIS_NAMESPACE: str = "media"
 

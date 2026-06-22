@@ -1,6 +1,8 @@
 """Content validation helpers for uploaded objects."""
 
 import hashlib
+import threading
+from collections.abc import Iterable
 from typing import Optional
 
 import filetype as _filetype
@@ -88,9 +90,34 @@ def mime_consistent(declared: str, sniffed: Optional[str]) -> bool:
     return declared_major == sniffed_major and declared_major in _MEDIA_MAJORS
 
 
-def verify_sha256(data: bytes, expected: str) -> bool:
-    """Return True when the SHA-256 digest of data matches the expected hex string."""
-    return hashlib.sha256(data).hexdigest() == expected.lower()
+# Process-wide guard bounding concurrent SHA-256 verifications. Each streaming
+# verification holds a slot while it reads + hashes an object, so a burst of
+# large completions cannot fan out into unbounded concurrent full-object reads.
+# Sized from settings once at import (one limit per process).
+_VERIFY_SEMAPHORE = threading.BoundedSemaphore(
+    settings.MEDIA_SHA256_VERIFY_MAX_CONCURRENCY
+)
+
+
+def sha256_verification_guard() -> threading.BoundedSemaphore:
+    """Return the process-wide concurrency guard for SHA-256 verification.
+
+    Use as a context manager around a streaming verification so that no more than
+    ``MEDIA_SHA256_VERIFY_MAX_CONCURRENCY`` run at once.
+    """
+    return _VERIFY_SEMAPHORE
+
+
+def verify_sha256_stream(chunks: Iterable[bytes], expected: str) -> bool:
+    """Return True when the streamed SHA-256 digest matches the expected hex string.
+
+    Hashes incrementally from an iterable of byte chunks so the full object is
+    never held in memory at once.
+    """
+    digest = hashlib.sha256()
+    for chunk in chunks:
+        digest.update(chunk)
+    return digest.hexdigest() == expected.lower()
 
 
 def max_size_for_category(category: str) -> int:

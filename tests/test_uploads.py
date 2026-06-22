@@ -246,7 +246,7 @@ def test_complete_upload_with_sha256(
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat_mock()
     mock_storage.get_object_head.return_value = _PDF_BYTES
-    mock_storage.get_object.return_value = content
+    mock_storage.stream_object.return_value = iter([content[:10], content[10:]])
     resp = client.post(
         f"/media/v1/uploads/{us.id}/complete",
         json={"sha256": correct_sha256},
@@ -262,7 +262,7 @@ def test_complete_upload_sha256_read_failure_returns_422(
     us = _make_session(session, current_user.id)
     mock_storage.stat_object.return_value = _stat_mock()
     mock_storage.get_object_head.return_value = _PDF_BYTES
-    mock_storage.get_object.side_effect = Exception("read failed")
+    mock_storage.stream_object.side_effect = Exception("read failed")
     resp = client.post(
         f"/media/v1/uploads/{us.id}/complete",
         json={"sha256": "a" * 64},

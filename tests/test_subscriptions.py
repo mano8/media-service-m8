@@ -2,6 +2,7 @@
 
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
@@ -66,6 +67,23 @@ def test_create_subscription_rejects_short_secret(superuser_client: TestClient):
 def test_create_subscription_requires_superuser(client: TestClient):
     resp = client.post(BASE, json=_payload())
     assert resp.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/h",
+        "http://169.254.169.254/latest/meta-data",
+        "http://[::1]/h",
+    ],
+)
+def test_create_subscription_rejects_ssrf_literal(
+    superuser_client: TestClient, session: Session, url: str
+):
+    """A literal loopback/metadata target is rejected at create time (400)."""
+    resp = superuser_client.post(BASE, json=_payload(url=url))
+    assert resp.status_code == 400
+    assert session.exec(select(Subscription)).all() == []
 
 
 # ── list ─────────────────────────────────────────────────────────────────────

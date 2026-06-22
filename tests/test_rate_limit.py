@@ -1,7 +1,7 @@
 """Tests for core/rate_limit.py RateLimiter."""
 
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -105,8 +105,60 @@ def test_rate_limiter_allows_at_exact_limit():
 def test_rate_limiter_fails_open_on_redis_connection_error():
     redis = MagicMock()
     redis.incr.side_effect = ConnectionError("Redis down")
-    limiter = RateLimiter("test:action", limit=5)
+    limiter = RateLimiter("test:action", limit=5, failure_mode="fail_open")
     limiter(request=_make_request(), current_user=_make_user(), redis_client=redis)
+
+
+def test_rate_limiter_fail_closed_raises_503_on_redis_error():
+    redis = MagicMock()
+    redis.incr.side_effect = ConnectionError("Redis down")
+    limiter = RateLimiter("test:action", limit=5, failure_mode="fail_closed")
+    with pytest.raises(HTTPException) as exc_info:
+        limiter(request=_make_request(), current_user=_make_user(), redis_client=redis)
+    assert exc_info.value.status_code == 503
+
+
+def test_rate_limiter_fail_open_emits_metric_on_redis_error():
+    redis = MagicMock()
+    redis.incr.side_effect = ConnectionError("Redis down")
+    limiter = RateLimiter("test:action", limit=5, failure_mode="fail_open")
+    with patch("media_service.core.rate_limit._metrics") as mock_metrics:
+        limiter(request=_make_request(), current_user=_make_user(), redis_client=redis)
+    mock_metrics.inc_rate_limit_redis_error.assert_called_once_with("fail_open")
+
+
+def test_rate_limiter_fail_closed_emits_metric_on_redis_error():
+    redis = MagicMock()
+    redis.incr.side_effect = ConnectionError("Redis down")
+    limiter = RateLimiter("test:action", limit=5, failure_mode="fail_closed")
+    with patch("media_service.core.rate_limit._metrics") as mock_metrics:
+        with pytest.raises(HTTPException):
+            limiter(
+                request=_make_request(), current_user=_make_user(), redis_client=redis
+            )
+    mock_metrics.inc_rate_limit_redis_error.assert_called_once_with("fail_closed")
+
+
+def test_rate_limiter_reads_failure_mode_from_settings_when_not_set():
+    redis = MagicMock()
+    redis.incr.side_effect = ConnectionError("Redis down")
+    limiter = RateLimiter("test:action", limit=5)  # no explicit failure_mode
+    mock_settings = MagicMock()
+    mock_settings.MEDIA_RATE_LIMIT_FAILURE_MODE = "fail_open"
+    with (
+        patch("media_service.core.rate_limit._metrics") as mock_metrics,
+        patch("media_service.core.config.settings", mock_settings),
+    ):
+        limiter(request=_make_request(), current_user=_make_user(), redis_client=redis)
+    mock_metrics.inc_rate_limit_redis_error.assert_called_once_with("fail_open")
+
+
+def test_rate_limiter_no_metric_emitted_on_successful_request():
+    redis = _make_redis(count=1)
+    limiter = RateLimiter("test:action", limit=5, failure_mode="fail_open")
+    with patch("media_service.core.rate_limit._metrics") as mock_metrics:
+        limiter(request=_make_request(), current_user=_make_user(), redis_client=redis)
+    mock_metrics.inc_rate_limit_redis_error.assert_not_called()
 
 
 def test_rate_limiter_key_uses_namespace_and_user_id():

@@ -13,6 +13,7 @@ _uploads_rejected: Optional[Counter] = None
 _quota_rejected: Optional[Counter] = None
 _bytes_uploaded: Optional[Counter] = None
 _download_urls_generated: Optional[Counter] = None
+_rate_limit_redis_errors: Optional[Counter] = None
 
 
 def setup(*, enabled: bool, api_prefix: str = "media") -> None:
@@ -25,6 +26,7 @@ def setup(*, enabled: bool, api_prefix: str = "media") -> None:
 def _do_register(api_prefix: str) -> None:  # pragma: no cover
     global _uploads_initiated, _uploads_completed, _uploads_failed, _uploads_rejected
     global _quota_rejected, _bytes_uploaded, _download_urls_generated
+    global _rate_limit_redis_errors
     p = api_prefix.strip().lstrip("/").replace("-", "_").replace("/", "_")
     pfx = f"{p}_" if p else ""
     _uploads_initiated = Counter(
@@ -67,6 +69,12 @@ def _do_register(api_prefix: str) -> None:  # pragma: no cover
         "Presigned download URLs generated",
         registry=REGISTRY,
     )
+    _rate_limit_redis_errors = Counter(
+        f"{pfx}media_rate_limit_redis_errors_total",
+        "Rate-limiter Redis errors by failure mode decision",
+        ["mode"],
+        registry=REGISTRY,
+    )
 
 
 def inc_upload_initiated(category: str, visibility: str) -> None:
@@ -99,3 +107,8 @@ def inc_quota_rejected(reason: str) -> None:
 def inc_download_url_generated() -> None:
     if _download_urls_generated is not None:
         _download_urls_generated.inc()
+
+
+def inc_rate_limit_redis_error(mode: str) -> None:
+    if _rate_limit_redis_errors is not None:
+        _rate_limit_redis_errors.labels(mode=mode).inc()
