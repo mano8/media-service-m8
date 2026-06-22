@@ -121,12 +121,65 @@ MINIO_BUCKET_TEMP=temp-media
 MINIO_BUCKET_ARCHIVE=archive-media
 MINIO_PRESIGNED_URL_EXPIRE_SECONDS=300
 MEDIA_MAX_UPLOAD_SIZE_BYTES=104857600
+# Optional per-category overrides of the global max (bytes), as a JSON object
+# keyed by category; a category absent here falls back to the global value above.
+# MEDIA_MAX_UPLOAD_SIZE_BYTES_PER_CATEGORY={"image": 52428800, "video": 524288000}
+
+# ── SHA-256 upload verification ───────────────────────────────────────────────
+# When a client sends an expected SHA-256 on complete, the object is streamed
+# from storage and hashed in chunks of this many bytes, so a large (size-capped)
+# object is never buffered whole in memory. Defaults below; uncomment to tune.
+# MEDIA_SHA256_VERIFY_CHUNK_SIZE=1048576
+# Process-wide ceiling on concurrent SHA-256 verifications (bounds simultaneous
+# streamed reads). Default 4.
+# MEDIA_SHA256_VERIFY_MAX_CONCURRENCY=4
+
+# ── Internal service auth (required) ──────────────────────────────────────────
+# Shared bearer token the media-worker presents on internal callbacks
+# (scan-result, variant register/job-status). Use a long, high-entropy random
+# value (>= 32 chars); must match the worker's MEDIA_INTERNAL_SERVICE_TOKEN.
+MEDIA_INTERNAL_SERVICE_TOKEN=changethis
+
+# ── Share links (required key) ────────────────────────────────────────────────
+# Independent HMAC key for signing share-link tokens — media-service-owned, NOT
+# an auth secret. Use a long, high-entropy random value (>= 32 chars); rotating
+# it invalidates every outstanding share link.
+# In staging/prod this MUST come from secrets management, never a committed
+# runtime env file; a literal value here is only acceptable for local/dev.
+MEDIA_SHARE_SIGNING_SECRET=changethis
+# Share-link lifetime bounds (seconds). The caller picks expires_in per link;
+# omitting it falls back to the default, and any value above the max is rejected.
+MEDIA_SHARE_DEFAULT_EXPIRES_SECONDS=604800
+MEDIA_SHARE_MAX_EXPIRES_SECONDS=2592000
+
+# ── Rate-limiter Redis-error policy ───────────────────────────────────────────
+# fail_open (default) lets traffic through when the rate-limiter Redis is down;
+# fail_closed returns 503 instead. Recommended: fail_closed in prod, fail_open
+# in dev/local.
+#MEDIA_RATE_LIMIT_FAILURE_MODE=fail_open
 
 # ── Storage quotas ───────────────────────────────────────────────────────────
 # Default per-owner ceilings, enforced at upload initiation. Leave unset for
 # unlimited; admins can raise/lower a single scope via PUT /v1/admin/quotas/{id}.
 # MEDIA_DEFAULT_QUOTA_BYTES=10737418240
 # MEDIA_DEFAULT_QUOTA_OBJECTS=10000
+
+# ── Lifecycle / retention (service-owned maintenance worker) ──────────────────
+# Drives the scheduled hard-purge, stale-upload expiry and orphan reconciliation
+# run by the maintenance worker (arq media_service.maintenance_worker.WorkerSettings).
+# Not secrets — literal tunables; defaults shown, uncomment to override.
+# Age (days) a soft-deleted object must exceed before its bytes + row are purged.
+# MEDIA_RETENTION_PURGE_DAYS=30
+# Max objects hard-purged per run (bounds blast radius).
+# MEDIA_PURGE_BATCH_LIMIT=500
+# Safety window (minutes): objects/keys younger than this are never flagged
+# orphan, so an in-flight upload is never reconciled away.
+# MEDIA_RECONCILE_GRACE_MINUTES=60
+# MEDIA_RECONCILE_BATCH_LIMIT=1000
+# Cron cadence: hard-purge runs daily at this hour; stale-upload expiry hourly at
+# this minute.
+# MEDIA_PURGE_CRON_HOUR=3
+# MEDIA_STALE_CRON_MINUTE=15
 
 # ── Events / outbox webhook delivery (Phase 16) ───────────────────────────────
 # Not secrets — literal tunables for the service-owned worker's deliver_outbox
@@ -138,12 +191,18 @@ MEDIA_MAX_UPLOAD_SIZE_BYTES=104857600
 # OUTBOX_MAX_ATTEMPTS=8                  # poison-message cap → terminal FAILED
 # OUTBOX_BACKOFF_BASE_SECONDS=30         # retry delay = base * 2**(attempts-1)
 # OUTBOX_DELIVERY_TIMEOUT_SECONDS=10.0   # per-subscriber POST timeout
+# SSRF guard (core.ssrf): a subscriber URL is re-resolved and every resolved IP
+# checked before each POST. On a local/dev stack loopback/link-local/metadata are
+# always blocked, but private (RFC1918/ULA/CGNAT) targets and http:// are allowed;
+# under production/strict they are rejected. Exempt a trusted in-cluster subscriber
+# by exact hostname (JSON list) — e.g. an internal media_worker callback:
+# MEDIA_WEBHOOK_ALLOWED_INTERNAL_HOSTS=["media_worker"]
 
 # ── Media Redis (media-owned queues, rate limits, locks, cache) ───────────────
 # Separate from the auth Redis; uses the media:* key namespace.
 MEDIA_REDIS_HOST=127.0.0.1
 MEDIA_REDIS_PORT=6379
-MEDIA_REDIS_USER=appuser
+MEDIA_REDIS_USER=media
 # Password: >= 8 chars, with upper, lower, digit, and special char (no spaces).
 MEDIA_REDIS_PASSWORD=changethis
 MEDIA_REDIS_NAMESPACE=media
