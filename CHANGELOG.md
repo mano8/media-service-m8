@@ -9,6 +9,44 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Changed
 
+- **Service version → `0.0.9`** (`media_service.__version__`, from `0.0.8`). The
+  `GET {prefix}/meta` contract id stays `media-service-m8@0.0` (the whole pre-1.0
+  line shares contract `0.0`); its service-version `range` tracks the bump to
+  `>=0.0.9 <0.1.0` (`CONTRACT_RANGE` in `core/config.py`). The hardened compose
+  stack pins the matching published image `tepochtli/media-service-m8:0.0.9`
+  (alongside `tepochtli/fa-auth-m8:0.9.9` and `tepochtli/media-worker-m8:0.2.0`).
+- **`/health` + OpenAPI now report the package version.** `create_app` in
+  `main.py` was passing a hard-coded `service_version="1.0.0"`; it now passes
+  `settings.SERVICE_VERSION`, so the readiness body and the OpenAPI `info.version`
+  agree with `GET {prefix}/meta` (`0.0.9`) instead of reporting a stale `1.0.0`.
+- **Bundled `fa-auth-m8` image bumped `0.9.8` → `0.9.9`** in the `dev_media_m8`
+  and `hardened_media_m8` compose stacks (`worspace_dev_media_m8` builds
+  `fa-auth-m8` from source and is unaffected).
+- **`docker_compose` documentation realigned with the stacks.** All compose
+  READMEs were rewritten to match the actual services and pins: stale per-stack
+  titles fixed (`dev_media_m8` / `worspace_dev_media_m8` were copies of the
+  hardened README), the previously-undocumented `clamav` / `media_worker` /
+  `media_service_worker` services added, MinIO image tags + the `quay.io/minio/mc`
+  registry corrected, and the hardened README no longer advertises the MinIO host
+  ports removed in security item 0.2. The top-level `docker_compose/README.md`
+  (a leftover `fa-auth-m8` template listing stacks that do not exist here) now
+  describes the three real media stacks. The `worspace_dev_media_m8` local
+  cross-repo dev stack is now tracked (config only — `*.env`, generated keys, and
+  runtime volume data stay git-ignored).
+- **Standalone `media_service/.example_env` completed.** Added the two required
+  secrets it was missing (`MEDIA_INTERNAL_SERVICE_TOKEN`,
+  `MEDIA_SHARE_SIGNING_SECRET`) and corrected `MEDIA_REDIS_USER` from the
+  retired `appuser` default to the scoped `media` user, so the non-Docker local
+  example boots without the fail-closed settings error.
+
+### Fixed
+
+- **`/ping` schema assertion is FastAPI 0.137+ compatible.** `test_meta.py` read
+  `app.routes` to assert the prefixed `/media/ping` copy stays out of the schema;
+  FastAPI 0.137 stopped flattening included routers onto `app.routes` (they become
+  nested entries with `path=None`), so the walk found nothing. The test now asserts
+  the schema contract through the public `app.openapi()["paths"]` document instead.
+
 - **Pin `media-sdk-m8>=0.4.0`** (from `>=0.3.0`) — the streaming SHA-256
   verification (6.x.3) calls the SDK's new chunked `ObjectStorage.stream_object`
   primitive, which first ships in 0.4.0, so the floor is now a hard requirement,
@@ -28,7 +66,10 @@ All notable changes to `media-service-m8` are documented here.
   (the media-owned Redis) creates a scoped `media` user restricted to the
   `media:*` namespace plus the `arq:*` queue keys. Both grant only the command
   categories the apps use (`+@read +@write +@transaction +@connection +eval
-  -@dangerous +client|setinfo`) and the `default` user is locked to
+  -@dangerous +client|setinfo`); the `media` user additionally re-grants `+info`
+  **after** `-@dangerous` (ACL rules apply left-to-right) because ARQ issues
+  `INFO server` on startup to read the Redis version — without it the worker dies
+  with `NoPermissionError running 'info'`. The `default` user is locked to
   `resetkeys -@all +@connection -@dangerous` (healthcheck `PING` only). Env
   examples wire `REDIS_USER=auth` / `MEDIA_REDIS_USER=media` (auth.env, media.env,
   worker.env), and the `MEDIA_REDIS_USER` settings default moved `appuser`→`media`.

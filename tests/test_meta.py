@@ -17,12 +17,12 @@ def test_meta_route_exposes_service_contract() -> None:
     assert resp.status_code == 200
     assert resp.json() == {
         "service": "M8TestApp",
-        "version": "0.0.8",
+        "version": "0.0.9",
         "api_version": "v1",
         "contract": {
             "name": "media-service-m8",
             "version": "0.0",
-            "range": ">=0.0.8 <0.1.0",
+            "range": ">=0.0.9 <0.1.0",
         },
     }
 
@@ -45,14 +45,14 @@ def test_ping_route_reachable_under_media_prefix() -> None:
 
 
 def test_ping_schema_carries_single_operation() -> None:
-    ping_routes = [
-        route for route in app.routes if getattr(route, "path", "").endswith("/ping")
-    ]
-    schema_paths = [
-        route.path
-        for route in ping_routes
-        if getattr(route, "include_in_schema", False)
-    ]
+    # Reachability: both the prefix-independent and prefixed copies answer.
+    assert client.get("/ping").status_code == 200
+    assert client.get("/media/ping").status_code == 200
 
-    assert {route.path for route in ping_routes} == {"/ping", "/media/ping"}
-    assert schema_paths == ["/ping"]
+    # Schema contract via the public OpenAPI document, not the internal
+    # ``app.routes`` list: FastAPI 0.137+ no longer flattens included routers
+    # onto ``app.routes`` (they become nested ``_IncludedRouter`` entries with
+    # ``path=None``), so walking ``app.routes`` for ``route.path`` finds nothing.
+    schema_paths = app.openapi()["paths"]
+    assert "/ping" in schema_paths  # advertised
+    assert "/media/ping" not in schema_paths  # hidden (include_in_schema=False)

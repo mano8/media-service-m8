@@ -96,7 +96,7 @@ app = create_app(
     settings,
     api_router,
     service_name="media-service-m8",
-    service_version="1.0.0",
+    service_version=settings.SERVICE_VERSION,
     health=HealthConfig(checks=[minio_health_check]),
     lifecycle=AppLifecycle(
         auth_deps=auth,
