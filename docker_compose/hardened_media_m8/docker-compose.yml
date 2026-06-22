@@ -123,9 +123,12 @@ services:
         # `media`, restricted to its own `media:*` namespace plus the `arq:*`
         # queue keys, and only the command categories it uses (rate-limit
         # INCR/EXPIRE, ARQ list/sorted-set/string ops + Lua EVAL, connection
-        # handshake; dangerous/admin denied). The default user is then stripped
-        # of all data/admin access — connection commands only for the PING.
-        redis-cli ACL SETUSER media on \>"${MEDIA_REDIS_PASSWORD}" "~media:*" "~arq:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
+        # handshake; dangerous/admin denied). ARQ also issues `INFO server` on
+        # startup to read the Redis version, so +info is re-granted after the
+        # -@dangerous strip (ACL rules apply left-to-right). The default user is
+        # then stripped of all data/admin access — connection commands only for
+        # the PING.
+        redis-cli ACL SETUSER media on \>"${MEDIA_REDIS_PASSWORD}" "~media:*" "~arq:*" +@read +@write +@transaction +@connection +eval -@dangerous +info "+client|setinfo"
         redis-cli ACL SETUSER default on \>"${MEDIA_REDIS_PASSWORD}" resetkeys -@all +@connection -@dangerous
         wait
     environment:
@@ -223,7 +226,7 @@ services:
     restart: unless-stopped
 
   auth_user_service:
-    image: tepochtli/fa-auth-m8:0.9.8
+    image: tepochtli/fa-auth-m8:0.9.9
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -341,7 +344,7 @@ services:
       - scan_net
 
   media_service:
-    image: tepochtli/media-service-m8:0.0.8
+    image: tepochtli/media-service-m8:0.0.9
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -389,7 +392,7 @@ services:
   # this command override bypasses docker_start.sh. Outbound-only: no Traefik
   # label, no exposed port.
   media_service_worker:
-    image: tepochtli/media-service-m8:0.0.8
+    image: tepochtli/media-service-m8:0.0.9
     command: ["arq", "media_service.maintenance_worker.WorkerSettings"]
     security_opt:
       - no-new-privileges:true

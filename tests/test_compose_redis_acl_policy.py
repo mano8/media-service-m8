@@ -231,3 +231,23 @@ def test_media_uses_arq_queue() -> None:
         "core/arq.py no longer uses ARQ — revisit the ~arq:* media ACL pattern"
     )
     assert "arq:" in _MEDIA_KEY_PREFIXES
+
+
+@pytest.mark.parametrize("stack", _STACKS)
+def test_media_acl_grants_info_after_dangerous_strip(stack: str) -> None:
+    """ARQ issues ``INFO server`` on startup to read the Redis version.
+
+    ``INFO`` lives in the ``@dangerous`` category, which the media user strips,
+    so ``+info`` must be re-granted *after* ``-@dangerous`` — Redis ACL rules
+    apply left-to-right, so the order is load-bearing. Without it the worker
+    dies with ``NoPermissionError`` running 'info'.
+    """
+    line = _setuser_line(_redis_command(stack, "media_redis_cache"), "media")
+    info = re.search(r"\+info\b", line)
+    dangerous = re.search(r"-@dangerous\b", line)
+    assert info, f"{stack}: media user must grant +info for ARQ's INFO command"
+    assert dangerous, f"{stack}: media user must still strip -@dangerous"
+    assert info.start() > dangerous.start(), (
+        f"{stack}: +info must come after -@dangerous or it stays stripped "
+        "(Redis ACL rules apply left-to-right)"
+    )
