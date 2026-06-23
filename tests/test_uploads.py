@@ -142,6 +142,48 @@ def test_initiate_upload_stamps_tenant_from_claim(
     assert stored.tenant_id == tenant
 
 
+def test_initiate_upload_uses_tenant_prefixed_object_key(
+    mock_storage: MagicMock, session: Session
+):
+    # The object key for a tenanted upload must use the tenant-scoped path so
+    # TENANT-visibility objects land in the correct storage namespace and
+    # build_variant_key (which already receives media_object.tenant_id) produces
+    # a consistent key when the worker processes the object.
+    tenant = uuid.uuid4()
+    owner = uuid.uuid4()
+    user = UserModel(
+        id=owner, email="tenant@example.com", is_active=True, tenant_id=tenant
+    )
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    resp = UploadsController.initiate_upload(
+        session=session,
+        current_user=user,
+        req=UploadInitiateRequest(**_INITIATE_BODY),
+        storage=mock_storage,
+    )
+    stored = session.get(UploadSession, resp.session_id)
+    assert stored is not None
+    assert stored.object_key.startswith(f"tenants/{tenant}/users/{owner}/")
+
+
+def test_initiate_upload_non_tenant_uses_flat_object_key(
+    mock_storage: MagicMock, session: Session
+):
+    # Non-tenanted callers (tenant_id=None) keep the flat users/{owner}/... path.
+    owner = uuid.uuid4()
+    user = UserModel(id=owner, email="plain@example.com", is_active=True)
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    resp = UploadsController.initiate_upload(
+        session=session,
+        current_user=user,
+        req=UploadInitiateRequest(**_INITIATE_BODY),
+        storage=mock_storage,
+    )
+    stored = session.get(UploadSession, resp.session_id)
+    assert stored is not None
+    assert stored.object_key.startswith(f"users/{owner}/")
+
+
 def test_initiate_upload_rejects_disallowed_mime(
     client: TestClient, mock_storage: MagicMock
 ):

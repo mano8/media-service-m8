@@ -168,6 +168,7 @@ class UploadsController:
             media_id=media_id,
             category=req.category,
             filename=req.original_filename,
+            tenant_id=tenant_id,
         )
         bucket = bucket_for_visibility(req.visibility)
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS

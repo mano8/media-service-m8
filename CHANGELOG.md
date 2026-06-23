@@ -9,6 +9,26 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Changed
 
+- **Bump `fastapi-m8` floor to `>=3.0.0,<4.0.0`** (from `>=2.1.0,<3.0.0`).
+  `fastapi-m8` 3.0.0 consumes `auth-sdk-m8>=2.0.1,<3.0.0`, so this pull carries
+  SDK 2.x transitively; `constraints.txt` / `constraints-all.txt` regenerated to
+  pin `fastapi-m8==3.0.0` and `auth-sdk-m8==2.0.1`.
+- **Activate `tenant_id` in the upload object-key path.**  `initiate_upload` now
+  passes `tenant_id` from the authenticated principal to `build_object_key`, so
+  tenanted uploads are stored under `tenants/{tenant_id}/users/{owner}/...` rather
+  than the flat `users/{owner}/...` path.  Non-tenanted callers (no `tenant_id`
+  claim) are unaffected — they continue to use the flat path.  This completes the
+  `TENANT`-visibility activation started in the 0.0.9 security pass and ensures
+  `build_variant_key` (which already receives `media_object.tenant_id`) produces
+  a consistent key when the worker processes the original object.
+- **`/ping` route is single-mount at `{prefix}/ping` (SDK 2.0.0).** `auth-sdk-m8`
+  2.0.0 dropped the dual-mount pattern (bare root `/ping` + prefixed `/ping`);
+  with a configured prefix the route is registered exactly once at `/media/ping`.
+  Tests updated accordingly: `test_ping_route_prefix_independent` is replaced by
+  `test_ping_route_not_at_bare_root` (asserts 404), and
+  `test_ping_schema_carries_single_operation` now asserts `/media/ping` is in the
+  schema and `/ping` is absent.
+
 - **Service version → `0.0.9`** (`media_service.__version__`, from `0.0.8`). The
   `GET {prefix}/meta` contract id stays `media-service-m8@0.0` (the whole pre-1.0
   line shares contract `0.0`); its service-version `range` tracks the bump to
