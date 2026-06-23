@@ -7,6 +7,8 @@ single media-service-specific responsibility: building an
 tests can keep importing ``ObjectStorage`` from here.
 """
 
+from urllib.parse import urlparse
+
 from media_sdk_m8 import ObjectStorage, ObjectStorageConfig, get_minio_client
 
 from media_service.core.config import settings
@@ -21,6 +23,13 @@ __all__ = [
 
 def get_storage_config() -> ObjectStorageConfig:
     """Build the shared SDK storage config from media-service settings."""
+    public_endpoint: str | None = None
+    public_secure: bool | None = None
+    if settings.MINIO_PUBLIC_ENDPOINT:
+        parsed = urlparse(settings.MINIO_PUBLIC_ENDPOINT)
+        public_endpoint = parsed.netloc
+        public_secure = parsed.scheme == "https"
+
     return ObjectStorageConfig(
         endpoint=f"{settings.MINIO_HOST}:{settings.MINIO_PORT}",
         access_key=settings.MINIO_ACCESS_KEY,
@@ -28,4 +37,6 @@ def get_storage_config() -> ObjectStorageConfig:
         secure=settings.MINIO_USE_SSL,
         region=settings.MINIO_REGION,
         presigned_expire_seconds=settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS,
+        public_endpoint=public_endpoint,
+        public_secure=public_secure,
     )

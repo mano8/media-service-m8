@@ -7,6 +7,15 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`MINIO_PUBLIC_ENDPOINT` setting** — optional full URL (e.g.
+  `http://127.0.0.1:9005` or `https://storage.example.com`) that, when set,
+  makes presigned upload and download URLs target the browser-reachable MinIO
+  endpoint instead of the internal `MINIO_HOST:MINIO_PORT`. All other ops
+  (stat, copy, verify, health) continue to use the internal endpoint. Empty
+  string (default) preserves existing behaviour.
+
 ### Changed
 
 - **Bump `fastapi-m8` floor to `>=3.0.0,<4.0.0`** (from `>=2.1.0,<3.0.0`).

@@ -270,6 +270,26 @@ Tenancy is taken from the caller's `tenant_id` claim (surfaced on `UserModel` by
 upload — never from the request body. Objects created by an untenanted caller
 stay `tenant_id IS NULL`, for which `TENANT` resolves as owner/superuser-only.
 
+## MinIO — browser-reachable presigned URLs
+
+By default every presigned URL is built from the internal `MINIO_HOST:MINIO_PORT`
+address, which the browser cannot reach in most deployments. Set
+`MINIO_PUBLIC_ENDPOINT` to the **full URL** the browser can reach:
+
+```
+# dev / loopback (MinIO already bound to 127.0.0.1:9005 in dev stacks)
+MINIO_PUBLIC_ENDPOINT=http://127.0.0.1:9005
+
+# hardened / production (Traefik storage router + TLS)
+MINIO_PUBLIC_ENDPOINT=https://storage.example.com
+```
+
+When set, presigned upload POST URLs and presigned GET download URLs are
+signed for the public endpoint; all internal operations (health, stat, copy,
+verify) continue to use `MINIO_HOST:MINIO_PORT`. An empty value (the default)
+preserves the existing behaviour and is appropriate for proxy-through
+deployments where the service streams bytes on behalf of the browser.
+
 ## Visibility → bucket mapping
 
 | Visibility | Bucket setting |

@@ -72,6 +72,12 @@ class Settings(ConsumerServiceSettings):
     MINIO_PORT: int = Field(default=9000, ge=1, le=65535)
     MINIO_USE_SSL: bool = False
     MINIO_REGION: str = "eu-west-1"
+    # Browser-facing endpoint (full URL, e.g. ``http://127.0.0.1:9005`` or
+    # ``https://storage.example.com``) used **only** when minting presigned
+    # URLs. Must differ from the internal ``MINIO_HOST:MINIO_PORT`` whenever
+    # the browser cannot resolve the internal host. Empty = use internal
+    # endpoint (current behaviour; proxy-through deployments unaffected).
+    MINIO_PUBLIC_ENDPOINT: str = ""
     MINIO_ACCESS_KEY: str = ""
     MINIO_SECRET_KEY: str = ""
     MINIO_BUCKET_PUBLIC: str = "public-media"
