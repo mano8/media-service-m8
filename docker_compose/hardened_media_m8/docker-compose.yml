@@ -149,6 +149,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # CORS origin for browser-direct presigned uploads/downloads (Option A).
+      # Scoped to the UI origin — NEVER use *. Replace with your UI FQDN in staging/prod.
+      MINIO_API_CORS_ALLOW_ORIGIN: "https://localhost:4430"
     volumes:
       - ./minio/data:/data
     command: server /data --console-address ":9001"

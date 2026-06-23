@@ -97,6 +97,26 @@ http:
         - security-headers
         - internal-only
 
+    # MinIO S3 data-path: browser-direct presigned uploads/downloads over TLS.
+    # SECURITY CONTRACT:
+    #   - Only the S3 data path is routed — /minio (admin API + console) is EXPLICITLY
+    #     EXCLUDED by !PathPrefix(`/minio`). The console (:9001) gains NO router.
+    #   - Every successful op still requires a presigned URL minted by media-service
+    #     after fa-auth authentication; no raw credentials cross the public interface.
+    #   - passHostHeader: true on the backend is REQUIRED: GET SigV4 signatures bind
+    #     the Host header, so the reverse proxy MUST forward the original Host unchanged
+    #     for the signature to validate at MinIO.
+    media-storage-router:
+      entryPoints:
+        - websecure
+      # LOCALHOST-ONLY by default: Host(`storage.localhost`) limits this route to the
+      # Docker host. TO EXPOSE storage ON THE LAN/WAN, replace Host(`storage.localhost`)
+      # with your real storage FQDN (e.g. Host(`storage.example.com`)). The
+      # !PathPrefix(`/minio`) exclusion is the SECURITY CONTRACT and MUST stay regardless.
+      rule: "Host(`storage.localhost`) && !PathPrefix(`/minio`)"
+      service: minio-storage
+      tls: {}
+
   services:
     auth-service:
       loadBalancer:
@@ -106,6 +126,11 @@ http:
       loadBalancer:
         servers:
           - url: "http://media_service:8000"
+    minio-storage:
+      loadBalancer:
+        passHostHeader: true   # REQUIRED — GET SigV4 signs the Host; proxy MUST forward it unchanged
+        servers:
+          - url: "http://minio:9000"
 
   middlewares:
     ip-allowlist:
