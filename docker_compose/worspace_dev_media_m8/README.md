@@ -264,8 +264,11 @@ the same workspace (the build contexts are `../../../fa-auth-m8` and
 `../../../media-worker-m8`).
 
 **Media service cannot connect to MinIO**: inside Docker, use `MINIO_HOST=minio`
-and `MINIO_PORT=9000`. Host ports `9005` and `9006` are only for local
-browser/tool access.
+and `MINIO_PORT=9000`. The **browser**, however, uses `MINIO_PUBLIC_ENDPOINT`
+(`http://127.0.0.1:9005`) to reach MinIO directly for presigned uploads/downloads;
+this is distinct from the internal `minio:9000` endpoint. This separation
+enables browser-direct Option A uploads (presigned POSTs and GETs), which
+requires the public endpoint for the signatures to validate correctly.
 
 **`minio-init` fails or buckets are missing**: check `docker-compose logs minio-init`.
 It waits for MinIO to be healthy, then creates buckets and the `media-rw` user.

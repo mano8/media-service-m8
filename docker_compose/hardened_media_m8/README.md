@@ -147,7 +147,21 @@ equivalent.
 In the hardened stack MinIO is **not** published to the host — it has no
 `ports:` mapping and is reachable only by the application services on the
 internal `data_net` (security item 0.2 removed the public host-port exposure).
-Reach the console/API for debugging via `docker compose exec` or by temporarily
+
+However, the browser accesses MinIO **indirectly** via a dedicated Traefik router
+for presigned uploads/downloads. The storage router is configured on the
+**`websecure`** (TLS) entrypoint, published as `https://storage.localhost` (mapped
+to Traefik host port `4430`; use your FQDN in staging/production). The route
+explicitly excludes `/minio/*` paths to prevent access to the admin API or console
+(`:9001`); only the S3 data path (`/{bucket}/{key}`) is exposed.
+
+Configuration:
+- `MINIO_PUBLIC_ENDPOINT=https://storage.localhost` in `media.env`
+- `MINIO_API_CORS_ALLOW_ORIGIN: "https://localhost:4430"` in minio environment (edit for your FQDN)
+- Traefik router uses `passHostHeader: true` — **required** for presigned GET signatures
+  to validate correctly (SigV4 binds the Host header).
+
+For debugging, reach the console/API via `docker compose exec` or by temporarily
 adding a loopback `ports:` mapping; the dev stack (`dev_media_m8`) keeps the
 loopback ports for convenience.
 
