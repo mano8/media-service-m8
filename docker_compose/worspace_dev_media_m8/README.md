@@ -18,9 +18,10 @@ reload and the app containers run on fixed `10.248.x` subnets.
 > **Local-only stack.** Runtime data (DB, Grafana, Prometheus, Redis, MinIO,
 > keys) and the real `*.env` files are git-ignored; only the tracked config
 > (`docker-compose.yml`, `*.env.example`, `init.sh`, Traefik/Prometheus/Grafana
-> provisioning, this README) is committed. Image tags here are intentionally
-> loose (e.g. `alpine`, `quay.io/minio/minio`) — the pinned, CI-checked stacks
-> are `dev_media_m8` / `hardened_media_m8`.
+> provisioning, this README) is committed. Some image tags here are
+> intentionally loose (e.g. `alpine`) — the pinned, CI-checked stacks are
+> `dev_media_m8` / `hardened_media_m8`. The MinIO images (`quay.io/minio/minio`,
+> `quay.io/minio/mc`) are pinned to the same versions as those stacks.
 
 ## Architecture
 
@@ -63,8 +64,8 @@ dev convenience).
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
-| minio | `quay.io/minio/minio` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
-| minio-init | `minio/mc` | one-shot: buckets + `media-rw` policy |
+| minio | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
+| minio-init | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` | one-shot: buckets + `media-rw` policy |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 

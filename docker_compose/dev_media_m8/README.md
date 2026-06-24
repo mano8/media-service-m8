@@ -54,8 +54,8 @@ dev convenience).
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
-| minio | `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
-| minio-init | `quay.io/minio/mc:RELEASE.2025-04-03T17-07-38Z` | one-shot: buckets + `media-rw` policy |
+| minio | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
+| minio-init | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` | one-shot: buckets + `media-rw` policy |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 

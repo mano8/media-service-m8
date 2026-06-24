@@ -146,7 +146,7 @@ services:
       - data_net
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772
     container_name: minio
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -171,7 +171,7 @@ services:
   # Reads MinIO root creds from .env and the media service creds from media.env.
   # media_service waits for this to complete successfully before starting.
   minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-04-03T17-07-38Z
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       minio:
         condition: service_healthy
