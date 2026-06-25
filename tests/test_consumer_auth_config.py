@@ -70,7 +70,9 @@ def test_media_env_example_service_token_exchange_commented_out(
     )
     for line in content.splitlines():
         stripped = line.strip()
-        if "SERVICE_TOKEN_EXCHANGE_ENABLED" in stripped and not stripped.startswith("#"):
+        if "SERVICE_TOKEN_EXCHANGE_ENABLED" in stripped and not stripped.startswith(
+            "#"
+        ):
             pytest.fail(
                 f"SERVICE_TOKEN_EXCHANGE_ENABLED must be commented out "
                 f"(opt-in only) in {env_file.relative_to(_ROOT)}: {line!r}"

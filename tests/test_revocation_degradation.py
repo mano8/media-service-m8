@@ -145,7 +145,9 @@ def test_dev_env_has_fail_closed_commented_out() -> None:
     dev = _ROOT / "docker_compose" / "dev_media_m8" / "media.env.example"
     for line in dev.read_text().splitlines():
         stripped = line.strip()
-        if "ACCESS_REVOCATION_FAILURE_MODE" in stripped and not stripped.startswith("#"):
+        if "ACCESS_REVOCATION_FAILURE_MODE" in stripped and not stripped.startswith(
+            "#"
+        ):
             pytest.fail(
                 f"ACCESS_REVOCATION_FAILURE_MODE must be commented out in "
                 f"dev_media_m8/media.env.example (opt-in; default shown in comment): {line!r}"
@@ -159,7 +161,9 @@ pytestmark = pytest.mark.anyio
 
 async def test_fail_closed_introspection_down_returns_503() -> None:
     """fail_closed + unreachable introspection → 503 from get_current_user."""
-    auth = build_auth_deps(_stateful_settings(ACCESS_REVOCATION_FAILURE_MODE="fail_closed"))
+    auth = build_auth_deps(
+        _stateful_settings(ACCESS_REVOCATION_FAILURE_MODE="fail_closed")
+    )
     assert auth.revocation_client is not None
     setattr(
         auth.revocation_client._client,
@@ -191,7 +195,9 @@ async def test_fail_closed_is_the_consumer_default() -> None:
 
 async def test_fail_open_introspection_down_accepts_token() -> None:
     """fail_open opt-out + unreachable introspection → token accepted (not 503)."""
-    auth = build_auth_deps(_stateful_settings(ACCESS_REVOCATION_FAILURE_MODE="fail_open"))
+    auth = build_auth_deps(
+        _stateful_settings(ACCESS_REVOCATION_FAILURE_MODE="fail_open")
+    )
     assert auth.revocation_client is not None
     setattr(
         auth.revocation_client._client,
@@ -204,9 +210,13 @@ async def test_fail_open_introspection_down_accepts_token() -> None:
     await auth.close()
 
 
-async def test_fail_open_logs_security_revocation_fail_open(caplog: pytest.LogCaptureFixture) -> None:
+async def test_fail_open_logs_security_revocation_fail_open(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """fail_open opt-out must log security.revocation_fail_open at WARNING or higher."""
-    auth = build_auth_deps(_stateful_settings(ACCESS_REVOCATION_FAILURE_MODE="fail_open"))
+    auth = build_auth_deps(
+        _stateful_settings(ACCESS_REVOCATION_FAILURE_MODE="fail_open")
+    )
     assert auth.revocation_client is not None
     setattr(
         auth.revocation_client._client,

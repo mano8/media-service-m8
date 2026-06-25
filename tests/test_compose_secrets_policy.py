@@ -25,6 +25,7 @@ import pytest
 import yaml
 from yaml import SafeLoader
 
+
 # Docker Compose v2.24+ uses non-standard YAML merge tags (!override, !reset).
 # Register them so PyYAML's SafeLoader can parse the production overlay file.
 # !override: replace the node entirely (return value as-is).
@@ -36,12 +37,14 @@ def _override_constructor(loader: SafeLoader, node: yaml.Node) -> object:
         return loader.construct_mapping(node, deep=True)
     return loader.construct_scalar(node)
 
+
 def _reset_constructor(loader: SafeLoader, node: yaml.Node) -> object:
     if isinstance(node, yaml.SequenceNode):
         return loader.construct_sequence(node, deep=True)
     if isinstance(node, yaml.MappingNode):
         return loader.construct_mapping(node, deep=True)
     return loader.construct_scalar(node)
+
 
 SafeLoader.add_constructor("!override", _override_constructor)
 SafeLoader.add_constructor("!reset", _reset_constructor)
@@ -268,7 +271,9 @@ class TestFileMountEnvVars:
         return _service_env(_load_overlay(), service)
 
     # 6.1 category: DB_PASSWORD_FILE
-    @pytest.mark.parametrize("service", ["auth_user_service", "media_service", "media_service_worker"])
+    @pytest.mark.parametrize(
+        "service", ["auth_user_service", "media_service", "media_service_worker"]
+    )
     def test_db_password_file_wired(self, service: str):
         env = self._env(service)
         assert _DB_FILE_VAR in env, (
@@ -290,7 +295,9 @@ class TestFileMountEnvVars:
             f"{_AUTH_REDIS_FILE_VAR} must point to /run/secrets/: {env[_AUTH_REDIS_FILE_VAR]!r}"
         )
 
-    @pytest.mark.parametrize("service", ["media_service", "media_service_worker", "media_worker"])
+    @pytest.mark.parametrize(
+        "service", ["media_service", "media_service_worker", "media_worker"]
+    )
     def test_media_redis_password_file_wired(self, service: str):
         env = self._env(service)
         assert _MEDIA_REDIS_FILE_VAR in env, (
