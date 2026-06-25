@@ -19,6 +19,7 @@ and MinIO.
 - [Shared migrations](#shared-migrations)
 - [Ports](#ports-same-for-all-stacks)
 - [Live testing](#live-testing)
+- [Security](SECURITY.md) — trust model, mTLS guidance, vulnerability reporting
 
 ---
 
