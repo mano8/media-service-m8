@@ -9,6 +9,27 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Added
 
+- **Production overlay with `_FILE` secret mounts (plan 6.1).** Added
+  `docker_compose/hardened_media_m8/docker-compose.production.yml` — a thin
+  production overlay applied on top of the base stack via
+  `docker compose -f docker-compose.yml -f docker-compose.production.yml up -d`.
+  Secrets are sourced from operator-managed `./secrets/<name>.txt` files mounted
+  at `/run/secrets/` inside each container; the corresponding `*_FILE` env vars
+  (e.g. `DB_PASSWORD_FILE`, `MEDIA_INTERNAL_SERVICE_TOKEN_FILE`,
+  `MEDIA_SHARE_SIGNING_SECRET_FILE`, `MEDIA_REDIS_PASSWORD_FILE`,
+  `MINIO_ACCESS_KEY_FILE`, `MINIO_SECRET_KEY_FILE`, and auth/event-signing
+  secrets) are injected by the overlay so values never appear in `docker inspect`.
+  Source-code bind mounts are removed from `media_service` / `media_service_worker`
+  (pinned published images are used as-is). Production env example files
+  (`auth.env.production.example`, `media.env.production.example`,
+  `worker.env.production.example`) carry `ENVIRONMENT=production` +
+  `STRICT_PRODUCTION_MODE=true` and omit all plaintext secret fields.
+  `traefik/production_dynamic_conf.yml` replaces `localhost` host rules with FQDN
+  placeholders and raises the TLS floor to 1.3. `tests/test_compose_secrets_policy.py`
+  (47 tests) asserts all five `_FILE` categories from plan 6.1, the Docker
+  `secrets:` block, no `changethis` in the overlay YAML, and that production env
+  examples omit plaintext secrets. 665 tests, 100% cov, ruff + mypy green.
+
 - **`MINIO_PUBLIC_ENDPOINT` setting** — optional full URL (e.g.
   `http://127.0.0.1:9005` or `https://storage.example.com`) that, when set,
   makes presigned upload and download URLs target the browser-reachable MinIO

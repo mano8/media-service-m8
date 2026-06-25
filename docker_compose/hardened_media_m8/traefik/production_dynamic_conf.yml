@@ -1,0 +1,154 @@
+# production_dynamic_conf.yml — Production
+#
+# Used by docker-compose.production.yml in place of dynamic_conf.yml:
+#   volumes: !override
+#     - ./traefik/production_dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:ro
+#
+# Changes from the dev config:
+#   1. security-headers middleware adds CSP and enables HSTS (commented out —
+#      opt-in once TLS is stable and your cert is trusted).
+#   2. Host rules use real FQDNs instead of localhost. Replace the example FQDNs
+#      below with your domain. The app also enforces these via ALLOWED_HOSTS
+#      (TrustedHostMiddleware) — the proxy Host rule is defense-in-depth.
+#   3. TLS floor raised to 1.3 (TLS 1.2 fallback removed for production).
+#   4. Dashboard router removed — no admin UI on a production host.
+#
+# TOPOLOGY: routers below expose /user and /media over HTTPS (Case B, external
+# clients). For Case A (UI-gateway only, no direct public auth/media access),
+# delete the public routers so services are reachable only on the Docker network.
+#
+# HSTS WARNING: once enabled, browsers refuse plain HTTP to this host for
+# stsSeconds. Only enable after TLS is stable and trusted.
+tls:
+  options:
+    default:
+      minVersion: VersionTLS13
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+      curvePreferences:
+        - X25519
+        - CurveP256
+  stores:
+    default:
+      defaultCertificate:
+        certFile: "/etc/traefik/certs/local.crt"
+        keyFile:  "/etc/traefik/certs/local.key"
+  certificates:
+    - certFile: "/etc/traefik/certs/local.crt"
+      keyFile:  "/etc/traefik/certs/local.key"
+
+http:
+
+  routers:
+    # Auth-User-Service: public routes on HTTPS.
+    # SECURITY CONTRACT — these paths are NEVER routed from the public internet:
+    #   /user/health   — internal readiness probe only
+    #   /user/metrics  — Prometheus scrape endpoint, internal only
+    #   /user/private  — inter-service API (also gated by X-Internal-Client token)
+    auth-public-router:
+      entryPoints:
+        - websecure
+      rule: "Host(`auth.example.com`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
+      service: auth-service
+      middlewares:
+        - security-headers
+      tls: {}
+      priority: 2
+
+    # Auth-User-Service: all routes on the internal api entryPoint (port 9000).
+    auth-internal-router:
+      entryPoints:
+        - api
+      rule: "PathPrefix(`/user`)"
+      service: auth-service
+      middlewares:
+        - security-headers
+        - internal-only
+
+    # Media-Service: public routes on HTTPS.
+    # SECURITY CONTRACT — these paths are NEVER routed from the public internet:
+    #   /media/health  — internal readiness probe only
+    #   /media/metrics — Prometheus scrape endpoint, internal only
+    media-public-router:
+      entryPoints:
+        - websecure
+      rule: "Host(`media.example.com`) && PathPrefix(`/media`) && !(PathPrefix(`/media/health`) || PathPrefix(`/media/metrics`))"
+      service: media-service
+      middlewares:
+        - security-headers
+      tls: {}
+
+    # Media-Service: all routes on the internal api entryPoint (port 9000).
+    media-internal-router:
+      entryPoints:
+        - api
+      rule: "PathPrefix(`/media`)"
+      service: media-service
+      middlewares:
+        - security-headers
+        - internal-only
+
+    # MinIO S3 data-path: browser-direct presigned uploads/downloads over TLS.
+    # SECURITY CONTRACT:
+    #   - Only the S3 data path is routed — /minio (admin API + console) is
+    #     EXPLICITLY EXCLUDED by !PathPrefix(`/minio`).
+    #   - Every successful op requires a presigned URL minted by media-service
+    #     after fa-auth authentication; no raw credentials cross the public interface.
+    #   - passHostHeader: true is REQUIRED: GET SigV4 signs the Host header.
+    media-storage-router:
+      entryPoints:
+        - websecure
+      rule: "Host(`storage.example.com`) && !PathPrefix(`/minio`)"
+      service: minio-storage
+      tls: {}
+
+  services:
+    auth-service:
+      loadBalancer:
+        servers:
+          - url: "http://auth_user_service:8000"
+    media-service:
+      loadBalancer:
+        servers:
+          - url: "http://media_service:8000"
+    minio-storage:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://minio:9000"
+
+  middlewares:
+    internal-only:
+      IPAllowList:
+        sourceRange:
+          - "127.0.0.1/32"
+          - "172.16.0.0/16"
+          - "::1/128"
+
+    security-headers:
+      headers:
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "camera=(), microphone=(), geolocation=()"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex,nofollow"
+          Server: ""
+        # ── HSTS — opt-in, once TLS is stable ────────────────────────────────
+        # Enable only after TLS is correctly configured with a stable, trusted
+        # certificate AND this hostname will remain HTTPS-only for stsSeconds.
+        # Enabling HSTS prematurely can lock browsers out for up to 1 year.
+        #
+        # stsSeconds: 31536000
+        # stsIncludeSubdomains: true
+        # stsPreload: false
+        #
+        # ── Content-Security-Policy ───────────────────────────────────────────
+        # Set a strict CSP once your frontend assets + API origins are known.
+        # contentSecurityPolicy: "default-src 'self'; ..."

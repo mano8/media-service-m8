@@ -1,0 +1,221 @@
+# docker-compose.production.yml — PRODUCTION overlay for hardened_media_m8.
+#
+# Apply ON TOP OF the base stack — never on its own:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
+#
+# Requires Docker Compose v2.24+ for the `!reset` / `!override` merge tags.
+#
+# DESIGN: one stack, two postures.  The base docker-compose.yml stays the safe,
+# reversible dev/home-lab default; this overlay flips it to a hardened production
+# posture WITHOUT forking a second tree that drifts.
+#
+# ── What this overlay changes vs the dev default ─────────────────────────────
+# - ENVIRONMENT=production + STRICT_PRODUCTION_MODE=true via *.env.production
+#   files (mounted in place of the dev env files).  The app fails closed at boot
+#   on placeholder/duplicate secrets, missing ALLOWED_HOSTS, missing
+#   TOKEN_ISSUER/TOKEN_AUDIENCE, localhost CORS, unsafe internal http, and unsafe
+#   event-signing rollout (auth-sdk-m8 check_config_health).
+# - Secrets sourced from /run/secrets/ via Docker secrets + *_FILE env vars —
+#   secrets are NEVER exposed in `docker inspect`.  Operator creates
+#   ./secrets/<name>.txt files; the service reads the value at runtime.
+# - No self-signed cert generator: cert-init becomes a fail-closed PRESENCE
+#   CHECK for real, operator-provisioned certs — it never mints a cert.
+# - No host-published data ports (DB, Redis).  Prometheus and Grafana remain
+#   loopback-bound as in the base.
+# - FQDN host rules via traefik/production_dynamic_conf.yml + app-layer
+#   ALLOWED_HOSTS (set in *.env.production files).
+# - Source-code bind mounts removed from media_service / media_service_worker —
+#   the published, pinned images are used as-is in production.
+#
+# ── Operator checklist ────────────────────────────────────────────────────────
+# 1. Provision real TLS certs → ./traefik/certs/local.crt + local.key
+# 2. Create ./secrets/ directory with one secret per file:
+#      db_password.txt              auth_redis_password.txt
+#      media_redis_password.txt     media_internal_service_token.txt
+#      media_share_signing_secret.txt   minio_access_key.txt
+#      minio_secret_key.txt         private_api_secret.txt
+#      refresh_secret_key.txt       event_signing_key.txt
+#      session_secret.txt           tokens_encryption_key.txt
+# 3. Copy / fill *.env.production.example → *.env.production (non-secret fields).
+# 4. Run: docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
+#
+# ── MIGRATIONS ────────────────────────────────────────────────────────────────
+# The hardened stack applies Alembic migrations automatically on `up` (the app
+# entrypoint runs `alembic upgrade head`, idempotent). For multi-replica / zero-
+# downtime rollouts, gate it to a one-shot run before bringing the app up:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.production.yml \
+#     run --rm media_service alembic upgrade head
+
+services:
+
+  # Production never generates self-signed certs. Replace the generator with a
+  # fail-closed presence check for operator-provisioned (real-CA) certs.
+  cert-init:
+    command:
+      - sh
+      - -c
+      - |
+        if [ -f /certs/local.crt ] && [ -f /certs/local.key ]; then
+          echo "==> cert-init: operator-provisioned TLS certs present"; exit 0
+        fi
+        echo "ERROR: the production overlay requires real TLS certificates at"
+        echo "       ./traefik/certs/local.crt and ./traefik/certs/local.key."
+        echo "       The production stack never generates self-signed certs."
+        exit 1
+
+  # Publish only :80 (redirect) + :443 (TLS). Drop the loopback dashboard
+  # (:8080) and the loopback service entryPoint (:9000) — the latter is
+  # reachable only on the Docker network (Case A).
+  traefik:
+    ports: !override
+      - "80:80"
+      - "443:443/tcp"
+      - "443:443/udp"
+    volumes: !override
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/production_dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:ro
+      - ./traefik/certs:/etc/traefik/certs:ro
+
+  # Data services: no host-published ports in production.
+  m8_db:
+    ports: !reset []
+
+  redis_cache:
+    ports: !reset []
+
+  # ── auth_user_service ────────────────────────────────────────────────────────
+  # Secrets NOT in env file — they arrive via _FILE env vars from /run/secrets/.
+  # auth.env.production carries ENVIRONMENT=production + all non-secret config.
+  auth_user_service:
+    env_file: !override
+      - ./auth.env.production
+    secrets:
+      - db_password
+      - auth_redis_password
+      - private_api_secret
+      - refresh_secret_key
+      - event_signing_key
+      - session_secret
+      - tokens_encryption_key
+    environment:
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      REDIS_PASSWORD_FILE: /run/secrets/auth_redis_password
+      PRIVATE_API_SECRET_FILE: /run/secrets/private_api_secret
+      REFRESH_SECRET_KEY_FILE: /run/secrets/refresh_secret_key
+      EVENT_SIGNING_KEY_FILE: /run/secrets/event_signing_key
+      SESSION_SECRET_FILE: /run/secrets/session_secret
+      TOKENS_ENCRYPTION_KEY_FILE: /run/secrets/tokens_encryption_key
+    volumes: !override
+      - ./auth.env.production:/opt/auth_user_service/.env:ro
+      - ./shared_migrations:/opt/shared_migrations
+      - ./keys:/opt/keys:ro
+
+  # ── media_service ─────────────────────────────────────────────────────────────
+  # Source-code bind mount removed — the pinned published image is used as-is.
+  # Secrets arrive via _FILE env vars; media.env.production carries all non-secret config.
+  media_service:
+    env_file: !override
+      - ./media.env.production
+    secrets:
+      - db_password
+      - media_redis_password
+      - media_internal_service_token
+      - media_share_signing_secret
+      - minio_access_key
+      - minio_secret_key
+      - private_api_secret
+      - refresh_secret_key
+      - event_signing_key
+    environment:
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      MEDIA_REDIS_PASSWORD_FILE: /run/secrets/media_redis_password
+      MEDIA_INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/media_internal_service_token
+      MEDIA_SHARE_SIGNING_SECRET_FILE: /run/secrets/media_share_signing_secret
+      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
+      MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      PRIVATE_API_SECRET_FILE: /run/secrets/private_api_secret
+      REFRESH_SECRET_KEY_FILE: /run/secrets/refresh_secret_key
+      EVENT_SIGNING_KEY_FILE: /run/secrets/event_signing_key
+    volumes: !override
+      - ./media.env.production:/opt/media_service/.env:ro
+      - ./shared_migrations:/opt/shared_migrations
+
+  # ── media_service_worker ──────────────────────────────────────────────────────
+  # Same image as media_service (arq command override). Source bind mount removed.
+  media_service_worker:
+    env_file: !override
+      - ./media.env.production
+    secrets:
+      - db_password
+      - media_redis_password
+      - media_internal_service_token
+      - media_share_signing_secret
+      - minio_access_key
+      - minio_secret_key
+      - private_api_secret
+      - refresh_secret_key
+      - event_signing_key
+    environment:
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      MEDIA_REDIS_PASSWORD_FILE: /run/secrets/media_redis_password
+      MEDIA_INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/media_internal_service_token
+      MEDIA_SHARE_SIGNING_SECRET_FILE: /run/secrets/media_share_signing_secret
+      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
+      MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      PRIVATE_API_SECRET_FILE: /run/secrets/private_api_secret
+      REFRESH_SECRET_KEY_FILE: /run/secrets/refresh_secret_key
+      EVENT_SIGNING_KEY_FILE: /run/secrets/event_signing_key
+    volumes: !override
+      - ./media.env.production:/opt/media_service/.env:ro
+
+  # ── media_worker ──────────────────────────────────────────────────────────────
+  media_worker:
+    env_file: !override
+      - ./worker.env.production
+    secrets:
+      - media_internal_service_token
+      - media_redis_password
+      - minio_access_key
+      - minio_secret_key
+    environment:
+      MEDIA_INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/media_internal_service_token
+      MEDIA_REDIS_PASSWORD_FILE: /run/secrets/media_redis_password
+      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
+      MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+    volumes: !override
+      - ./worker.env.production:/opt/worker/.env:ro
+
+# ── Docker secrets ─────────────────────────────────────────────────────────────
+# Operator creates ./secrets/<name>.txt — one secret per file, no trailing
+# newline, no quotes.  Files should be chmod 600 and owned by the deploy user.
+# Generate strong values:
+#   python -c "import secrets; print(secrets.token_urlsafe(48))"
+#
+# NEVER commit the ./secrets/ directory.  Add it to .gitignore.
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  auth_redis_password:
+    file: ./secrets/auth_redis_password.txt
+  media_redis_password:
+    file: ./secrets/media_redis_password.txt
+  media_internal_service_token:
+    file: ./secrets/media_internal_service_token.txt
+  media_share_signing_secret:
+    file: ./secrets/media_share_signing_secret.txt
+  minio_access_key:
+    file: ./secrets/minio_access_key.txt
+  minio_secret_key:
+    file: ./secrets/minio_secret_key.txt
+  private_api_secret:
+    file: ./secrets/private_api_secret.txt
+  refresh_secret_key:
+    file: ./secrets/refresh_secret_key.txt
+  event_signing_key:
+    file: ./secrets/event_signing_key.txt
+  session_secret:
+    file: ./secrets/session_secret.txt
+  tokens_encryption_key:
+    file: ./secrets/tokens_encryption_key.txt
