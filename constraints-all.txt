@@ -27,7 +27,7 @@ ast-serialize==0.5.0
     # via mypy
 asyncpg==0.31.0
     # via -r media_service/requirements_base.txt
-auth-sdk-m8[config,events,fastapi,observability,security]==2.0.1
+auth-sdk-m8[config,events,fastapi,observability,security]==2.1.0
     # via fastapi-m8
 bandit==1.9.4
     # via -r media_service/requirements_dev.txt
@@ -81,7 +81,7 @@ fastapi==0.137.2
     # via
     #   auth-sdk-m8
     #   fastapi-m8
-fastapi-m8[db,mysql,postgres]==3.0.0
+fastapi-m8[db,mysql,postgres]==3.1.0
     # via -r media_service/requirements_base.txt
 filelock==3.29.4
     # via cachecontrol

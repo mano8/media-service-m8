@@ -16,12 +16,33 @@ All notable changes to `media-service-m8` are documented here.
   (stat, copy, verify, health) continue to use the internal endpoint. Empty
   string (default) preserves existing behaviour.
 
+### Added
+
+- **Per-consumer internal auth (9.1 — fastapi-m8 ≥ 3.1.0).** `INTERNAL_CLIENT_ID`
+  is now documented and set in all three compose stacks (`dev_media_m8`,
+  `hardened_media_m8`, `worspace_dev_media_m8`). When set to `media-service`,
+  `build_internal_auth` (fastapi-m8 3.1.0) switches the revocation/introspection
+  private call from the legacy single `X-Internal-Token` to per-consumer
+  `X-Internal-Client` + `X-Internal-Token` bootstrap mode. `PRIVATE_API_SECRET`
+  then carries this consumer's per-consumer bootstrap secret (matched against its
+  entry in the issuer's `PRIVATE_API_CONSUMERS` registry). The optional
+  `SERVICE_TOKEN_EXCHANGE_ENABLED` flag (commented out — opt-in only) enables
+  short-TTL Bearer service-token exchange. `PRIVATE_API_CONSUMERS` is documented
+  in all three `auth.env.example` files to show the issuer-side configuration.
+  `tests/test_consumer_auth_config.py` audits the env examples and verifies the
+  legacy/bootstrap header selection via `build_internal_auth`. 609 tests, 100% cov.
+
 ### Changed
 
-- **Bump `fastapi-m8` floor to `>=3.0.0,<4.0.0`** (from `>=2.1.0,<3.0.0`).
-  `fastapi-m8` 3.0.0 consumes `auth-sdk-m8>=2.0.1,<3.0.0`, so this pull carries
-  SDK 2.x transitively; `constraints.txt` / `constraints-all.txt` regenerated to
-  pin `fastapi-m8==3.0.0` and `auth-sdk-m8==2.0.1`.
+- **Bump `fastapi-m8` floor to `>=3.1.0,<4.0.0`** (from `>=3.0.0,<4.0.0`; the
+  `3.0.0` floor was set in the SDK-v2 alignment pass on this branch).
+  `fastapi-m8` 3.1.0 adds `build_internal_auth` + per-consumer `INTERNAL_CLIENT_ID`
+  / `SERVICE_TOKEN_EXCHANGE_ENABLED` settings on `ConsumerServiceSettings`; it
+  consumes `auth-sdk-m8>=2.0.1,<3.0.0`. `constraints.txt` / `constraints-all.txt`
+  updated to pin `fastapi-m8==3.1.0` and `auth-sdk-m8==2.1.0`.
+- **Prior SDK-v2 alignment (on this branch — `fastapi-m8` 3.0.0 / `auth-sdk-m8` 2.0.1).**
+  `fastapi-m8` 3.0.0 consumes `auth-sdk-m8>=2.0.1,<3.0.0`; this carried SDK 2.x
+  transitively. (Merged into the 3.1.0 bump above.)
 - **Activate `tenant_id` in the upload object-key path.**  `initiate_upload` now
   passes `tenant_id` from the authenticated principal to `build_object_key`, so
   tenanted uploads are stored under `tenants/{tenant_id}/users/{owner}/...` rather
