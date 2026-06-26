@@ -198,6 +198,65 @@ def test_record_object_removed_clamps_at_zero(session: Session):
     assert usage.object_count == 0
 
 
+# ── core/quotas.py — reserve_storage_for_object (actual-size enforcement) ──────
+
+
+def test_reserve_storage_credits_on_success(session: Session):
+    # No usage row yet: the scope is created, locked, and credited atomically.
+    owner = uuid.uuid4()
+    quotas.reserve_storage_for_object(
+        session, owner_user_id=owner, tenant_id=None, size_bytes=512
+    )
+    session.commit()
+    usage = quotas._find_usage(session, owner_user_id=owner, tenant_id=None)
+    assert usage is not None
+    assert usage.total_bytes == 512
+    assert usage.object_count == 1
+
+
+def test_reserve_storage_raises_over_byte_quota(session: Session):
+    owner = uuid.uuid4()
+    _make_usage(session, owner, total_bytes=900, quota_bytes=1000)
+    with pytest.raises(quotas.QuotaExceededError) as exc:
+        quotas.reserve_storage_for_object(
+            session, owner_user_id=owner, tenant_id=None, size_bytes=200
+        )
+    assert exc.value.reason == "quota_bytes_exceeded"
+    # Nothing was credited on the rejected reservation.
+    usage = quotas._find_usage(session, owner_user_id=owner, tenant_id=None)
+    assert usage is not None
+    assert usage.total_bytes == 900
+
+
+def test_reserve_storage_raises_over_object_quota(session: Session):
+    owner = uuid.uuid4()
+    _make_usage(session, owner, object_count=3, quota_objects=3)
+    with pytest.raises(quotas.QuotaExceededError) as exc:
+        quotas.reserve_storage_for_object(
+            session, owner_user_id=owner, tenant_id=None, size_bytes=1
+        )
+    assert exc.value.reason == "quota_objects_exceeded"
+
+
+def test_reserve_storage_credits_tenant_scope(session: Session):
+    # The locked reservation is scoped to (owner, tenant): the tenant row is
+    # credited while the global row stays untouched.
+    owner = uuid.uuid4()
+    tenant = uuid.uuid4()
+    _make_usage(session, owner, tenant_id=None, total_bytes=100)
+    quotas.reserve_storage_for_object(
+        session, owner_user_id=owner, tenant_id=tenant, size_bytes=256
+    )
+    session.commit()
+    tenant_row = quotas._find_usage(session, owner_user_id=owner, tenant_id=tenant)
+    global_row = quotas._find_usage(session, owner_user_id=owner, tenant_id=None)
+    assert tenant_row is not None
+    assert tenant_row.total_bytes == 256
+    assert tenant_row.object_count == 1
+    assert global_row is not None
+    assert global_row.total_bytes == 100  # untouched
+
+
 # ── initiate enforcement (API) ────────────────────────────────────────────────
 
 
@@ -268,6 +327,63 @@ def test_rejected_upload_does_not_count_toward_usage(
     assert resp.status_code == 422
     usage = quotas._find_usage(session, owner_user_id=current_user.id, tenant_id=None)
     assert usage is None
+
+
+# ── actual-size quota enforcement at completion ───────────────────────────────
+
+
+def test_complete_rejected_when_actual_pushes_over_byte_quota(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # Owner sits at 1024/2048 bytes; a 2048-byte actual object would overrun the
+    # quota, so completion is rejected and the staged bytes are removed.
+    _make_usage(session, current_user.id, total_bytes=1024, quota_bytes=2048)
+    us = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock(size=2048)
+    mock_storage.get_object_head.return_value = _PDF_BYTES
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 422
+    assert "quota_bytes_exceeded" in resp.json()["detail"]
+    mock_storage.remove_object.assert_called_once()
+    usage = quotas._find_usage(session, owner_user_id=current_user.id, tenant_id=None)
+    assert usage is not None
+    assert usage.total_bytes == 1024  # not credited
+    session.refresh(us)
+    assert us.status == UploadSessionStatus.ABORTED
+
+
+def test_complete_rejected_when_actual_pushes_over_object_quota(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    _make_usage(session, current_user.id, object_count=2, quota_objects=2)
+    us = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock(size=2048)
+    mock_storage.get_object_head.return_value = _PDF_BYTES
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 422
+    assert "quota_objects_exceeded" in resp.json()["detail"]
+    usage = quotas._find_usage(session, owner_user_id=current_user.id, tenant_id=None)
+    assert usage is not None
+    assert usage.object_count == 2  # not credited
+
+
+def test_concurrent_completions_cannot_overrun_quota(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # Quota fits exactly one 2048-byte object. Two completions race for it; the
+    # atomic locked reserve lets exactly one through and credits 2048 once.
+    _make_usage(session, current_user.id, total_bytes=0, quota_bytes=2048)
+    us1 = _make_session(session, current_user.id)
+    us2 = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock(size=2048)
+    mock_storage.get_object_head.return_value = _PDF_BYTES
+    r1 = client.post(f"/media/v1/uploads/{us1.id}/complete", json={})
+    r2 = client.post(f"/media/v1/uploads/{us2.id}/complete", json={})
+    assert {r1.status_code, r2.status_code} == {200, 422}
+    usage = quotas._find_usage(session, owner_user_id=current_user.id, tenant_id=None)
+    assert usage is not None
+    assert usage.total_bytes == 2048
+    assert usage.object_count == 1
 
 
 # ── admin quota endpoints ─────────────────────────────────────────────────────

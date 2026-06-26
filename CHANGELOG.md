@@ -157,6 +157,26 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **P0.2 Upload quota enforced against actual stored size.** Upload quota could
+  be bypassed by under-declaring `expected_size_bytes`: initiate checked the
+  *declared* size and completion never re-checked the actual object against the
+  quota. Now `UploadInitiateRequest` requires `expected_size_bytes >= 1` and
+  within the category maximum (**422** otherwise), and the presigned POST policy
+  is signed for the **declared** size, not the category maximum, so a small
+  declaration cannot smuggle a large object through the signed form. Completion
+  rejects when the actual `stat.size` exceeds the declared/category ceiling, and
+  a new `quotas.reserve_storage_for_object` takes a **row lock** (`FOR UPDATE`)
+  on the owner's `storage_usage` row to enforce the byte/object quota against the
+  *actual* stored size in the same transaction that promotes the object —
+  closing the under-declare bypass and serialising concurrent completions so they
+  cannot both overrun the ceiling. Over-quota completions are rejected (**422**,
+  staged bytes removed, `media_uploads_quota_rejected_total` incremented) and
+  never credited. `tests/test_uploads.py` / `tests/test_quotas.py` cover zero /
+  negative / over-category declarations, under-declared completion, actual-size
+  over-quota at completion, tenant scoping, and a serialised concurrent-completion
+  no-overrun case. README storage-quota section updated. 725 tests, 100% cov,
+  ruff + mypy + bandit green.
+
 - **P0.1 Variant generation scan-readiness gate.** `:generate`
   (`VariantsController.generate`) now requires the source object to have cleared
   antivirus scanning **and** reached its ready lifecycle state

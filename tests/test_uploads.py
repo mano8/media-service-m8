@@ -194,6 +194,47 @@ def test_initiate_upload_rejects_disallowed_mime(
     mock_storage.presigned_post_object.assert_not_called()
 
 
+def test_initiate_upload_rejects_zero_declared_size(
+    client: TestClient, mock_storage: MagicMock
+):
+    # A zero-byte declared size is a degenerate quota-bypass input; schema rejects.
+    body = {**_INITIATE_BODY, "expected_size_bytes": 0}
+    resp = client.post("/media/v1/uploads/initiate", json=body)
+    assert resp.status_code == 422
+    mock_storage.presigned_post_object.assert_not_called()
+
+
+def test_initiate_upload_rejects_negative_declared_size(
+    client: TestClient, mock_storage: MagicMock
+):
+    body = {**_INITIATE_BODY, "expected_size_bytes": -1}
+    resp = client.post("/media/v1/uploads/initiate", json=body)
+    assert resp.status_code == 422
+    mock_storage.presigned_post_object.assert_not_called()
+
+
+def test_initiate_upload_rejects_over_category_declared_size(
+    client: TestClient, mock_storage: MagicMock
+):
+    # Declared size above the category maximum is refused before a URL is issued.
+    body = {**_INITIATE_BODY, "expected_size_bytes": 200_000_000}
+    resp = client.post("/media/v1/uploads/initiate", json=body)
+    assert resp.status_code == 422
+    mock_storage.presigned_post_object.assert_not_called()
+
+
+def test_initiate_upload_signs_post_for_declared_size_not_category_max(
+    client: TestClient, mock_storage: MagicMock
+):
+    # The POST policy is signed for the declared size (2048), not the much larger
+    # category maximum, so a small declaration cannot push a large object.
+    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
+    assert resp.status_code == 200
+    _, kwargs = mock_storage.presigned_post_object.call_args
+    assert kwargs["max_size_bytes"] == 2048
+
+
 # ── POST /media/v1/uploads/{id}/complete ─────────────────────────────────────
 
 
@@ -269,6 +310,20 @@ def test_complete_upload_expired_session(
     assert resp.status_code == 409
     session.refresh(us)
     assert us.status == UploadSessionStatus.EXPIRED
+
+
+def test_complete_upload_rejects_actual_size_over_declared(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # Declared 2048 bytes but the stored object is larger (yet under the category
+    # cap): completion must reject on the declared ceiling, not the category max.
+    us = _make_session(session, current_user.id)
+    mock_storage.stat_object.return_value = _stat_mock(size=5000)
+    resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
+    assert resp.status_code == 422
+    assert "size_exceeded" in resp.json()["detail"]
+    # No download/sniff happens once the size ceiling is exceeded.
+    mock_storage.get_object_head.assert_not_called()
 
 
 def test_complete_upload_file_not_in_storage(
@@ -404,14 +459,17 @@ def test_complete_upload_rate_limited(
 # ── Controller unit test: timezone-aware expires_at ──────────────────────────
 
 
-def test_complete_upload_tz_aware_expires_at(mock_storage: MagicMock, current_user):
-    """Branch: expires_at carrying tzinfo is stripped before comparison."""
-    from media_service.controllers.uploads import UploadsController
-    from media_service.schemas.uploads import UploadCompleteRequest
+def test_ensure_completable_strips_tzaware_expires(session: Session, current_user):
+    """Branch: a tz-aware expires_at is stripped before the expiry comparison.
+
+    The session object is passed in-process (not round-tripped through SQLite,
+    which would drop the tzinfo), so the tz-aware future expiry exercises the
+    strip path and is accepted as not-yet-expired.
+    """
+    from media_service.controllers.uploads import _ensure_completable
 
     session_id = uuid.uuid4()
     owner_id = uuid.UUID(str(current_user.id))
-
     us = UploadSession(
         id=session_id,
         owner_user_id=owner_id,
@@ -421,23 +479,8 @@ def test_complete_upload_tz_aware_expires_at(mock_storage: MagicMock, current_us
         object_key=f"users/{owner_id}/document/{session_id}/f.pdf",
         expected_mime_type="application/pdf",
         expected_size_bytes=1024,
+        status=UploadSessionStatus.INITIATED,
         expires_at=datetime.now(tz=timezone.utc) + timedelta(hours=1),
     )
-
-    mock_sess = MagicMock()
-    mock_sess.get.return_value = us
-
-    stat = MagicMock()
-    stat.size = 1024
-    stat.etag = "etag-tz"
-    mock_storage.stat_object.return_value = stat
-    mock_storage.get_object_head.return_value = _PDF_BYTES
-
-    result = UploadsController.complete_upload(
-        session=mock_sess,
-        current_user=current_user,
-        session_id=session_id,
-        req=UploadCompleteRequest(),
-        storage=mock_storage,
-    )
-    assert result.media_object is not None
+    # Does not raise: the tz-aware expiry is stripped and lies in the future.
+    _ensure_completable(session, us)

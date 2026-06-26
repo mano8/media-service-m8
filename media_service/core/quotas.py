@@ -51,6 +51,32 @@ def get_or_create_usage(
     return usage
 
 
+def _lock_or_create_usage(
+    session: Session, *, owner_user_id: uuid.UUID, tenant_id: uuid.UUID | None
+) -> StorageUsage:
+    """Fetch the usage row ``FOR UPDATE``, creating and flushing one if absent.
+
+    The row lock serialises concurrent completions for the same scope, so the
+    actual-size quota check and its credit below are atomic and two completions
+    cannot both pass when only one fits. On backends without row locks (SQLite
+    in tests) this degrades to ordinary isolation. A freshly created row is
+    flushed so it materialises for the lock the next caller takes.
+    """
+    statement = select(StorageUsage).where(
+        col(StorageUsage.owner_user_id) == owner_user_id
+    )
+    if tenant_id is None:
+        statement = statement.where(col(StorageUsage.tenant_id).is_(None))
+    else:
+        statement = statement.where(col(StorageUsage.tenant_id) == tenant_id)
+    usage = session.exec(statement.with_for_update()).first()
+    if usage is None:
+        usage = StorageUsage(owner_user_id=owner_user_id, tenant_id=tenant_id)
+        session.add(usage)
+        session.flush()
+    return usage
+
+
 def effective_quota_bytes(usage: StorageUsage | None) -> int | None:
     """Resolve the byte ceiling: per-scope override else the settings default."""
     if usage is not None and usage.quota_bytes is not None:
@@ -110,6 +136,57 @@ def record_object_added(
     usage = get_or_create_usage(
         session, owner_user_id=owner_user_id, tenant_id=tenant_id
     )
+    usage.total_bytes += size_bytes
+    usage.object_count += 1
+    usage.updated_at = utcnow()
+    session.add(usage)
+
+
+class QuotaExceededError(Exception):
+    """Raised when the *actual* stored size would push a scope past its quota.
+
+    Carries a stable ``reason`` (``"quota_bytes_exceeded"`` /
+    ``"quota_objects_exceeded"``) so completion can reject and clean up the
+    staged object uniformly. Deliberately not an ``HTTPException``: the upload
+    completion path turns it into the same reject flow as other content
+    failures, removing the stored bytes rather than leaking them over quota.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+def reserve_storage_for_object(
+    session: Session,
+    *,
+    owner_user_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    size_bytes: int,
+) -> None:
+    """Atomically enforce the actual-size quota and credit the stored object.
+
+    Locks the scope's usage row, re-reads the live totals, and refuses (without
+    crediting) when the *actual* ``size_bytes`` would exceed the byte or
+    object-count ceiling — so a caller can never bypass quota by under-declaring
+    ``expected_size_bytes`` at initiate time. On success the bytes/object are
+    credited inside the same locked transaction, keeping stored usage the single
+    source of truth. Raises :class:`QuotaExceededError` on overflow.
+    """
+    usage = _lock_or_create_usage(
+        session, owner_user_id=owner_user_id, tenant_id=tenant_id
+    )
+
+    quota_bytes = effective_quota_bytes(usage)
+    if quota_bytes is not None and usage.total_bytes + size_bytes > quota_bytes:
+        inc_quota_rejected("bytes")
+        raise QuotaExceededError("quota_bytes_exceeded")
+
+    quota_objects = effective_quota_objects(usage)
+    if quota_objects is not None and usage.object_count + 1 > quota_objects:
+        inc_quota_rejected("objects")
+        raise QuotaExceededError("quota_objects_exceeded")
+
     usage.total_bytes += size_bytes
     usage.object_count += 1
     usage.updated_at = utcnow()

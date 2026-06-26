@@ -10,7 +10,11 @@ from sqlmodel import Session
 from auth_sdk_m8.schemas.user import UserModel
 
 from media_service.core.config import settings
-from media_service.core.quotas import check_quota, record_object_added
+from media_service.core.quotas import (
+    QuotaExceededError,
+    check_quota,
+    reserve_storage_for_object,
+)
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectPublic,
@@ -172,12 +176,19 @@ class UploadsController:
         )
         bucket = bucket_for_visibility(req.visibility)
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
+        # Sign the POST policy for the lower of the declared size and the
+        # category cap, never the full category maximum: a caller that declares
+        # a small object cannot then push a much larger one through the same
+        # signed form. The schema already guarantees 1 <= declared <= cap.
+        signed_max_bytes = min(
+            req.expected_size_bytes, max_size_for_category(str(req.category))
+        )
         upload_url, upload_fields = create_upload_url(
             storage=storage,
             bucket=bucket,
             object_key=object_key,
             content_type=req.mime_type,
-            max_size_bytes=max_size_for_category(str(req.category)),
+            max_size_bytes=signed_max_bytes,
             expires_seconds=expires,
         )
         expires_at = utcnow() + timedelta(seconds=expires)
@@ -239,8 +250,13 @@ class UploadsController:
             etag=stat.etag,
         )
 
-        # 1. Size enforcement
-        if stat.size > max_size_for_category(category):
+        # 1. Size enforcement against the actual stored bytes. The ceiling is
+        # the lower of the size the caller declared at initiate and the category
+        # cap, so an under-declared upload cannot complete with a larger object.
+        size_ceiling = min(
+            upload_session.expected_size_bytes, max_size_for_category(category)
+        )
+        if stat.size > size_ceiling:
             _reject_upload(**_reject_kw, reason="size_exceeded")
 
         # 2. Magic-byte MIME check
@@ -293,6 +309,23 @@ class UploadsController:
                 detail="Failed to finalize object content type.",
             ) from exc
 
+        # 5. Atomic actual-size quota check + credit. Locks the owner's usage
+        # row, re-checks the live totals against the *actual* stored size, and
+        # credits the bytes in the same transaction that promotes the object —
+        # so concurrent completions cannot overrun the quota and an under-
+        # declared size cannot push usage past the ceiling. Over quota, the
+        # staged object is rejected and its bytes removed (same as other
+        # content failures), never left credited.
+        try:
+            reserve_storage_for_object(
+                session,
+                owner_user_id=upload_session.owner_user_id,
+                tenant_id=upload_session.tenant_id,
+                size_bytes=stat.size,
+            )
+        except QuotaExceededError as exc:
+            _reject_upload(**_reject_kw, reason=exc.reason)
+
         media_object = MediaObject(
             id=upload_session.id,
             owner_user_id=upload_session.owner_user_id,
@@ -312,14 +345,6 @@ class UploadsController:
         upload_session.completed_at = utcnow()
         session.add(media_object)
         session.add(upload_session)
-        # Credit the stored bytes to the owner's running totals in the same
-        # transaction that promotes the object, so usage never diverges.
-        record_object_added(
-            session,
-            owner_user_id=upload_session.owner_user_id,
-            tenant_id=upload_session.tenant_id,
-            size_bytes=stat.size,
-        )
         session.commit()
         session.refresh(media_object)
         inc_upload_completed(str(upload_session.category), stat.size)

@@ -237,8 +237,22 @@ Every completed upload credits, and every soft-delete debits, a running
 of accounting truth in [`core/quotas.py`](media_service/core/quotas.py)).
 `POST /v1/uploads/initiate` refuses up front when the declared
 `expected_size_bytes` would push the owner past their ceiling: **413** over the
-byte quota, **409** over the object-count quota. Ceilings resolve to the
-per-scope admin override if set, otherwise the `MEDIA_DEFAULT_QUOTA_BYTES` /
+byte quota, **409** over the object-count quota. The declared
+`expected_size_bytes` must be `>= 1` and within the category maximum (rejected
+**422** otherwise), and the presigned POST policy is signed for that declared
+size — not the category maximum — so a small declaration cannot smuggle a large
+object through the signed form.
+
+Declared size is only an upper-bound policy input; the **actual stored size** is
+the accounting authority. `POST /v1/uploads/{id}/complete` re-checks the real
+object size (`stat.size`) against the declared/category ceiling and, in the same
+transaction that promotes the object, takes a **row lock** on the owner's
+`storage_usage` row to enforce the byte/object quota against the actual size
+before crediting it. This closes the under-declare bypass and serialises
+concurrent completions so they cannot both overrun the ceiling. An over-quota
+completion is rejected (**422**, the staged bytes are removed like any other
+content failure) and is never credited. Ceilings resolve to the per-scope admin
+override if set, otherwise the `MEDIA_DEFAULT_QUOTA_BYTES` /
 `MEDIA_DEFAULT_QUOTA_OBJECTS` defaults (unset = unlimited). Refusals increment
 `media_uploads_quota_rejected_total{reason="bytes"|"objects"}`. Both quota
 endpoints (and the optional `?tenant_id=`) are superuser-only.

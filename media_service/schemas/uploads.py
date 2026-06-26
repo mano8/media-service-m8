@@ -3,8 +3,10 @@
 import uuid
 from datetime import datetime
 
-from sqlmodel import SQLModel
+from pydantic import model_validator
+from sqlmodel import Field, SQLModel
 
+from media_service.core.validation import max_size_for_category
 from media_service.db_models.media_objects import (
     MediaCategory,
     MediaObjectPublic,
@@ -19,7 +21,22 @@ class UploadInitiateRequest(SQLModel):
     visibility: MediaVisibility
     original_filename: str
     mime_type: str
-    expected_size_bytes: int
+    # Declared upper bound for the object. Must be at least one byte and is
+    # capped at the category maximum here, before any presigned URL is issued,
+    # so the declared size is a real policy input rather than a number a caller
+    # can shrink to slip past quota accounting (actual stored size is the
+    # authority at completion).
+    expected_size_bytes: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _cap_to_category_maximum(self) -> "UploadInitiateRequest":
+        cap = max_size_for_category(str(self.category))
+        if self.expected_size_bytes > cap:
+            raise ValueError(
+                f"expected_size_bytes {self.expected_size_bytes} exceeds the "
+                f"maximum of {cap} bytes for category {self.category}."
+            )
+        return self
 
 
 class UploadInitiateResponse(SQLModel):
