@@ -1,0 +1,499 @@
+services:
+  # One-shot cert generator: creates local.crt/local.key if they don't exist.
+  # Traefik waits for this before starting. Skipped automatically when certs already exist.
+  # For browser-trusted certs: install mkcert, then run: bash init.sh --rotate-certs
+  cert-init:
+    image: alpine:3.21.3
+    volumes:
+      - ./traefik/certs:/certs
+    command:
+      - sh
+      - -c
+      - |
+        if [ -f /certs/local.crt ]; then
+          echo "==> cert-init: certs found, skipping"; exit 0
+        fi
+        apk add --no-cache --quiet openssl
+        openssl req -x509 -newkey rsa:2048 -nodes \
+          -keyout /certs/local.key -out /certs/local.crt \
+          -days 365 -subj "/CN=localhost" \
+          -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+        chmod 600 /certs/local.key && chmod 644 /certs/local.crt
+        echo "==> cert-init: self-signed cert ready (browsers will warn)"
+        echo "    For trusted certs: mkcert -install, then bash init.sh --rotate-certs"
+    restart: "no"
+
+  traefik:
+    image: traefik:v3.7.5
+    ports:
+      - "8000:80"
+      - "4430:443/tcp"
+      - "4430:443/udp"  # HTTP/3 / QUIC
+      - "127.0.0.1:8080:8080"   # Dashboard — localhost only
+      - "${API_BIND_IP:-127.0.0.1}:9000:9000"   # services entryPoint — override API_BIND_IP for LAN/public exposure
+    # No Docker socket mount: this stack routes exclusively through the Traefik
+    # file provider (traefik/dynamic_conf.yml). Mounting the Docker socket —
+    # even read-only — grants the Docker API, which is equivalent to host root.
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:ro
+      - ./traefik/certs:/etc/traefik/certs:ro
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - app_net
+
+  m8_db:
+    image: postgres:18.4-alpine
+    volumes:
+      - ./db_data:/var/lib/postgresql
+      - ../shared/db_init:/docker-entrypoint-initdb.d:ro
+    env_file:
+      - ./.env                          # exposes all .env vars so init-db.sh can discover DB triplets
+    environment:
+      - POSTGRES_USER=${DB_USER}        # engine bootstrap — required by the official postgres image
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - PGPORT=${DB_PORT}
+    ports:
+      - "127.0.0.1:${DB_PORT}:${DB_PORT}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p ${DB_PORT} -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # First boot only: the official entrypoint runs initdb + the init-db.sh
+      # provisioning on the Unix socket with TCP disabled, so pg_isready over
+      # 127.0.0.1 cannot pass until that completes. On a slow (e.g. Windows)
+      # bind mount under full-stack build load this can exceed 80s, tripping the
+      # old 30s window and failing dependents. A long start_period covers the
+      # cold init; start_interval probes every 2s so warm restarts flip healthy
+      # immediately (start_period ends the moment a probe succeeds).
+      start_period: 180s
+      start_interval: 2s
+    restart: unless-stopped
+    networks:
+      - data_net
+
+  redis_cache:
+    image: redis:8.8.0-alpine
+    volumes:
+      - ./redis/redis_data:/data
+    ports:
+      - '127.0.0.1:6379:6379'
+    command:
+      - sh
+      - -c
+      - |
+        redis-server --save 20 1 --loglevel warning --requirepass "${REDIS_PASSWORD}" &
+        until redis-cli ping 2>/dev/null | grep -q PONG; do sleep 0.2; done
+        # Per-service scoped ACL (plan 6.x.1): the auth app authenticates as
+        # `auth`, restricted to its own key prefixes and only the command
+        # categories it uses (read/write strings+hashes, pipelined txns, the
+        # refresh-rotation Lua EVAL, connection handshake; dangerous/admin
+        # denied). The default user is then stripped of all data/admin access
+        # — it keeps only connection commands so the healthcheck PING works.
+        redis-cli ACL SETUSER auth on \>"${REDIS_PASSWORD}" "~oauth_session:*" "~auth_code:*" "~login:*" "~refresh:*" "~exchange:*" "~rt:*" "~jwt:blacklist:*" "~rate:*" "~api_key:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
+        redis-cli ACL SETUSER default on \>"${REDIS_PASSWORD}" resetkeys -@all +@connection -@dangerous
+        wait
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDISCLI_AUTH=${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - data_net
+
+  # Media-owned Redis (rate limits, queues, locks, cache under the media:* namespace).
+  # Separate from the auth redis_cache; internal-only, never exposed to the host.
+  media_redis_cache:
+    image: redis:8.8.0-alpine
+    volumes:
+      - ./media_redis/data:/data
+    command:
+      - sh
+      - -c
+      - |
+        redis-server --save 20 1 --loglevel warning --requirepass "${MEDIA_REDIS_PASSWORD}" &
+        until redis-cli ping 2>/dev/null | grep -q PONG; do sleep 0.2; done
+        # Per-service scoped ACL (plan 6.x.1): the media app authenticates as
+        # `media`, restricted to its own `media:*` namespace plus the `arq:*`
+        # queue keys, and only the command categories it uses (rate-limit
+        # INCR/EXPIRE, ARQ list/sorted-set/string ops + Lua EVAL, connection
+        # handshake; dangerous/admin denied). ARQ also issues `INFO server` on
+        # startup to read the Redis version, so +info is re-granted after the
+        # -@dangerous strip (ACL rules apply left-to-right). The default user is
+        # then stripped of all data/admin access — connection commands only for
+        # the PING.
+        redis-cli ACL SETUSER media on \>"${MEDIA_REDIS_PASSWORD}" "~media:*" "~arq:*" +@read +@write +@transaction +@connection +eval -@dangerous +info "+client|setinfo"
+        redis-cli ACL SETUSER default on \>"${MEDIA_REDIS_PASSWORD}" resetkeys -@all +@connection -@dangerous
+        wait
+    environment:
+      - REDIS_PASSWORD=${MEDIA_REDIS_PASSWORD}
+      - REDISCLI_AUTH=${MEDIA_REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - data_net
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772
+    container_name: minio
+    ports:
+      - "127.0.0.1:9005:9000"
+      - "127.0.0.1:9006:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost:5173,http://localhost:9000"
+    volumes:
+      - ./minio/data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - app_net
+      - data_net
+
+  # One-shot: create the logical buckets and a scoped media-rw user/policy.
+  # Reads MinIO root creds from .env and the media service creds from media.env.
+  # media_service waits for this to complete successfully before starting.
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - ./.env
+      - ./media.env
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          echo "minio-init: waiting for minio..."; sleep 1
+        done
+        for b in "$$MINIO_BUCKET_PUBLIC" "$$MINIO_BUCKET_PRIVATE" "$$MINIO_BUCKET_SENSITIVE" "$$MINIO_BUCKET_TEMP" "$$MINIO_BUCKET_ARCHIVE"; do
+          mc mb --ignore-existing "local/$$b"
+        done
+        printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"],"Resource":["arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*"]}]}' \
+          "$$MINIO_BUCKET_PUBLIC" "$$MINIO_BUCKET_PUBLIC" \
+          "$$MINIO_BUCKET_PRIVATE" "$$MINIO_BUCKET_PRIVATE" \
+          "$$MINIO_BUCKET_SENSITIVE" "$$MINIO_BUCKET_SENSITIVE" \
+          "$$MINIO_BUCKET_TEMP" "$$MINIO_BUCKET_TEMP" \
+          "$$MINIO_BUCKET_ARCHIVE" "$$MINIO_BUCKET_ARCHIVE" > /tmp/media-rw.json
+        mc admin policy create local media-rw /tmp/media-rw.json || true
+        mc admin user add local "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY" || true
+        mc admin policy attach local media-rw --user "$$MINIO_ACCESS_KEY" || true
+        echo "minio-init: buckets and media-rw policy ready"
+    restart: "no"
+    networks:
+      - data_net
+
+
+  prometheus:
+    image: ubuntu/prometheus:3.11-26.04_stable
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - app_net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.1.0-25530058790
+    depends_on:
+      - prometheus
+    env_file:
+      - ./grafana.env
+    volumes:
+      - ./grafana/data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - app_net
+    restart: unless-stopped
+
+  auth_user_service:
+    build:
+      context: ../../../fa-auth-m8
+      dockerfile: ./auth_user_service/Dockerfile.local
+      additional_contexts:
+        auth-sdk-m8: ../../../auth-sdk-m8
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    env_file:
+      - ./auth.env
+    volumes:
+      - ./auth.env:/opt/auth_user_service/.env:ro
+      - ./shared_migrations:/opt/shared_migrations
+      - ./keys:/opt/keys:ro
+    depends_on:
+      m8_db:
+        condition: service_healthy
+      redis_cache:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app_net
+      - data_net
+
+  clamav:
+    image: clamav/clamav:1.5-debian13-slim
+    # The official image runs both clamd (TCP 3310) and freshclam (DB updates).
+    volumes:
+      - clamav_db:/var/lib/clamav        # persist the freshclam signature DB
+    healthcheck:
+      # `clamdcheck.sh` pings the running daemon via clamdscan.
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s                  # allow first freshclam download
+    restart: unless-stopped
+    networks:
+      # clamd (:3310) is reachable ONLY by media_worker, which shares scan_net.
+      # No other service is on scan_net, so nothing else can talk to clamav.
+      - scan_net
+      # Private, clamav-only egress so freshclam can fetch DB updates. scan_net is
+      # internal (no gateway), so this is clamav's only path to the internet — and
+      # it is not shared with any other container.
+      - clamav_egress
+
+  # Async ARQ worker (media-worker-m8). Pulls scan_object / generate_variants
+  # jobs off the media-owned Redis, scans bytes via clamav, renders image
+  # variants, and reports results back to media-service over its INTERNAL HTTP
+  # API (Bearer MEDIA_INTERNAL_SERVICE_TOKEN).
+  #
+  # Dev-local image: builds media-worker-m8 from the sibling repo and injects the
+  # local media-sdk-m8 checkout as a Docker named context.
+  #
+  # INBOUND-FREE BY DESIGN — like media_service_worker, this process runs no HTTP
+  # server (its only entrypoint is `arq worker.settings.WorkerSettings`). It is
+  # reached purely as a Redis queue consumer, so it carries NO Traefik label and
+  # publishes NO host port: there is nothing to route and nothing to expose. It
+  # is confined to the stack's internal networks (never the host, never the LAN).
+  # The worker→media-service direction is the only HTTP path, and that is gated
+  # by media-service's internal-only Traefik router + the shared service token.
+  #
+  # The build image bundles the worker code at /opt/worker; the source bind mount
+  # keeps local edits live during dev.
+  media_worker:
+    build:
+      context: ../../../media-worker-m8
+      dockerfile: ./worker/Dockerfile.local
+      additional_contexts:
+        media-sdk-m8: ../../../media-sdk-m8
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    env_file:
+      - ./worker.env
+    volumes:
+      - ../../../media-worker-m8/worker:/opt/worker
+      - ./worker.env:/opt/worker/.env:ro
+    depends_on:
+      clamav:
+        condition: service_healthy
+      media_redis_cache:                  # ARQ queue the worker consumes
+        condition: service_healthy
+      minio:                              # object bytes (get/put/remove)
+        condition: service_healthy
+      minio-init:                         # media-rw creds + buckets must exist
+        condition: service_completed_successfully
+      media_service:                      # internal callback target
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      # data_net carries everything the worker pulls from / reports to:
+      # media_redis_cache (ARQ queue), minio (bytes), media_service (internal API).
+      - data_net
+      # scan_net is the private worker↔clamav segment. NOT on app_net: the worker
+      # runs no HTTP server, needs nothing external-facing, and (both its nets are
+      # internal) has no internet egress.
+      - scan_net
+
+  media_service:
+    build:
+      context: ../../
+      dockerfile: ./media_service/Dockerfile.local
+      additional_contexts:
+        fastapi-m8: ../../../fastapi-m8
+        media-sdk-m8: ../../../media-sdk-m8
+        auth-sdk-m8: ../../../auth-sdk-m8
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    env_file:
+      - ./media.env
+    volumes:
+      - ../../media_service:/opt/media_service
+      - ./media.env:/opt/media_service/.env:ro
+      - ./shared_migrations:/opt/shared_migrations
+    depends_on:
+      m8_db:
+        condition: service_healthy
+      auth_user_service:
+        condition: service_started
+      media_redis_cache:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - app_net
+      - data_net
+
+  # Service-owned arq maintenance worker — the SAME image as media_service, run
+  # with a command override (no new build / no new Docker Hub publish). Owns the
+  # DB-coupled housekeeping crons (hard-purge, stale-upload expiry, orphan
+  # reconcile). replicas: 1 keeps a single scheduler so arq cron never
+  # double-fires. Runs NO migrations — the web container applies them on startup;
+  # this command override bypasses docker_start.sh. Outbound-only: no Traefik
+  # label, no exposed port.
+  media_service_worker:
+    build:
+      context: ../../
+      dockerfile: ./media_service/Dockerfile.local
+      additional_contexts:
+        fastapi-m8: ../../../fastapi-m8
+        media-sdk-m8: ../../../media-sdk-m8
+        auth-sdk-m8: ../../../auth-sdk-m8
+    command: ["arq", "media_service.maintenance_worker.WorkerSettings"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    env_file:
+      - ./media.env
+    volumes:
+      - ../../media_service:/opt/media_service
+      - ./media.env:/opt/media_service/.env:ro
+    depends_on:
+      m8_db:
+        condition: service_healthy
+      media_redis_cache:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      media_service:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - app_net
+      - data_net
+
+# clamav_db: persists the freshclam signature database across restarts so the
+# daemon doesn't re-download the full set on every boot.
+volumes:
+  clamav_db:
+
+# app_net:       external-facing — Traefik, app services, observability.
+# data_net:      internal only (no gateway) — DB and Redis are not reachable from app_net.
+# scan_net:      internal — private media_worker↔clamav segment; clamd (:3310) is
+#                reachable by NO other service.
+# clamav_egress: clamav-only outbound net for freshclam DB updates (not shared).
+# App services sit on app_net + data_net; Traefik sits on app_net only and cannot reach
+# DB/Redis/clamav. media_worker + clamav are OFF app_net entirely.
+networks:
+  app_net:
+    driver: bridge
+    name: hardened_m8_app_net   # explicit name so Traefik's network: setting can reference it
+    # Pinned, deterministic subnet so the bridge gateway IP is stable and the
+    # allowlists in traefik/dynamic_conf.yml can trust it. 172.16.0.0/16 is RFC1918
+    # private space Docker allocates per-bridge on ANY host, independent of the
+    # machine's own LAN — portable, NOT tied to this machine. Host->published-port
+    # traffic is SNATed to the gateway (172.16.0.1), trusted as "localhost" by the
+    # dashboard allowlist; sibling containers keep 172.16.0.x and are NOT trusted.
+    # If 172.16.0.0/16 is already in use on a host (e.g. a corporate VPN), change
+    # both lines below and the matching CIDRs in traefik/dynamic_conf.yml.
+    ipam:
+      config:
+        - subnet: 172.16.0.0/16
+          gateway: 172.16.0.1
+  data_net:
+    driver: bridge
+    internal: true   # no gateway — DB/Redis are unreachable from app_net or the host
+  # Private worker↔clamav segment. internal:true → no gateway, so nothing on it can
+  # reach the internet, and ONLY media_worker + clamav are attached.
+  scan_net:
+    driver: bridge
+    internal: true
+    name: hardened_media_m8_scan_net
+  # clamav-ONLY outbound network so freshclam can fetch signature DB updates. No
+  # other container attaches here, so this egress path is never shared.
+  clamav_egress:
+    driver: bridge
+    name: hardened_media_m8_clamav_egress

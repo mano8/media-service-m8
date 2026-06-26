@@ -29,6 +29,17 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Added
 
+- **`dev_local_media_m8` local compose stack.** A source-built dev stack (auth +
+  media + worker + MinIO/Redis/Postgres/observability) that runs the per-consumer
+  `1.0.0` issuer from source, with `PRIVATE_API_CONSUMERS` active and the
+  live-test harness env (`LIVE_TEST_PRIVATE_API_CLIENT_ID=media-service`,
+  opt-in `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL`) wired like the other stacks.
+- **README per-consumer / health-detail consumer-auth documentation.** The root
+  `README.md` documents per-consumer internal auth (`INTERNAL_CLIENT_ID` +
+  `PRIVATE_API_CONSUMERS`, bootstrap vs. service-token), the revocation
+  failure-mode (`ACCESS_REVOCATION_FAILURE_MODE`), and the dedicated
+  `HEALTH_DETAIL_CREDENTIAL` health gate (decoupled from `PRIVATE_API_SECRET`).
+
 - **Production overlay with `_FILE` secret mounts (plan 6.1).** Added
   `docker_compose/hardened_media_m8/docker-compose.production.yml` — a thin
   production overlay applied on top of the base stack via
