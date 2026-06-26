@@ -319,7 +319,30 @@ Set these to match `auth_user_service` exactly:
   shared secret or private key needed.
 - **HS256:** `ACCESS_TOKEN_ALGORITHM=HS256` + a shared `ACCESS_SECRET_KEY`.
 - **`TOKEN_MODE`:** `stateless` | `hybrid` | `stateful`. In `stateful` mode set
-  `INTROSPECTION_URL` + `PRIVATE_API_SECRET` (HTTP revocation checks).
+  `INTROSPECTION_URL` (HTTP revocation checks) plus the private-API credential
+  described next.
+- **Per-consumer internal auth (`fastapi-m8 >= 3.1.0`):** the private-API call to
+  fa-auth authenticates as a named consumer. Set
+  `INTERNAL_CLIENT_ID=media-service`; `PRIVATE_API_SECRET` then becomes this
+  consumer's **bootstrap credential**, sent as `X-Internal-Client` +
+  `X-Internal-Token` and matched against the issuer's `PRIVATE_API_CONSUMERS`
+  registry entry. Leaving `INTERNAL_CLIENT_ID` unset falls back to the legacy
+  single `X-Internal-Token` shape. Optionally set
+  `SERVICE_TOKEN_EXCHANGE_ENABLED=true` to exchange the bootstrap credential for
+  short-TTL Bearer service tokens at `{issuer}/private/v1/service-token`. The same
+  credential authenticates the SSE event stream (below).
+- **Revocation failure mode (`ACCESS_REVOCATION_FAILURE_MODE`):** `fail_closed`
+  (default) returns **503** when introspection is unavailable so a possibly-revoked
+  token never passes; `fail_open` accepts tokens during an outage
+  (availability-first) and the opt-out is logged loudly and counted
+  (`revocation_check_failures_total{mode="fail_open"}`). `fail_closed` is
+  recommended in production (set in the hardened stack).
+- **Health-detail gate (`HEALTH_DETAIL_CREDENTIAL`):** the deep
+  `/{prefix}/health/` detail body is gated by its **own** dedicated,
+  separately-rotatable credential (presented as `X-Internal-Token`), never reusing
+  `PRIVATE_API_SECRET`. Reuse of the private-API secret as either
+  `HEALTH_DETAIL_CREDENTIAL` or `METRICS_SCRAPE_CREDENTIAL` is a fatal startup
+  error; unset → the gate fails closed (shallow status only, no detail body).
 - **Boundary claims:** `auth-sdk-m8 >= 1.0.0` defaults `TOKEN_STRICT_VALIDATION`
   on, so `TOKEN_ISSUER` and `TOKEN_AUDIENCE` are required at boot (or opt out
   with `TOKEN_STRICT_VALIDATION=false` for local dev).
@@ -334,6 +357,12 @@ Set these to match `auth_user_service` exactly:
   validation cache early. It is a **best-effort cache accelerator** — the JTI
   blacklist behind `INTROSPECTION_URL` stays authoritative and stream loss is
   non-fatal. Tune with `EVENT_STREAM_CONNECT_TIMEOUT` / `EVENT_STREAM_READ_TIMEOUT`.
+  The stream authenticates with the **same** per-consumer credential as
+  introspection (legacy `X-Internal-Token`, bootstrap pair, or service token).
+
+For multi-host deployments and the inter-service trust model (mTLS guidance,
+network segmentation), see
+[`docker_compose/SECURITY.md`](docker_compose/SECURITY.md).
 
 ## Response security headers
 
