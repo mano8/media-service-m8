@@ -14,6 +14,7 @@ _quota_rejected: Optional[Counter] = None
 _bytes_uploaded: Optional[Counter] = None
 _download_urls_generated: Optional[Counter] = None
 _rate_limit_redis_errors: Optional[Counter] = None
+_share_resolves: Optional[Counter] = None
 
 
 def setup(*, enabled: bool, api_prefix: str = "media") -> None:
@@ -26,7 +27,7 @@ def setup(*, enabled: bool, api_prefix: str = "media") -> None:
 def _do_register(api_prefix: str) -> None:  # pragma: no cover
     global _uploads_initiated, _uploads_completed, _uploads_failed, _uploads_rejected
     global _quota_rejected, _bytes_uploaded, _download_urls_generated
-    global _rate_limit_redis_errors
+    global _rate_limit_redis_errors, _share_resolves
     p = api_prefix.strip().lstrip("/").replace("-", "_").replace("/", "_")
     pfx = f"{p}_" if p else ""
     _uploads_initiated = Counter(
@@ -75,6 +76,12 @@ def _do_register(api_prefix: str) -> None:  # pragma: no cover
         ["mode"],
         registry=REGISTRY,
     )
+    _share_resolves = Counter(
+        f"{pfx}media_share_resolves_total",
+        "Public share token resolution attempts by result",
+        ["result"],
+        registry=REGISTRY,
+    )
 
 
 def inc_upload_initiated(category: str, visibility: str) -> None:
@@ -112,3 +119,8 @@ def inc_download_url_generated() -> None:
 def inc_rate_limit_redis_error(mode: str) -> None:
     if _rate_limit_redis_errors is not None:
         _rate_limit_redis_errors.labels(mode=mode).inc()
+
+
+def inc_share_resolve(result: str) -> None:
+    if _share_resolves is not None:
+        _share_resolves.labels(result=result).inc()

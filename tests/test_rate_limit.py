@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from auth_sdk_m8.schemas.user import UserModel
-from media_service.core.rate_limit import _IP_LIMIT_FACTOR, RateLimiter
+from media_service.core.rate_limit import _IP_LIMIT_FACTOR, AnonRateLimiter, RateLimiter
 
 
 def _make_user() -> UserModel:
@@ -228,3 +228,107 @@ def test_rate_limiter_different_users_get_different_keys():
         call.args[0] for call in redis.incr.call_args_list if ":ip:" not in call.args[0]
     ]
     assert user_keys[0] != user_keys[1]
+
+
+# ── AnonRateLimiter ───────────────────────────────────────────────────────────
+
+
+def test_anon_limiter_allows_under_limit():
+    limiter = AnonRateLimiter("shares:resolve", limit=5)
+    limiter(request=_make_request(), redis_client=_make_redis(count=3))
+
+
+def test_anon_limiter_raises_429_over_limit():
+    limiter = AnonRateLimiter("shares:resolve", limit=5)
+    with pytest.raises(HTTPException) as exc_info:
+        limiter(request=_make_request(), redis_client=_make_redis(count=6))
+    assert exc_info.value.status_code == 429
+    assert "Retry-After" in exc_info.value.headers
+
+
+def test_anon_limiter_retry_after_matches_window():
+    limiter = AnonRateLimiter("shares:resolve", limit=5, window_seconds=30)
+    with pytest.raises(HTTPException) as exc_info:
+        limiter(request=_make_request(), redis_client=_make_redis(count=6))
+    assert exc_info.value.headers["Retry-After"] == "30"
+
+
+def test_anon_limiter_expire_set_on_first_request():
+    redis = _make_redis(count=1)
+    limiter = AnonRateLimiter("shares:resolve", limit=5, window_seconds=30)
+    limiter(request=_make_request(), redis_client=redis)
+    redis.expire.assert_called_once()
+    assert redis.expire.call_args.args[1] == 30
+
+
+def test_anon_limiter_expire_not_set_on_subsequent_request():
+    redis = _make_redis(count=2)
+    limiter = AnonRateLimiter("shares:resolve", limit=5)
+    limiter(request=_make_request(), redis_client=redis)
+    redis.expire.assert_not_called()
+
+
+def test_anon_limiter_key_uses_ip():
+    redis = _make_redis(count=1)
+    limiter = AnonRateLimiter("shares:resolve", limit=5)
+    limiter(request=_make_request("10.0.0.1"), redis_client=redis)
+    key = redis.incr.call_args.args[0]
+    assert ":ip:" in key
+    assert "10.0.0.1" in key
+
+
+def test_anon_limiter_strips_control_chars_from_ip():
+    redis = _make_redis(count=1)
+    limiter = AnonRateLimiter("shares:resolve", limit=5)
+    limiter(request=_make_request("1.2.3.4\ninjected"), redis_client=redis)
+    key = redis.incr.call_args.args[0]
+    assert "\n" not in key
+
+
+def test_anon_limiter_fail_open_on_redis_error():
+    redis = MagicMock()
+    redis.incr.side_effect = ConnectionError("Redis down")
+    limiter = AnonRateLimiter("shares:resolve", limit=5, failure_mode="fail_open")
+    limiter(request=_make_request(), redis_client=redis)
+
+
+def test_anon_limiter_fail_closed_raises_503():
+    redis = MagicMock()
+    redis.incr.side_effect = ConnectionError("Redis down")
+    limiter = AnonRateLimiter("shares:resolve", limit=5, failure_mode="fail_closed")
+    with pytest.raises(HTTPException) as exc_info:
+        limiter(request=_make_request(), redis_client=redis)
+    assert exc_info.value.status_code == 503
+
+
+def test_anon_limiter_fail_open_emits_metric():
+    redis = MagicMock()
+    redis.incr.side_effect = ConnectionError("Redis down")
+    limiter = AnonRateLimiter("shares:resolve", limit=5, failure_mode="fail_open")
+    with patch("media_service.core.rate_limit._metrics") as mock_metrics:
+        limiter(request=_make_request(), redis_client=redis)
+    mock_metrics.inc_rate_limit_redis_error.assert_called_once_with("fail_open")
+
+
+def test_anon_limiter_fail_closed_emits_metric():
+    redis = MagicMock()
+    redis.incr.side_effect = ConnectionError("Redis down")
+    limiter = AnonRateLimiter("shares:resolve", limit=5, failure_mode="fail_closed")
+    with patch("media_service.core.rate_limit._metrics") as mock_metrics:
+        with pytest.raises(HTTPException):
+            limiter(request=_make_request(), redis_client=redis)
+    mock_metrics.inc_rate_limit_redis_error.assert_called_once_with("fail_closed")
+
+
+def test_anon_limiter_reads_failure_mode_from_settings():
+    redis = MagicMock()
+    redis.incr.side_effect = ConnectionError("Redis down")
+    limiter = AnonRateLimiter("shares:resolve", limit=5)
+    mock_settings = MagicMock()
+    mock_settings.MEDIA_RATE_LIMIT_FAILURE_MODE = "fail_open"
+    with (
+        patch("media_service.core.rate_limit._metrics") as mock_metrics,
+        patch("media_service.core.config.settings", mock_settings),
+    ):
+        limiter(request=_make_request(), redis_client=redis)
+    mock_metrics.inc_rate_limit_redis_error.assert_called_once_with("fail_open")
