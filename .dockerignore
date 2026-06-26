@@ -1,0 +1,37 @@
+# ---- compose runtime secrets ------------------------------------------------
+# Non-example env files in any compose stack directory
+docker_compose/**/.env
+docker_compose/**/auth.env
+docker_compose/**/media.env
+docker_compose/**/worker.env
+docker_compose/**/test.env
+docker_compose/**/grafana.env
+
+# Generated signing keys and TLS private keys
+docker_compose/**/keys/
+docker_compose/**/traefik/certs/
+**/*.pem
+**/*.key
+
+# ---- compose runtime data ---------------------------------------------------
+docker_compose/**/grafana/data/
+docker_compose/**/prometheus/data/
+docker_compose/**/minio/
+docker_compose/**/redis/
+docker_compose/**/media_redis/
+docker_compose/**/db_data/
+docker_compose/**/shared_migrations/
+
+# ---- python development artifacts -------------------------------------------
+.venv/
+**/__pycache__/
+**/*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# ---- local-only config -------------------------------------------------------
+CLAUDE.md
+.claude/
