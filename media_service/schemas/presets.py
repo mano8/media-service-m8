@@ -10,9 +10,37 @@ from datetime import datetime
 from typing import Literal
 import uuid
 
+from pydantic import model_validator
 from sqlmodel import Field, SQLModel
 
 ImageFormat = Literal["WEBP", "JPEG", "PNG", "GIF", "AVIF"]
+
+# ── Variant cost bounds (P0.3) ───────────────────────────────────────────────
+# Fixed request-policy ceilings that bound the CPU, memory, queue time, and
+# storage writes one authenticated caller can demand from variant generation.
+# media-service is the request-policy owner; media-worker-m8 carries its own
+# independent runtime ceilings as defense in depth (no duplicated config — these
+# are the user-facing policy, those are local worker safety limits). They are
+# fixed constants, not per-deployment tunables, so every recipe — built-in or
+# user-defined — is expanded through one validated path.
+
+#: Hard ceiling (px) on any single fixed dimension or ``fixed_size``.
+MAX_PRESET_DIMENSION = 8192
+#: Ceiling on ``fixed_width * fixed_height`` when both dimensions are fixed
+#: (2**25 ≈ 32 megapixels).
+MAX_PRESET_PIXEL_AREA = 33_554_432
+#: Ceiling on a preset's optional ``max_byte_size`` encode budget (25 MiB).
+MAX_PRESET_MAX_BYTE_SIZE = 26_214_400
+#: Max distinct output formats per preset (one VariantSpec/output each). There
+#: are only five supported formats, so each must also be unique.
+MAX_FORMATS_PER_PRESET = 5
+#: Max preset names accepted on a single ``:generate`` request (pre-dedupe).
+MAX_PRESETS_PER_REQUEST = 16
+#: Max expanded outputs (preset × format) one job may enqueue.
+MAX_OUTPUTS_PER_JOB = 32
+#: Ceiling on the summed per-output pixel-area cost of one job (2**28 ≈ 256
+#: megapixels), an upper bound charging unspecified dimensions at the max.
+MAX_JOB_PIXEL_AREA = 268_435_456
 
 
 class FormatSpec(SQLModel):
@@ -34,9 +62,45 @@ class PresetSpec(SQLModel):
     """A reusable variant recipe: one geometry rendered into one+ formats."""
 
     image_size: ImageSizeSpec
-    formats: list[FormatSpec] = Field(min_length=1)
+    formats: list[FormatSpec] = Field(min_length=1, max_length=MAX_FORMATS_PER_PRESET)
     allow_upscale: bool = False
     max_byte_size: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _enforce_cost_bounds(self) -> "PresetSpec":
+        """Reject recipes whose per-preset cost exceeds the fixed ceilings.
+
+        Applied on every construction path — user create/update *and* loading a
+        stored row or a built-in default — so no recipe can demand unbounded
+        geometry, encode budget, or duplicate-format fan-out.
+        """
+        size = self.image_size
+        for value in (size.fixed_width, size.fixed_height, size.fixed_size):
+            if value is not None and value > MAX_PRESET_DIMENSION:
+                raise ValueError(
+                    f"Preset dimension {value} exceeds maximum {MAX_PRESET_DIMENSION}."
+                )
+        if (
+            size.fixed_width is not None
+            and size.fixed_height is not None
+            and size.fixed_width * size.fixed_height > MAX_PRESET_PIXEL_AREA
+        ):
+            raise ValueError(
+                f"Preset output area {size.fixed_width * size.fixed_height} "
+                f"exceeds maximum {MAX_PRESET_PIXEL_AREA}."
+            )
+        if (
+            self.max_byte_size is not None
+            and self.max_byte_size > MAX_PRESET_MAX_BYTE_SIZE
+        ):
+            raise ValueError(
+                f"Preset max_byte_size {self.max_byte_size} exceeds maximum "
+                f"{MAX_PRESET_MAX_BYTE_SIZE}."
+            )
+        exts = [fmt.ext for fmt in self.formats]
+        if len(set(exts)) != len(exts):
+            raise ValueError("Preset formats must be unique.")
+        return self
 
 
 class ImagePresetCreate(SQLModel):

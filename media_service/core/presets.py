@@ -18,7 +18,14 @@ from media_sdk_m8 import VariantSpec
 
 from media_service.db_models.image_presets import ImagePreset
 from media_service.db_models.media_objects import MediaObject
-from media_service.schemas.presets import FormatSpec, ImageSizeSpec, PresetSpec
+from media_service.schemas.presets import (
+    MAX_JOB_PIXEL_AREA,
+    MAX_OUTPUTS_PER_JOB,
+    MAX_PRESET_DIMENSION,
+    FormatSpec,
+    ImageSizeSpec,
+    PresetSpec,
+)
 from media_service.storage.keys import build_variant_key
 
 
@@ -107,6 +114,17 @@ def _expand(
     return specs
 
 
+def _geometry_cost(size: ImageSizeSpec) -> int:
+    """Upper-bound pixel area one output of this geometry can render to.
+
+    An unspecified dimension is charged at :data:`MAX_PRESET_DIMENSION` so the
+    cost is a safe ceiling regardless of the source's aspect ratio.
+    """
+    width = size.fixed_width or size.fixed_size or MAX_PRESET_DIMENSION
+    height = size.fixed_height or size.fixed_size or MAX_PRESET_DIMENSION
+    return width * height
+
+
 def resolve_presets(
     session: Session,
     *,
@@ -117,10 +135,14 @@ def resolve_presets(
     """Resolve requested preset names into the VariantSpecs for a job.
 
     Unknown names (after merging built-ins with the caller's presets) raise 422,
-    so a job is never enqueued with an unresolvable preset.
+    so a job is never enqueued with an unresolvable preset. The expanded job is
+    also bounded by output count (:data:`MAX_OUTPUTS_PER_JOB`) and summed
+    per-output pixel-area cost (:data:`MAX_JOB_PIXEL_AREA`); either overrun
+    raises 422 before any job is created or enqueued.
     """
     available = merged_presets(session, current_user)
     specs: list[VariantSpec] = []
+    total_cost = 0
     for name in names:
         spec = available.get(name)
         if spec is None:
@@ -128,5 +150,23 @@ def resolve_presets(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Unknown preset: {name}",
             )
-        specs.extend(_expand(name=name, spec=spec, media_object=media_object))
+        expanded = _expand(name=name, spec=spec, media_object=media_object)
+        specs.extend(expanded)
+        total_cost += _geometry_cost(spec.image_size) * len(expanded)
+    if len(specs) > MAX_OUTPUTS_PER_JOB:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Variant job expands to {len(specs)} outputs, exceeding the "
+                f"maximum {MAX_OUTPUTS_PER_JOB}."
+            ),
+        )
+    if total_cost > MAX_JOB_PIXEL_AREA:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Variant job output area cost {total_cost} exceeds the maximum "
+                f"{MAX_JOB_PIXEL_AREA}."
+            ),
+        )
     return specs

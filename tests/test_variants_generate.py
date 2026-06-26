@@ -154,3 +154,26 @@ def test_generate_no_job_created_on_validation_failure(
     _gen(client, obj.id, ["thumb"])
     rows = session.exec(select(VariantJob)).all()
     assert rows == []
+
+
+def test_generate_dedupes_repeated_presets(
+    client: TestClient, session: Session, current_user, fake_arq_pool
+):
+    obj = _make_object(session, uuid.UUID(str(current_user.id)))
+    resp = _gen(client, obj.id, ["thumb", "thumb", "large", "thumb"])
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["requested_presets"] == ["thumb", "large"]
+    assert body["variants_expected"] == 2
+    args, _ = fake_arq_pool.enqueue_job.await_args
+    assert len(args[1].specs) == 2
+
+
+def test_generate_rejects_too_many_presets(
+    client: TestClient, session: Session, current_user, fake_arq_pool
+):
+    obj = _make_object(session, uuid.UUID(str(current_user.id)))
+    resp = _gen(client, obj.id, [f"p{i}" for i in range(17)])
+    assert resp.status_code == 422
+    assert session.exec(select(VariantJob)).all() == []
+    fake_arq_pool.enqueue_job.assert_not_awaited()

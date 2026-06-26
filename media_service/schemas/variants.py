@@ -3,15 +3,27 @@
 from datetime import datetime
 import uuid
 
+from pydantic import model_validator
 from sqlmodel import Field, SQLModel
 
 from media_service.db_models.variant_jobs import VariantJobStatus
+from media_service.schemas.presets import MAX_PRESETS_PER_REQUEST
 
 
 class VariantGenerateRequest(SQLModel):
     """Public request to generate variants for an object from named presets."""
 
-    presets: list[str] = Field(min_length=1)
+    presets: list[str] = Field(min_length=1, max_length=MAX_PRESETS_PER_REQUEST)
+
+    @model_validator(mode="after")
+    def _dedupe_presets(self) -> "VariantGenerateRequest":
+        """De-duplicate preset names (order-preserving) before resolution.
+
+        Bounds fan-out so a caller cannot multiply work by repeating a name; the
+        raw count is already capped by ``max_length`` before this runs.
+        """
+        self.presets = list(dict.fromkeys(self.presets))
+        return self
 
 
 class VariantPublic(SQLModel):

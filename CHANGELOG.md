@@ -157,6 +157,27 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **P0.3 Variant preset/job fan-out bounded by cost (service-side).** An
+  authenticated caller could multiply CPU, memory, queue time, and storage writes
+  with oversized presets or large/duplicate variant jobs — the request path had no
+  cost ceilings. media-service is now the request-policy owner with fixed,
+  single-validated-path bounds: per preset, each fixed dimension/`fixed_size` ≤
+  **8192 px**, `fixed_width × fixed_height` ≤ **32 MP**, `max_byte_size` ≤
+  **25 MiB**, and ≤ **5** distinct formats (`PresetSpec` enforces these on every
+  construction path — user create/update *and* loading a stored row or a built-in
+  default). Per `:generate` request, ≤ **16** preset names (raw, then
+  order-preserving de-duplication before resolution), the expansion may not exceed
+  **32** outputs, and the summed per-output pixel-area cost (unspecified dimensions
+  charged at the per-side max) may not exceed **256 MP** — any overrun is a
+  deterministic **422** before a `VariantJob` is created or enqueued. Ceilings are
+  fixed code constants (not per-deployment tunables), so no user-facing policy is
+  duplicated into clients; `media-worker-m8` keeps its own independent runtime
+  ceilings as defense in depth. New `tests/test_variant_cost_bounds.py` covers the
+  per-preset, per-request, and per-job bounds plus the `_geometry_cost` upper-bound
+  helper; `tests/test_variants_generate.py` adds end-to-end dedupe and
+  too-many-presets cases. README variant + preset sections updated. 745 tests,
+  100% cov, ruff + mypy + bandit green.
+
 - **P0.2 Upload quota enforced against actual stored size.** Upload quota could
   be bypassed by under-declaring `expected_size_bytes`: initiate checked the
   *declared* size and completion never re-checked the actual object against the

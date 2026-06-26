@@ -157,6 +157,15 @@ unknown preset names are **422**. The resolver expands each preset × format int
 the `VariantSpec`s carried by the enqueued `generate_variants` job — media-service
 never imports `imgtools_m8`.
 
+The request is **cost-bounded** so one authenticated caller cannot fan a single
+job out into unbounded work: at most **16** preset names per request (duplicates
+are de-duplicated, order-preserving, before resolution), the expansion may not
+exceed **32** outputs, and the summed per-output pixel-area cost may not exceed
+**256 MP** (unspecified dimensions are charged at the per-side maximum). Any
+overrun is a deterministic **422** before a job is created or enqueued.
+media-service is the request-policy owner here; `media-worker-m8` carries its own
+independent runtime safety ceilings as defense in depth.
+
 ### Presets — `/{prefix}/v1/presets`
 
 | Method | Path | Auth | Purpose |
@@ -170,6 +179,12 @@ Built-in defaults (`thumb`/`small`/`medium`/`large`) ship as code constants; a
 user row of the same name shadows the built-in at resolve time. Each preset is a
 local, imgtools-free recipe: one geometry (`image_size`) rendered into one+
 formats (`ext` ∈ `WEBP|JPEG|PNG|GIF|AVIF`, `quality` 1–100).
+
+Every recipe — built-in or user-defined — is expanded through one validated path
+with fixed per-preset cost ceilings: each fixed dimension/`fixed_size` ≤ **8192
+px**, `fixed_width × fixed_height` ≤ **32 MP**, `max_byte_size` ≤ **25 MiB**, and
+at most **5** formats, which must be distinct. A recipe over any ceiling is
+rejected at create/update time (**422**).
 
 ### Internal (service-to-service) — `/{prefix}/v1/internal`
 
