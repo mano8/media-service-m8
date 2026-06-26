@@ -157,6 +157,19 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **P0.1 Variant generation scan-readiness gate.** `:generate`
+  (`VariantsController.generate`) now requires the source object to have cleared
+  antivirus scanning **and** reached its ready lifecycle state
+  (`scan_status == CLEAN` and `status == READY`) before a `VariantJob` is created
+  or enqueued — previously it accepted any `UPLOADED` object regardless of scan
+  outcome, so unscanned/quarantined/infected bytes could be handed to the image
+  worker for decoding. All pre-ready, pending, failed, quarantined, infected, or
+  mismatched states now return a uniform **409** (matching the download/share scan
+  gates) before any ARQ enqueue; soft-deleted sources remain **404**.
+  `tests/test_variants_generate.py` is reworked to assert the `READY/CLEAN` happy
+  path enqueues exactly one job and that every rejected state fails with no job
+  row and no enqueue. README variant section updated.
+
 - **9.3 Decouple the deep-`/health` detail gate from `PRIVATE_API_SECRET`.** The
   `/{prefix}/health/` detail body is now gated by a dedicated, separately-rotatable
   `HEALTH_DETAIL_CREDENTIAL` (+`_FILE`) instead of reusing the private-API secret —

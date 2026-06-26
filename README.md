@@ -149,8 +149,10 @@ The guard is applied at the router level via
 | GET | `/v1/objects/{id}/variants/jobs/{jid}` | user | — | Variant job progress |
 | DELETE | `/v1/objects/{id}/variants/{vid}` | user | — | Delete a variant (row + bytes) |
 
-`:generate` accepts `{ "presets": ["thumb", "web", …] }`. The object must be
-`UPLOADED` (**409** otherwise) and a processable image (**422** otherwise);
+`:generate` accepts `{ "presets": ["thumb", "web", …] }`. The object must have
+cleared antivirus scanning and reached `READY` (`scan_status == CLEAN` **and**
+`status == READY`, **409** otherwise — matching the download/share scan gates)
+and be a processable image (**422** otherwise);
 unknown preset names are **422**. The resolver expands each preset × format into
 the `VariantSpec`s carried by the enqueued `generate_variants` job — media-service
 never imports `imgtools_m8`.

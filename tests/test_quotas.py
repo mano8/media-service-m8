@@ -103,6 +103,8 @@ def test_find_usage_scopes_by_tenant(session: Session):
     _make_usage(session, owner, tenant_id=tenant, total_bytes=20)
     global_row = quotas._find_usage(session, owner_user_id=owner, tenant_id=None)
     tenant_row = quotas._find_usage(session, owner_user_id=owner, tenant_id=tenant)
+    assert global_row is not None
+    assert tenant_row is not None
     assert global_row.total_bytes == 10
     assert tenant_row.total_bytes == 20
 
@@ -178,6 +180,7 @@ def test_record_object_added_increments(session: Session):
     )
     session.commit()
     usage = quotas._find_usage(session, owner_user_id=owner, tenant_id=None)
+    assert usage is not None
     assert usage.total_bytes == 512
     assert usage.object_count == 1
 
@@ -190,6 +193,7 @@ def test_record_object_removed_clamps_at_zero(session: Session):
     )
     session.commit()
     usage = quotas._find_usage(session, owner_user_id=owner, tenant_id=None)
+    assert usage is not None
     assert usage.total_bytes == 0
     assert usage.object_count == 0
 
@@ -242,6 +246,7 @@ def test_complete_then_delete_keeps_usage_consistent(
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 200
     usage = quotas._find_usage(session, owner_user_id=current_user.id, tenant_id=None)
+    assert usage is not None
     assert usage.total_bytes == 2048
     assert usage.object_count == 1
 

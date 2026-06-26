@@ -2,6 +2,7 @@
 
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
@@ -10,6 +11,7 @@ from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectStatus,
     ScanStatus,
+    utcnow,
 )
 from media_service.db_models.variant_jobs import VariantJob, VariantJobStatus
 
@@ -19,7 +21,8 @@ def _make_object(
     owner_id: uuid.UUID,
     *,
     mime: str = "image/png",
-    status: MediaObjectStatus = MediaObjectStatus.UPLOADED,
+    status: MediaObjectStatus = MediaObjectStatus.READY,
+    scan_status: ScanStatus = ScanStatus.CLEAN,
 ) -> MediaObject:
     oid = uuid.uuid4()
     obj = MediaObject(
@@ -33,7 +36,7 @@ def _make_object(
         mime_type=mime,
         size_bytes=2048,
         status=status,
-        scan_status=ScanStatus.CLEAN,
+        scan_status=scan_status,
     )
     session.add(obj)
     session.commit()
@@ -70,14 +73,51 @@ def test_generate_creates_job_and_enqueues(
     assert len(args[1].specs) == 2
 
 
-def test_generate_rejects_non_uploaded_object(
-    client: TestClient, session: Session, current_user
+@pytest.mark.parametrize(
+    ("obj_status", "scan_status"),
+    [
+        (MediaObjectStatus.UPLOADED, ScanStatus.PENDING),
+        (MediaObjectStatus.UPLOADED, ScanStatus.CLEAN),
+        (MediaObjectStatus.READY, ScanStatus.PENDING),
+        (MediaObjectStatus.READY, ScanStatus.QUARANTINED),
+        (MediaObjectStatus.READY, ScanStatus.INFECTED),
+        (MediaObjectStatus.PROCESSING, ScanStatus.CLEAN),
+        (MediaObjectStatus.FAILED, ScanStatus.CLEAN),
+        (MediaObjectStatus.REJECTED, ScanStatus.QUARANTINED),
+    ],
+)
+def test_generate_rejects_unready_or_unscanned_object(
+    client: TestClient,
+    session: Session,
+    current_user,
+    fake_arq_pool,
+    obj_status: MediaObjectStatus,
+    scan_status: ScanStatus,
 ):
     obj = _make_object(
-        session, uuid.UUID(str(current_user.id)), status=MediaObjectStatus.READY
+        session,
+        uuid.UUID(str(current_user.id)),
+        status=obj_status,
+        scan_status=scan_status,
     )
     resp = _gen(client, obj.id, ["thumb"])
     assert resp.status_code == 409
+    assert session.exec(select(VariantJob)).all() == []
+    fake_arq_pool.enqueue_job.assert_not_awaited()
+
+
+def test_generate_rejects_deleted_object(
+    client: TestClient, session: Session, current_user, fake_arq_pool
+):
+    obj = _make_object(session, uuid.UUID(str(current_user.id)))
+    obj.deleted_at = utcnow()
+    obj.status = MediaObjectStatus.DELETED
+    session.add(obj)
+    session.commit()
+    resp = _gen(client, obj.id, ["thumb"])
+    assert resp.status_code == 404
+    assert session.exec(select(VariantJob)).all() == []
+    fake_arq_pool.enqueue_job.assert_not_awaited()
 
 
 def test_generate_rejects_non_image(client: TestClient, session: Session, current_user):

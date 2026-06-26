@@ -179,7 +179,7 @@ def test_update_object_commit_failure_removes_relocated_copy(
     # the error surfaces, leaving no bytes the metadata no longer points at.
     obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
     object_key = obj.object_key
-    session.commit = MagicMock(side_effect=RuntimeError("db down"))
+    session.commit = MagicMock(side_effect=RuntimeError("db down"))  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
         client.patch(
             f"/media/v1/objects/{obj.id}",
@@ -198,7 +198,7 @@ def test_update_object_commit_failure_same_bucket_no_cleanup(
     # is None). If the commit still fails, the error must surface without any
     # attempt to remove the destination copy (there is none).
     obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
-    session.commit = MagicMock(side_effect=RuntimeError("db down"))
+    session.commit = MagicMock(side_effect=RuntimeError("db down"))  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
         client.patch(
             f"/media/v1/objects/{obj.id}",

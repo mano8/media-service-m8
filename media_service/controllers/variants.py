@@ -18,7 +18,11 @@ from media_service.controllers.objects import (
 from media_service.core.media_types import is_processable_image
 from media_service.core.outbox import EVENT_VARIANT_READY, record_event
 from media_service.core.presets import resolve_presets
-from media_service.db_models.media_objects import MediaObjectStatus, utcnow
+from media_service.db_models.media_objects import (
+    MediaObjectStatus,
+    ScanStatus,
+    utcnow,
+)
 from media_service.db_models.media_variants import MediaVariant
 from media_service.db_models.variant_jobs import VariantJob, VariantJobStatus
 from media_service.schemas.variants import (
@@ -57,14 +61,20 @@ class VariantsController:
     ) -> tuple[VariantJobPublic, VariantJobPayload]:
         """Create a VariantJob and the payload to enqueue for the worker.
 
-        Rejects objects that are not yet ``UPLOADED`` (409) or are not a
-        processable image (422); unknown presets raise 422 in the resolver.
+        Rejects objects that have not passed antivirus scanning and reached the
+        ``READY`` state (409) or are not a processable image (422); unknown
+        presets raise 422 in the resolver.
         """
         obj = _load_object(session, current_user, object_id)
-        if obj.status != MediaObjectStatus.UPLOADED:
+        # Variants may only be generated from a fully scanned, ready source: the
+        # antivirus scan must have cleared (CLEAN) and the lifecycle must have
+        # reached READY. This mirrors the download/share scan gates so any
+        # pre-ready, pending, failed, quarantined, or mismatched state yields a
+        # predictable "not ready" 409 before a worker job is ever enqueued.
+        if obj.status != MediaObjectStatus.READY or obj.scan_status != ScanStatus.CLEAN:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Object must be UPLOADED before generating variants.",
+                detail="Object must be scanned and READY before generating variants.",
             )
         if not is_processable_image(obj.mime_type):
             raise HTTPException(
