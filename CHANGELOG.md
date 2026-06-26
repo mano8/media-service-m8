@@ -7,6 +7,26 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Bundled issuer migrated to the per-consumer `1.0.0` image + live-test harness
+  alignment (security-tests-m8 ≥ 0.2.0).**
+  - `dev_media_m8` and `hardened_media_m8` now pin `tepochtli/fa-auth-m8:1.0.0`
+    (was `0.9.9`); `worspace_dev_media_m8` / `dev_local_media_m8` build the issuer
+    from source (already `1.0.0`). Every stack now runs a **per-consumer** issuer
+    with no legacy single-secret fallback.
+  - `PRIVATE_API_CONSUMERS` is now **active** (uncommented) in all four
+    `auth.env.example` files — the `1.0.0` issuer fails closed without it, so the
+    `media-service` consumer (`INTERNAL_CLIENT_ID=media-service`, already set)
+    must be registered. `test_consumer_auth_config.py` flips from asserting the
+    registry is commented to asserting it is active and registers `media-service`.
+  - All stack `test.env` / `test.env.example` + `shared_live_tests/env.example`
+    gain `LIVE_TEST_PRIVATE_API_CLIENT_ID=media-service` (`X-Internal-Client`;
+    enables the harness F06 legacy-detection check) and a documented opt-in
+    `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` (deep `/health` detail via the dedicated
+    credential decoupled from `PRIVATE_API_SECRET`). `shared_live_tests` README
+    env table aligned.
+
 ### Added
 
 - **Production overlay with `_FILE` secret mounts (plan 6.1).** Added
@@ -36,8 +56,6 @@ All notable changes to `media-service-m8` are documented here.
   endpoint instead of the internal `MINIO_HOST:MINIO_PORT`. All other ops
   (stat, copy, verify, health) continue to use the internal endpoint. Empty
   string (default) preserves existing behaviour.
-
-### Added
 
 - **Per-consumer internal auth (9.1 — fastapi-m8 ≥ 3.1.0).** `INTERNAL_CLIENT_ID`
   is now documented and set in all three compose stacks (`dev_media_m8`,
@@ -127,6 +145,48 @@ All notable changes to `media-service-m8` are documented here.
   published 0.4.0 release as part of the final remediation PR.
 
 ### Security
+
+- **9.3 Decouple the deep-`/health` detail gate from `PRIVATE_API_SECRET`.** The
+  `/{prefix}/health/` detail body is now gated by a dedicated, separately-rotatable
+  `HEALTH_DETAIL_CREDENTIAL` (+`_FILE`) instead of reusing the private-API secret —
+  **fail-closed** when unset (shallow status only, no detail body). A startup
+  assertion makes reuse of `PRIVATE_API_SECRET` as either `HEALTH_DETAIL_CREDENTIAL`
+  or `METRICS_SCRAPE_CREDENTIAL` a fatal `ConfigurationError`. `HEALTH_DETAIL_CREDENTIAL`
+  is documented (commented-out, fail-closed by default) in all three stack
+  `media.env.example` files and in `media.env.production.example` (with its `_FILE`
+  sourcing note). `tests/test_health_guard.py` gains 5 tests: fail-closed when unset;
+  `PRIVATE_API_SECRET` no longer opens detail; both reuse variants fatal; distinct
+  credentials accepted. Mirrors the fastapi-m8 / fa-auth-m8 decoupling so no
+  operational surface reuses the private-API secret. 699 tests, 100% cov, ruff +
+  mypy + bandit green.
+
+- **9.2 Compose `SECURITY.md` — inter-service trust model + mTLS guidance.** Added
+  `docker_compose/SECURITY.md`: an inter-service trust-model table
+  (`media_service` → auth private API, `media_worker` → `media_service` internal
+  callback), a network-segmentation diagram, and single-host vs. multi-host mTLS
+  guidance cross-referencing the canonical auth-sdk-m8 `SECURITY.md` section. The
+  app-layer per-consumer credential check is stated as the **primary** control,
+  mTLS as defense-in-depth. `docker_compose/README.md` and the root README link to
+  it. 694 tests, 100% cov, ruff + mypy + bandit green.
+
+- **5.5 Consumer-side revocation-503 degradation matrix.**
+  `ACCESS_REVOCATION_FAILURE_MODE` is documented in all three `media.env.example`
+  files (`fail_closed` commented-out in the dev stacks; explicit `fail_closed` in
+  `hardened_media_m8`). When introspection is unavailable, `fail_closed` returns
+  **503** end-to-end through `get_current_user`; `fail_open` accepts the token and
+  logs the conscious opt-out (`security.revocation_fail_open`). New
+  `tests/test_revocation_degradation.py` (9 tests) covers the matrix, verifies
+  `fail_closed` is the default, and audits all three env examples for the setting.
+  auth-sdk-m8 2.0.1 / fastapi-m8 3.0.0 minimum. 618 tests, 100% cov, ruff + mypy +
+  bandit green.
+
+- **5.4 `API_BIND_IP` static compose-policy tests.** New
+  `tests/test_compose_api_bind_ip.py` (29 tests): all three dev stacks assert
+  `${API_BIND_IP:-127.0.0.1}:9000` (never `0.0.0.0:9000`); the production overlay
+  is verified to drop `:9000` entirely (`traefik ports: !override` → `:80`/`:443`
+  only); 18 env examples are scanned for `API_BIND_IP=0.0.0.0`; the merge-tag
+  (`!reset`/`!override`) loader is exercised. Mirrors the fa-auth-m8 static suite.
+  694 tests, 100% cov, ruff + mypy + bandit green.
 
 - **6.x.1 Per-service scoped Redis ACLs.** Both compose stacks (`dev_media_m8`,
   `hardened_media_m8`) replaced the open `appuser ~* +@all` ACL on **both** Redis

@@ -88,17 +88,25 @@ def test_auth_env_example_documents_private_api_consumers(env_file: Path) -> Non
 
 
 @pytest.mark.parametrize("env_file", _AUTH_ENV_EXAMPLES, ids=_STACKS)
-def test_auth_env_example_private_api_consumers_is_commented_out(
+def test_auth_env_example_private_api_consumers_is_active(
     env_file: Path,
 ) -> None:
-    """PRIVATE_API_CONSUMERS must be commented out (optional upgrade path)."""
-    for line in env_file.read_text().splitlines():
-        stripped = line.strip()
-        if "PRIVATE_API_CONSUMERS" in stripped and not stripped.startswith("#"):
-            pytest.fail(
-                f"PRIVATE_API_CONSUMERS must be commented out in "
-                f"{env_file.relative_to(_ROOT)}: {line!r}"
-            )
+    """PRIVATE_API_CONSUMERS must be active (the bundled issuer is fa-auth-m8
+    >= 1.0.0 — per-consumer, no legacy single-secret fallback, so the registry
+    is required for the media-service consumer to authenticate)."""
+    active = [
+        line
+        for line in env_file.read_text().splitlines()
+        if "PRIVATE_API_CONSUMERS=" in line and not line.strip().startswith("#")
+    ]
+    assert active, (
+        f"PRIVATE_API_CONSUMERS must be active (uncommented) in "
+        f"{env_file.relative_to(_ROOT)} — the 1.0.0 issuer fails closed without it"
+    )
+    assert "media-service" in active[0], (
+        f"PRIVATE_API_CONSUMERS must register the 'media-service' consumer id in "
+        f"{env_file.relative_to(_ROOT)}: {active[0]!r}"
+    )
 
 
 # ── build_internal_auth behaviour ────────────────────────────────────────────
