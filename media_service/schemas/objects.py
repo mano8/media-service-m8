@@ -14,7 +14,9 @@ from media_service.db_models.media_objects import (
     ScanStatus,
 )
 
-SortField = Literal["created_at", "size_bytes"]
+SortField = Literal[
+    "original_filename", "category", "status", "size_bytes", "created_at"
+]
 SortOrder = Literal["asc", "desc"]
 
 
@@ -43,8 +45,8 @@ class ObjectListParams(SQLModel):
     created_from: datetime | None = None
     created_to: datetime | None = None
     q: str | None = None
-    sort_by: SortField = "created_at"
-    order: SortOrder = "desc"
+    sort_by: SortField = "original_filename"
+    order: SortOrder = "asc"
     limit: int = Field(default=50, ge=1, le=100)
     cursor: str | None = None
     owner_user_id: uuid.UUID | None = None

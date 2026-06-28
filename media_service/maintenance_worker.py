@@ -115,6 +115,14 @@ class WorkerSettings:
     """ARQ ``WorkerSettings`` consumed by the ``arq`` CLI (single scheduler)."""
 
     redis_settings: RedisSettings = get_arq_redis_settings()
+    # Dedicated queue: this maintenance pool and media-worker-m8 share the same
+    # media Redis. ARQ defaults every pool to ``arq:queue``, so without distinct
+    # names the two pools steal each other's jobs — the maintenance worker pops
+    # ``scan_object``/``generate_variants`` (which it does not register) and drops
+    # them as "function not found", silently breaking the upload scan pipeline,
+    # while media-worker pops the maintenance crons. Keep the maintenance crons on
+    # their own queue; media-worker + the web producer stay on the default queue.
+    queue_name: str = "arq:maintenance"
     on_startup = startup
     on_shutdown = shutdown
     # Exposed as functions too so an operator can enqueue them on demand.

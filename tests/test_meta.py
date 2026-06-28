@@ -21,12 +21,12 @@ def test_meta_route_exposes_service_contract() -> None:
     assert resp.status_code == 200
     assert resp.json() == {
         "service": "M8TestApp",
-        "version": "0.0.9",
+        "version": "0.0.10",
         "api_version": "v1",
         "contract": {
             "name": "media-service-m8",
             "version": "0.0",
-            "range": ">=0.0.9 <0.1.0",
+            "range": ">=0.0.10 <0.1.0",
         },
     }
 

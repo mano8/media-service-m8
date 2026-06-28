@@ -69,9 +69,9 @@ _BASE: dict = {
     "DB_DATABASE": "test_db",
     "DB_USER": "test",
     "DB_PASSWORD": SecretStr(_DB_PASSWORD),
-    "SERVICE_VERSION": "0.0.9",
+    "SERVICE_VERSION": "0.0.10",
     "CONTRACT_VERSION": "0.0",
-    "CONTRACT_RANGE": ">=0.0.9 <0.1.0",
+    "CONTRACT_RANGE": ">=0.0.10 <0.1.0",
 }
 
 _INTROSPECTION_URL = "http://auth:8000/user/private/v1/jti-status"

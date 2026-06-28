@@ -72,12 +72,14 @@ http:
 
     # Media-Service: public routes on HTTPS.
     # SECURITY CONTRACT — these paths are NEVER routed from the public internet:
-    #   /media/health  — internal readiness probe only
     #   /media/metrics — Prometheus scrape endpoint, internal only
+    # /media/health is intentionally public (Design B, item 9.4): the ungated body
+    # is a constant {"status":"ok"} — no dependency state leaks; the detail body
+    # requires HEALTH_DETAIL_CREDENTIAL (item 9.3, fail-closed).
     media-public-router:
       entryPoints:
         - websecure
-      rule: "Host(`media.example.com`) && PathPrefix(`/media`) && !(PathPrefix(`/media/health`) || PathPrefix(`/media/metrics`))"
+      rule: "Host(`media.example.com`) && PathPrefix(`/media`) && !PathPrefix(`/media/metrics`)"
       service: media-service
       middlewares:
         - security-headers

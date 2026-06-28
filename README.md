@@ -36,7 +36,7 @@ Auto-mounted by `fastapi-m8` (≥ 2.1.0) `create_app` — the standard m8 triad:
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@0.0`, service-version range `>=0.0.9 <0.1.0`. |
+| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@0.0`, service-version range `>=0.0.10 <0.1.0`. |
 | GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
 | GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / MinIO). |
 
@@ -88,7 +88,8 @@ owners stay hidden — see [Access control](#access-control--visibility). Suppor
 query parameters:
 `category`, `visibility`, `status`, `mime_prefix` (e.g. `image/`),
 `created_from`/`created_to`, `q` (filename contains), `sort_by`
-(`created_at`|`size_bytes`), `order` (`asc`|`desc`), and `limit` (1–100).
+(`original_filename`|`category`|`status`|`size_bytes`|`created_at`), `order`
+(`asc`|`desc`), and `limit` (1–100).
 Pagination is keyset/cursor based: the response carries an opaque `next_cursor`;
 pass it back as `?cursor=` to fetch the next page. Soft-deleted objects are
 excluded unless a superuser passes `include_deleted=true`.

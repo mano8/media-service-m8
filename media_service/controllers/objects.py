@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
@@ -45,15 +45,35 @@ from media_service.storage.presign import create_download_url
 _logger = logging.getLogger(__name__)
 
 _SORT_COLUMNS: dict[str, Any] = {
+    "original_filename": func.coalesce(MediaObject.original_filename, ""),
+    "category": MediaObject.category,
+    "status": MediaObject.status,
     "created_at": MediaObject.created_at,
     "size_bytes": MediaObject.size_bytes,
 }
 
 
+def _cursor_sort_value(*, sort_by: str, obj: MediaObject) -> Any:
+    """Return the cursor-safe object value for a supported sort field."""
+    value = getattr(obj, sort_by)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None:
+        return ""
+    return getattr(value, "value", value)
+
+
+def _sort_column(sort_by: str) -> Any:
+    """Return the SQL expression used for sorting."""
+    column = _SORT_COLUMNS[sort_by]
+    if sort_by == "original_filename":
+        return column
+    return col(column)
+
+
 def _encode_cursor(*, sort_by: str, obj: MediaObject) -> str:
     """Encode the (sort_value, id) pair of an object into an opaque cursor."""
-    value = getattr(obj, sort_by)
-    raw = value.isoformat() if isinstance(value, datetime) else value
+    raw = _cursor_sort_value(sort_by=sort_by, obj=obj)
     payload = json.dumps({"v": raw, "id": str(obj.id)})
     return base64.urlsafe_b64encode(payload.encode()).decode()
 
@@ -65,7 +85,14 @@ def _decode_cursor(*, sort_by: str, cursor: str) -> tuple[Any, uuid.UUID]:
         payload = json.loads(decoded)
         last_id = uuid.UUID(str(payload["id"]))
         raw = payload["v"]
-        value = datetime.fromisoformat(raw) if sort_by == "created_at" else int(raw)
+        decoded_value: Any
+        if sort_by == "created_at":
+            decoded_value = datetime.fromisoformat(raw)
+        elif sort_by == "size_bytes":
+            decoded_value = int(raw)
+        else:
+            decoded_value = str(raw)
+        value = decoded_value
     except (ValueError, KeyError, TypeError, binascii.Error) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor."
@@ -290,7 +317,7 @@ class ObjectsController:
     ) -> ObjectListResponse:
         """Return a filtered, cursor-paginated page of media objects."""
         statement = _apply_filters(_scoped_query(current_user, params), params)
-        sort_col = col(_SORT_COLUMNS[params.sort_by])
+        sort_col = _sort_column(params.sort_by)
         id_col = col(MediaObject.id)
         descending = params.order == "desc"
         if params.cursor is not None:

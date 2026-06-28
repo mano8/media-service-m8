@@ -7,6 +7,21 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+### Security
+
+- **9.4 (Design B): expose `/media/health` on the public HTTPS entrypoint.** The
+  ungated `/media/health` response is a constant `{"status":"ok"}` with HTTP 200 —
+  no dependency state (Redis, DB, degraded flag) ever leaks to anonymous callers.
+  The detail body (`checks`, `service`) still requires `HEALTH_DETAIL_CREDENTIAL`
+  (item 9.3, fail-closed). All five Traefik `dynamic_conf.yml` / `production_dynamic_conf.yml`
+  files updated: `/media/health` dropped from the `media-public-router` exclusion
+  (only `/media/metrics` remains blocked); SECURITY CONTRACT comment updated in each.
+  `tests/test_compose_traefik_routing.py` (20 tests) asserts the contract statically:
+  `/media/health` not excluded, `/media/metrics` excluded, `/user/private` and
+  `/user/metrics` still excluded from `auth-public-router`. Four new tests in
+  `test_health_guard.py` assert the constant ungated body and that failing checks
+  never leak into the anonymous response.
+
 ### Changed
 
 - **Bundled issuer migrated to the per-consumer `1.0.0` image + live-test harness

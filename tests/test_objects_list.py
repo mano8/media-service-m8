@@ -104,11 +104,17 @@ def test_list_pagination_cursor_round_trip(
     assert page1["count"] == 2
     assert page1["next_cursor"] is not None
 
-    second = client.get(f"/media/v1/objects?limit=2&cursor={page1['next_cursor']}")
+    second = client.get(
+        "/media/v1/objects"
+        f"?limit=2&sort_by=created_at&order=desc&cursor={page1['next_cursor']}"
+    )
     page2 = second.json()
     assert page2["count"] == 2
 
-    third = client.get(f"/media/v1/objects?limit=2&cursor={page2['next_cursor']}")
+    third = client.get(
+        "/media/v1/objects"
+        f"?limit=2&sort_by=created_at&order=desc&cursor={page2['next_cursor']}"
+    )
     page3 = third.json()
     assert page3["count"] == 1
     assert page3["next_cursor"] is None
@@ -192,6 +198,94 @@ def test_list_filter_q_escapes_like_wildcards(
 
 
 # ── sorting ───────────────────────────────────────────────────────────────────
+
+
+def test_list_defaults_to_filename_sort(
+    client: TestClient, session: Session, current_user
+):
+    _make_object(session, current_user.id, filename="zeta.pdf")
+    _make_object(session, current_user.id, filename="alpha.pdf")
+    _make_object(session, current_user.id, filename="middle.pdf")
+    resp = client.get("/media/v1/objects")
+    filenames = [o["original_filename"] for o in resp.json()["items"]]
+    assert filenames == ["alpha.pdf", "middle.pdf", "zeta.pdf"]
+
+
+def test_list_sort_by_filename_asc_with_cursor(
+    client: TestClient, session: Session, current_user
+):
+    for filename in ("b.pdf", "a.pdf", "c.pdf"):
+        _make_object(session, current_user.id, filename=filename)
+    first = client.get(
+        "/media/v1/objects?sort_by=original_filename&order=asc&limit=1"
+    )
+    assert first.json()["items"][0]["original_filename"] == "a.pdf"
+    cursor = first.json()["next_cursor"]
+    second = client.get(
+        "/media/v1/objects"
+        f"?sort_by=original_filename&order=asc&limit=1&cursor={cursor}"
+    )
+    assert second.json()["items"][0]["original_filename"] == "b.pdf"
+
+
+def test_list_sort_by_filename_cursor_with_null_filename(
+    client: TestClient, session: Session, current_user
+):
+    """Cursor value for None original_filename serialises to "" (covers _cursor_sort_value null branch)."""
+    import uuid
+
+    null_obj = MediaObject(
+        id=uuid.uuid4(),
+        owner_user_id=current_user.id,
+        category=MediaCategory.DOCUMENT,
+        visibility=MediaVisibility.PRIVATE,
+        storage_bucket="private-media",
+        object_key=f"users/{current_user.id}/doc/null-file",
+        original_filename=None,
+        mime_type="application/octet-stream",
+        size_bytes=1,
+        status=MediaObjectStatus.UPLOADED,
+    )
+    session.add(null_obj)
+    session.commit()
+    _make_object(session, current_user.id, filename="z.pdf")
+    # The null-filename object sorts first (coalesce → ""); verify cursor round-trip works.
+    first = client.get("/media/v1/objects?sort_by=original_filename&order=asc&limit=1")
+    assert first.status_code == 200
+    assert first.json()["next_cursor"] is not None
+    cursor = first.json()["next_cursor"]
+    second = client.get(
+        f"/media/v1/objects?sort_by=original_filename&order=asc&limit=1&cursor={cursor}"
+    )
+    assert second.status_code == 200
+
+
+def test_list_sort_by_category_and_status(
+    client: TestClient, session: Session, current_user
+):
+    _make_object(
+        session,
+        current_user.id,
+        category=MediaCategory.RECEIPT,
+        status=MediaObjectStatus.READY,
+    )
+    _make_object(
+        session,
+        current_user.id,
+        category=MediaCategory.AVATAR,
+        status=MediaObjectStatus.FAILED,
+    )
+    by_category = client.get("/media/v1/objects?sort_by=category&order=asc")
+    assert [o["category"] for o in by_category.json()["items"]] == [
+        "avatar",
+        "receipt",
+    ]
+
+    by_status = client.get("/media/v1/objects?sort_by=status&order=asc")
+    assert [o["status"] for o in by_status.json()["items"]] == [
+        "failed",
+        "ready",
+    ]
 
 
 def test_list_sort_by_size_asc(client: TestClient, session: Session, current_user):
