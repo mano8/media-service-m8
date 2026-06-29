@@ -28,10 +28,26 @@ done
 
 echo "==> M8 init: $(basename "$(pwd)")"
 
+# --- Deployment security preflight (advisory — never blocks compose up) ---
+# Shells out to the security-tests-m8 Python scanner.  The scanner's non-zero
+# exit is captured and reported; init always proceeds regardless.
+_preflight_rc=0
+if command -v security-tests-m8 &>/dev/null; then
+    security-tests-m8 preflight --deployment-root "$(pwd)" || _preflight_rc=$?
+    if [[ $_preflight_rc -ne 0 ]]; then
+        echo ""
+        echo "NOTE: preflight found issues (see above) — fix all ERROR findings before production deployment."
+        echo "      init will proceed regardless."
+        echo ""
+    fi
+else
+    echo "NOTE: security-tests-m8 not installed — skipping deployment preflight."
+    echo "      Install: pip install security-tests-m8"
+fi
+
 # --- Bootstrap missing env files from .example counterparts ---
-# Match every *.env.example in the example dir (.env.example, auth.env.example,
-# media.env.example, api.env.example, …) so each stack gets the env files it
-# actually ships. dotglob picks up the leading-dot ".env.example"; nullglob
+# Match every *.env.example in the example dir so each stack gets the env files
+# it actually ships.  dotglob picks up the leading-dot ".env.example"; nullglob
 # keeps the loop from running on a literal pattern when none exist.
 _copied=()
 shopt -s nullglob dotglob
@@ -50,21 +66,23 @@ if [[ ${#_copied[@]} -gt 0 ]]; then
     echo ""
 fi
 
-# --- Deployment security preflight (advisory — never blocks compose up) ---
-# Shells out to the security-tests-m8 Python scanner.  The scanner's non-zero
-# exit is captured and reported; init always proceeds regardless.
-_preflight_rc=0
-if command -v security-tests-m8 &>/dev/null; then
-    security-tests-m8 preflight --deployment-root "$(pwd)" || _preflight_rc=$?
-    if [[ $_preflight_rc -ne 0 ]]; then
-        echo ""
-        echo "NOTE: preflight found issues (see above) — fix all ERROR findings before production deployment."
-        echo "      init will proceed regardless."
-        echo ""
+# --- Enforce chmod 600 on all runtime env files and private keys ---
+_perm_enforced=()
+while IFS= read -r _sf; do
+    _mode="$(stat -c '%a' "$_sf" 2>/dev/null || echo "???")"
+    if [[ "$_mode" != "600" ]]; then
+        chmod 600 "$_sf"
+        _perm_enforced+=("$_sf (was ${_mode})")
     fi
-else
-    echo "NOTE: security-tests-m8 not installed — skipping deployment preflight."
-    echo "      Install: pip install security-tests-m8"
+done < <(
+    find . -maxdepth 1 -type f -name '*.env' ! -name '*.example' ! -name '*.prod_example' | sort
+    find . -maxdepth 2 -type f \( -path './keys/private.*' \) | sort
+)
+if [[ ${#_perm_enforced[@]} -gt 0 ]]; then
+    echo ""
+    echo "NOTE: enforced chmod 600 on secret files (fixed permissive modes):"
+    for _f in "${_perm_enforced[@]}"; do echo "        $_f"; done
+    echo ""
 fi
 
 # --- DB reset (destructive, confirmation-gated) ---

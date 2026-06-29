@@ -22,7 +22,24 @@ All notable changes to `media-service-m8` are documented here.
   `test_health_guard.py` assert the constant ungated body and that failing checks
   never leak into the anonymous response.
 
+- **Compose `init-common.sh` hardened to the fleet-canonical version.** The shared
+  init script now enforces `chmod 600` on every runtime `*.env` file and private
+  key before `docker compose up` (closing a group/world-readable-secret regression),
+  and keeps media's safer DB reset: `--reset-db` falls back to a throwaway root
+  container to remove a postgres-owned `db_data/` bind mount that a host `rm`
+  cannot delete. The script is now byte-identical to
+  `fa-auth-m8/examples/docker_compose/shared/scripts/init-common.sh`.
+
 ### Changed
+
+- **`PRIVATE_API_CONSUMERS` aligned to the canonical compact form across all four
+  stacks' `auth.env.example`.** `dev_media_m8`, `worspace_dev_media_m8`, and
+  `hardened_media_m8` dropped the stale spaced placeholder
+  (`{"media-service": {"secret": "sha256$salt$hash", "scopes": ["introspection"]}}`)
+  for the compact `{"media-service":{"secret":"changethis","scopes":["introspection","event-stream"]}}`
+  already used by `dev_local_media_m8` — adding the `event-stream` scope so the
+  SSE bridge works. Non-secret placeholders aligned to fa-auth
+  (`DB_USER=changethis_auth_user`, `ACCESS_KEY_ID=changethis_hex_kid`).
 
 - **Bundled issuer migrated to the per-consumer `1.0.0` image + live-test harness
   alignment (security-tests-m8 ≥ 0.2.0).**

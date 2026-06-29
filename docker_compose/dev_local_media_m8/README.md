@@ -1,4 +1,4 @@
-# dev_media_m8
+# dev_local_media_m8
 
 Local dev stack for `auth_user_service` + `media_service`.
 
