@@ -246,6 +246,11 @@ Resetting the DB is destructive:
 bash init.sh --reset-db --yes
 ```
 
+`--reset-db` removes `db_data/` even when PostgreSQL owns it as the container
+uid — it falls back to a throwaway root container, so no manual `sudo rm` is
+needed on WSL2/Linux bind mounts. On every run `init.sh` also enforces
+`chmod 600` on each runtime `*.env` file and private key.
+
 ## Troubleshooting
 
 **`changethis` rejection on startup**: replace placeholder values in `.env`,
