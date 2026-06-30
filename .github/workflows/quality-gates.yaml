@@ -1,4 +1,4 @@
-name: CI
+name: Quality Gates
 
 on:
   push:
@@ -58,7 +58,7 @@ jobs:
       - name: Install bandit
         run: pip install bandit
 
-      - name: Run bandit (grade A — no MEDIUM/HIGH issues)
+      - name: Run bandit (grade A - no MEDIUM/HIGH issues)
         run: bandit -r media_service --severity-level medium -f json -o bandit-report.json
 
       - name: Upload bandit report
@@ -83,6 +83,19 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
           format: table
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@v2.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   test:
     runs-on: ubuntu-latest
@@ -146,7 +159,7 @@ jobs:
           tags: media-service-m8:ci-scan
           cache-from: type=gha
 
-      - name: Trivy image scan (CRITICAL/HIGH CVEs — blocks PR on findings)
+      - name: Trivy image scan (CRITICAL/HIGH CVEs - blocks PR on findings)
         uses: aquasecurity/trivy-action@bfa4b33a029b9aa80ddb784b45574c30e072c59e # master
         with:
           scan-type: image
