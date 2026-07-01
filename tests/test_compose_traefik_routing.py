@@ -8,6 +8,8 @@ credential-gated (item 9.3, HEALTH_DETAIL_CREDENTIAL, fail-closed).
 Assertions:
 - /media/health is NOT excluded from the media-public-router rule in any stack.
 - /media/metrics IS excluded from the media-public-router rule in every stack.
+- /user/health is NOT excluded from the auth-public-router rule in any stack
+  (issuer ungated body is a constant liveness response — same Design B contract).
 - /user/private IS excluded from the auth-public-router rule in every stack
   (inter-service gate must remain invisible on the public entrypoint).
 - /user/metrics IS excluded from the auth-public-router rule in every stack.
@@ -91,6 +93,23 @@ class TestMediaMetricsInternalOnly:
         assert "/media/metrics" in rule, (
             f"{conf_path.name}: /media/metrics must be excluded from the "
             "media-public-router (Prometheus scrape endpoint — internal only)"
+        )
+
+
+# ── /user/health — publicly exposed (9.4 Design B, symmetric with /media/health) ──
+
+
+class TestUserHealthPubliclyExposed:
+    """9.4: /user/health must NOT appear in the auth-public-router exclusion."""
+
+    @pytest.mark.parametrize("conf_path", _ALL_DYNAMIC_CONFS)
+    def test_user_health_not_excluded_from_auth_public_router(self, conf_path: Path):
+        conf = _load(conf_path)
+        rule = _router_rule(conf, "auth-public-router")
+        assert "/user/health" not in rule, (
+            f"{conf_path.name}: /user/health must not appear in the "
+            "auth-public-router exclusion (9.4 Design B — issuer ungated body is "
+            "a constant liveness response, detail is credential-gated by 9.3)"
         )
 
 

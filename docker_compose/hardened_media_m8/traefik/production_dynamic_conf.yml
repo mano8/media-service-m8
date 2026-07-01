@@ -46,14 +46,15 @@ http:
 
   routers:
     # Auth-User-Service: public routes on HTTPS.
-    # SECURITY CONTRACT — these paths are NEVER routed from the public internet:
-    #   /user/health   — internal readiness probe only
-    #   /user/metrics  — Prometheus scrape endpoint, internal only
+    # SECURITY CONTRACT (Design B, item 9.4):
+    #   /user/health   — PUBLIC shallow liveness (constant {"status":"ok"}); deep
+    #                    detail is app-gated by HEALTH_DETAIL_CREDENTIAL, not Traefik.
+    #   /user/metrics  — Prometheus scrape endpoint, internal only (NEVER public)
     #   /user/private  — inter-service API (also gated by X-Internal-Client token)
     auth-public-router:
       entryPoints:
         - websecure
-      rule: "Host(`auth.example.com`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
+      rule: "Host(`auth.example.com`) && PathPrefix(`/user`) && !(PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
       service: auth-service
       middlewares:
         - security-headers

@@ -22,6 +22,19 @@ All notable changes to `media-service-m8` are documented here.
   `test_health_guard.py` assert the constant ungated body and that failing checks
   never leak into the anonymous response.
 
+- **Auth issuer `/user/health` exposed on the public HTTPS entrypoint (Design B,
+  item 9.4), symmetric with `/media/health`.** All five Traefik configs
+  (`dynamic_conf.yml` ×4 + `production_dynamic_conf.yml`) drop `/user/health`
+  from the `auth-public-router` exclusion — only `/user/metrics` and
+  `/user/private` stay blocked. The issuer's ungated `/health` body is a constant
+  `{"status":"ok"}` (no dependency state leaks); the deep detail stays app-gated
+  by `HEALTH_DETAIL_CREDENTIAL` (fail-closed, item 9.3), not by Traefik. The
+  SECURITY CONTRACT comments are updated in each file, and
+  `test_compose_traefik_routing.py` gains `TestUserHealthPubliclyExposed` (asserts
+  `/user/health` is not excluded in any stack) alongside the existing
+  `/user/private` + `/user/metrics` exclusion checks. Aligns media with the
+  canonical `fa-auth-m8` example stacks, which already expose `/user/health`.
+
 - **Compose `init-common.sh` hardened to the fleet-canonical version.** The shared
   init script now enforces `chmod 600` on every runtime `*.env` file and private
   key before `docker compose up` (closing a group/world-readable-secret regression),

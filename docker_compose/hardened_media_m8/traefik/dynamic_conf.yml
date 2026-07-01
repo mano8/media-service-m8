@@ -39,9 +39,11 @@ http:
       tls: {}
 
     # Auth-User-Service: public routes on HTTPS.
-    # SECURITY CONTRACT — paths below are NEVER routed from the public internet:
-    #   /user/health   — internal readiness probe only
-    #   /user/metrics  — Prometheus scrape endpoint, internal only
+    # SECURITY CONTRACT (Design B, item 9.4):
+    #   /user/health   — PUBLIC shallow liveness. The ungated body is a constant
+    #                    {"status":"ok"}; the deep detail is gated at the app layer
+    #                    by HEALTH_DETAIL_CREDENTIAL (fail-closed), not by Traefik.
+    #   /user/metrics  — Prometheus scrape endpoint, internal only (NEVER public)
     #   /user/private  — inter-service API; app also requires X-Internal-Token,
     #                    but Traefik must block it first so the route is invisible.
     # If you add new internal paths, add them here AND write a live test in
@@ -51,8 +53,10 @@ http:
         - websecure
       # LOCALHOST-ONLY by default: Host(`localhost`) limits this route to the Docker
       # host. TO EXPOSE /user ON THE LAN, delete the `Host(`localhost`) && ` prefix.
-      # The path exclusions are the SECURITY CONTRACT and MUST stay regardless.
-      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
+      # The path exclusions are the SECURITY CONTRACT and MUST stay regardless —
+      # /user/metrics + /user/private are never public on ANY host. /user/health is
+      # public-shallow (its deep detail stays app-gated, fail-closed).
+      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
       service: auth-service
       middlewares:
         - security-headers
