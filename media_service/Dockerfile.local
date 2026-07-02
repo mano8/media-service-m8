@@ -1,0 +1,56 @@
+# ---------- DEV BUILD STAGE ----------
+# Dev-only image for local tests against sibling platform package checkouts.
+# Build from the media-service-m8 repo root and pass local packages as contexts:
+#   docker build -f media_service/Dockerfile.local \
+#     --build-context fastapi-m8=../fastapi-m8 \
+#     --build-context media-sdk-m8=../media-sdk-m8 \
+#     --build-context auth-sdk-m8=../auth-sdk-m8 .
+FROM python:3.14-slim AS builder
+
+WORKDIR /install
+
+ENV PIP_ROOT_USER_ACTION=ignore
+
+COPY media_service/requirements_base.txt .
+COPY media_service/requirements_dev.txt .
+COPY --from=fastapi-m8 . /tmp/fastapi-m8
+COPY --from=media-sdk-m8 . /tmp/media-sdk-m8
+COPY --from=auth-sdk-m8 . /tmp/auth-sdk-m8
+
+RUN pip install --upgrade "pip==26.1.1" && \
+    sed -e '/^fastapi-m8/d' \
+        -e '/^media-sdk-m8/d' \
+        requirements_base.txt > requirements_base_local.txt && \
+    sed '/requirements_base[.]txt/d' requirements_dev.txt > requirements_dev_local.txt && \
+    pip install --prefix=/install --no-cache-dir -r requirements_base_local.txt && \
+    pip install --prefix=/install --no-cache-dir \
+        "/tmp/auth-sdk-m8[config,security,fastapi,observability,events]" \
+        "/tmp/fastapi-m8[db,postgres,mysql]" \
+        /tmp/media-sdk-m8 && \
+    pip install --prefix=/install --no-cache-dir -r requirements_dev_local.txt
+
+
+# ---------- DEV RUNTIME STAGE ----------
+FROM python:3.14-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PATH="/home/appuser/.local/bin:$PATH"
+ENV PYTHONPATH=/opt:/opt/media_service
+
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --create-home appuser
+
+WORKDIR /opt
+
+COPY --from=builder /install /usr/local
+COPY --chown=appuser:appuser media_service ./media_service
+
+RUN find /opt/media_service/scripts -name "*.sh" -exec sed -i 's/\r$//' {} + && \
+    chmod +x /opt/media_service/scripts/*.sh
+
+USER appuser
+
+EXPOSE 8000
+
+CMD ["./media_service/scripts/docker_start.sh"]
