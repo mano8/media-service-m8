@@ -31,6 +31,9 @@ _MEDIA_ENV_EXAMPLES = [
 _AUTH_ENV_EXAMPLES = [
     _ROOT / "docker_compose" / s / "auth.env.example" for s in _STACKS
 ]
+_HARDENED_DIR = _ROOT / "docker_compose" / "hardened_media_m8"
+_MEDIA_PROD_EXAMPLE = _HARDENED_DIR / "media.env.production.example"
+_AUTH_PROD_EXAMPLE = _HARDENED_DIR / "auth.env.production.example"
 
 
 # ── Dependency floor ──────────────────────────────────────────────────────────
@@ -156,3 +159,70 @@ def test_bootstrap_mode_client_id_is_correct() -> None:
     """X-Internal-Client header carries the configured INTERNAL_CLIENT_ID verbatim."""
     provider = build_internal_auth(_mock_settings(client_id="media-service"))
     assert asyncio.run(provider.headers())[INTERNAL_CLIENT_HEADER] == "media-service"
+
+
+# ── Production overlay — 11.2b ────────────────────────────────────────────────
+
+
+def test_media_production_example_has_internal_client_id() -> None:
+    """media.env.production.example must have INTERNAL_CLIENT_ID=media-service active."""
+    content = _MEDIA_PROD_EXAMPLE.read_text()
+    active = [
+        line
+        for line in content.splitlines()
+        if "INTERNAL_CLIENT_ID=" in line and not line.strip().startswith("#")
+    ]
+    assert active, "INTERNAL_CLIENT_ID must be active in media.env.production.example"
+    assert "media-service" in active[0], (
+        f"INTERNAL_CLIENT_ID must be 'media-service' in production overlay: {active[0]!r}"
+    )
+
+
+def test_media_production_example_no_introspection_without_client_id() -> None:
+    """INTROSPECTION_URL set without INTERNAL_CLIENT_ID active is disallowed by fastapi-m8>=3.3."""
+    content = _MEDIA_PROD_EXAMPLE.read_text()
+    has_introspection = any(
+        "INTROSPECTION_URL=" in line and not line.strip().startswith("#")
+        for line in content.splitlines()
+    )
+    has_client_id = any(
+        "INTERNAL_CLIENT_ID=" in line and not line.strip().startswith("#")
+        for line in content.splitlines()
+    )
+    if has_introspection:
+        assert has_client_id, (
+            "media.env.production.example sets INTROSPECTION_URL but no INTERNAL_CLIENT_ID — "
+            "fastapi-m8>=3.3 raises at settings construction (11.2b)"
+        )
+
+
+def test_auth_production_example_requires_consumers_registry() -> None:
+    """auth.env.production.example must have PRIVATE_API_CONSUMERS_FILE or PRIVATE_API_CONSUMERS active.
+
+    11.2a made an empty consumer registry a fatal startup error in production/strict mode;
+    the example must show a concrete, required credential source.
+    """
+    content = _AUTH_PROD_EXAMPLE.read_text()
+    active_registry = [
+        line
+        for line in content.splitlines()
+        if ("PRIVATE_API_CONSUMERS_FILE=" in line or "PRIVATE_API_CONSUMERS=" in line)
+        and not line.strip().startswith("#")
+    ]
+    assert active_registry, (
+        "auth.env.production.example must have PRIVATE_API_CONSUMERS_FILE or "
+        "PRIVATE_API_CONSUMERS active — required in production/strict (11.2a)"
+    )
+
+
+def test_auth_production_example_consumers_comment_says_required() -> None:
+    """The consumers section comment must say 'required', not 'recommended'."""
+    content = _AUTH_PROD_EXAMPLE.read_text()
+    assert "required" in content.lower(), (
+        "auth.env.production.example consumers section must document that "
+        "PRIVATE_API_CONSUMERS is REQUIRED in production (11.2a)"
+    )
+    assert "recommended" not in content.lower(), (
+        "auth.env.production.example must not say 'recommended' for PRIVATE_API_CONSUMERS "
+        "— it is required since 11.2a"
+    )
