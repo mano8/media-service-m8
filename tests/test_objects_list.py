@@ -216,14 +216,11 @@ def test_list_sort_by_filename_asc_with_cursor(
 ):
     for filename in ("b.pdf", "a.pdf", "c.pdf"):
         _make_object(session, current_user.id, filename=filename)
-    first = client.get(
-        "/media/v1/objects?sort_by=original_filename&order=asc&limit=1"
-    )
+    first = client.get("/media/v1/objects?sort_by=original_filename&order=asc&limit=1")
     assert first.json()["items"][0]["original_filename"] == "a.pdf"
     cursor = first.json()["next_cursor"]
     second = client.get(
-        "/media/v1/objects"
-        f"?sort_by=original_filename&order=asc&limit=1&cursor={cursor}"
+        f"/media/v1/objects?sort_by=original_filename&order=asc&limit=1&cursor={cursor}"
     )
     assert second.json()["items"][0]["original_filename"] == "b.pdf"
 
