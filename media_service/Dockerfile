@@ -25,7 +25,7 @@ FROM python:3.14-slim
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PATH="/home/appuser/.local/bin:$PATH"
-ENV PYTHONPATH=/opt/media_service
+ENV PYTHONPATH=/opt:/opt/media_service
 
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid appuser --create-home appuser

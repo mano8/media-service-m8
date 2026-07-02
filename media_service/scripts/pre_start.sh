@@ -3,7 +3,7 @@ set -e
 set -x
 
 # Ensure PYTHONPATH is set correctly
-export PYTHONPATH=/opt/media_service
+export PYTHONPATH=/opt:/opt/media_service
 
 echo "Current working directory: $(pwd)"
 
