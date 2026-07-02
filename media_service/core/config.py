@@ -4,10 +4,12 @@ Media-specific fields only — auth, observability, and consumer wiring
 are all inherited from ConsumerServiceSettings (fastapi-m8).
 """
 
+import ipaddress
 from pathlib import Path
 from typing import Literal, Optional
+from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from auth_sdk_m8.utils.paths import find_dotenv
@@ -16,6 +18,16 @@ from fastapi_m8 import ConsumerServiceSettings
 from media_service import __version__
 
 # pylint: disable=invalid-name
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True if *host* (bare hostname or IP, without port) is a loopback address."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class Settings(ConsumerServiceSettings):
@@ -164,6 +176,44 @@ class Settings(ConsumerServiceSettings):
     MEDIA_REDIS_USER: str = "media"
     MEDIA_REDIS_PASSWORD: Optional[SecretStr] = None
     MEDIA_REDIS_NAMESPACE: str = "media"
+
+    @model_validator(mode="after")
+    def _validate_minio_public_endpoint(self) -> "Settings":
+        """Reject unsafe MINIO_PUBLIC_ENDPOINT values before presigned URLs are minted (11.4).
+
+        Rules:
+        - Empty → allowed (internal endpoint used for presign).
+        - Bare hostname without scheme → rejected in all modes.
+        - Unsupported scheme (not http/https) → rejected in all modes.
+        - http:// targeting a non-loopback host → rejected in production/strict.
+        """
+        endpoint = self.MINIO_PUBLIC_ENDPOINT
+        if not endpoint:
+            return self
+        if "://" not in endpoint:
+            raise ValueError(
+                f"CONFIG: MINIO_PUBLIC_ENDPOINT must be an absolute URL with "
+                f"'http://' or 'https://' scheme (e.g. 'https://storage.example.com'); "
+                f"got {endpoint!r} — bare hostnames are rejected (11.4)."
+            )
+        parsed = urlparse(endpoint)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"CONFIG: MINIO_PUBLIC_ENDPOINT scheme must be 'http' or 'https'; "
+                f"got {parsed.scheme!r} (11.4)."
+            )
+        is_production = self.ENVIRONMENT == "production" or self.STRICT_PRODUCTION_MODE
+        if is_production and parsed.scheme == "http":
+            host = parsed.hostname or ""
+            if not _is_loopback_host(host):
+                raise ValueError(
+                    f"CONFIG: MINIO_PUBLIC_ENDPOINT uses 'http://' for non-loopback "
+                    f"host {host!r} in production/strict mode — HTTPS is required for "
+                    f"browser-facing presigned URLs. "
+                    f"Use 'https://{parsed.netloc}' or set STRICT_PRODUCTION_MODE=false "
+                    f"for local dev (11.4)."
+                )
+        return self
 
 
 try:

@@ -7,14 +7,23 @@ config from ``settings`` and re-exporting the SDK primitives.
 
 from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError
+
 import media_sdk_m8
 
+from media_service.core.config import Settings
 from media_service.storage.client import (
     ObjectStorage,
     ObjectStorageConfig,
     get_minio_client,
     get_storage_config,
 )
+
+
+def _make_settings(**overrides) -> Settings:
+    """Construct Settings from env (seeded by conftest) + overrides, bypassing dotenv."""
+    return Settings(_env_file=None, **overrides)
 
 
 def test_reexports_are_the_sdk_primitives():
@@ -66,3 +75,81 @@ def test_get_storage_config_https_public_endpoint():
         config = get_storage_config()
     assert config.public_endpoint == "storage.example.com"
     assert config.public_secure is True
+
+
+# ── MINIO_PUBLIC_ENDPOINT settings-level validation (plan 11.4) ───────────────
+
+
+def test_minio_public_endpoint_empty_allowed():
+    """Empty MINIO_PUBLIC_ENDPOINT is valid — presign uses the internal endpoint."""
+    s = _make_settings(MINIO_PUBLIC_ENDPOINT="")
+    assert s.MINIO_PUBLIC_ENDPOINT == ""
+
+
+def test_minio_public_endpoint_https_external_allowed():
+    """https:// external endpoint is valid in all modes."""
+    s = _make_settings(MINIO_PUBLIC_ENDPOINT="https://storage.example.com")
+    assert s.MINIO_PUBLIC_ENDPOINT == "https://storage.example.com"
+
+
+def test_minio_public_endpoint_bare_hostname_rejected():
+    """Bare hostname without scheme is rejected in every environment (11.4)."""
+    with pytest.raises((ValueError, ValidationError), match="11.4"):
+        _make_settings(MINIO_PUBLIC_ENDPOINT="storage.example.com")
+
+
+def test_minio_public_endpoint_bare_hostname_with_port_rejected():
+    """Bare hostname:port without scheme is rejected (11.4)."""
+    with pytest.raises((ValueError, ValidationError), match="11.4"):
+        _make_settings(MINIO_PUBLIC_ENDPOINT="storage.example.com:9000")
+
+
+def test_minio_public_endpoint_unsupported_scheme_rejected():
+    """Non-http/https scheme is rejected in all modes (11.4)."""
+    with pytest.raises((ValueError, ValidationError), match="11.4"):
+        _make_settings(MINIO_PUBLIC_ENDPOINT="ftp://storage.example.com")
+
+
+def test_minio_public_endpoint_http_non_loopback_production_rejected():
+    """http:// for a non-loopback host is rejected when ENVIRONMENT=production (11.4)."""
+    with pytest.raises((ValueError, ValidationError), match="11.4"):
+        _make_settings(
+            ENVIRONMENT="production",
+            MINIO_PUBLIC_ENDPOINT="http://storage.example.com",
+        )
+
+
+def test_minio_public_endpoint_http_non_loopback_strict_mode_rejected():
+    """http:// for a non-loopback host is rejected when STRICT_PRODUCTION_MODE=True (11.4)."""
+    with pytest.raises((ValueError, ValidationError), match="11.4"):
+        _make_settings(
+            STRICT_PRODUCTION_MODE=True,
+            MINIO_PUBLIC_ENDPOINT="http://storage.example.com",
+        )
+
+
+def test_minio_public_endpoint_http_localhost_production_allowed():
+    """http://localhost is allowed in production — loopback is safe for local MinIO (11.4)."""
+    s = _make_settings(
+        ENVIRONMENT="production",
+        MINIO_PUBLIC_ENDPOINT="http://localhost:9000",
+    )
+    assert s.MINIO_PUBLIC_ENDPOINT == "http://localhost:9000"
+
+
+def test_minio_public_endpoint_http_loopback_ip_production_allowed():
+    """http://127.0.0.1 is allowed in production — loopback IP is safe (11.4)."""
+    s = _make_settings(
+        ENVIRONMENT="production",
+        MINIO_PUBLIC_ENDPOINT="http://127.0.0.1:9000",
+    )
+    assert s.MINIO_PUBLIC_ENDPOINT == "http://127.0.0.1:9000"
+
+
+def test_minio_public_endpoint_http_external_local_allowed():
+    """http:// for an external host is allowed in local/development mode (11.4)."""
+    s = _make_settings(
+        ENVIRONMENT="local",
+        MINIO_PUBLIC_ENDPOINT="http://storage.example.com",
+    )
+    assert s.MINIO_PUBLIC_ENDPOINT == "http://storage.example.com"
