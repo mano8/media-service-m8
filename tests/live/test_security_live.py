@@ -11,6 +11,9 @@ OPERATOR NOTE: a non-404 failure means a Traefik misconfiguration.
 See the SECURITY CONTRACT comment in docker_compose/hardened_media_m8/traefik/dynamic_conf.yml.
 """
 
+import os
+import uuid
+
 import pytest
 import requests
 
@@ -176,4 +179,65 @@ class TestMedia_MetricsAPI:
         assert not health_paths, (
             f"[APP MISCONFIGURATION] Health route exposed in OpenAPI: "
             f"{health_paths}. Ensure include_in_schema=False on the health endpoint."
+        )
+
+
+class TestMedia_InternalCallbacks:
+    """Media /v1/internal/* worker callbacks must not be routed through Traefik's
+    public entrypoint (item 11.1).
+
+    These endpoints are gated at the app layer by MEDIA_INTERNAL_SERVICE_TOKEN,
+    but a stolen worker token must not be replayable through the public domain.
+    Traefik must return 404 at ingress regardless of the bearer presented.
+
+    OPERATOR NOTE: a non-404 status means Traefik is misconfigured —
+    PathPrefix(`/media/v1/internal`) is missing from the exclusion list in
+    media-public-router (dynamic_conf.yml).
+
+    An optional real token can be supplied via LIVE_TEST_MEDIA_INTERNAL_TOKEN to
+    prove that even a valid worker token is refused at the public ingress.
+    """
+
+    # A representative internal callback: apply-scan-result on a random object.
+    _URL = f"{HTTPS_BASE}/media/v1/internal/objects/{uuid.uuid4()}/scan-result"
+    _BODY = {"scan_status": "CLEAN"}
+
+    def _post(self, **kwargs) -> requests.Response:
+        try:
+            return requests.post(self._URL, timeout=TIMEOUT, verify=False, **kwargs)  # noqa: S501
+        except requests.exceptions.SSLError:
+            pytest.skip("SSL error — check cert setup")
+
+    def _assert_blocked(self, r: requests.Response) -> None:
+        assert r.status_code == 404, _TRAEFIK_MISCONFIG_MSG.format(
+            path="/media/v1/internal",
+            router="media-public-router",
+            status=r.status_code,
+        )
+
+    def test_internal_callback_blocked_no_bearer(self):
+        """GOOD: Traefik returns 404 — /media/v1/internal not reachable publicly."""
+        self._assert_blocked(self._post(json=self._BODY))
+
+    def test_internal_callback_blocked_wrong_bearer(self):
+        """GOOD: Traefik returns 404 regardless of the (wrong) bearer value."""
+        r = self._post(json=self._BODY, headers={"Authorization": "Bearer wrong"})
+        self._assert_blocked(r)
+
+    def test_internal_callback_blocked_with_configured_bearer(self):
+        """GOOD: even a valid worker token is refused at the public ingress."""
+        token = os.environ.get("LIVE_TEST_MEDIA_INTERNAL_TOKEN")
+        if not token:
+            pytest.skip("LIVE_TEST_MEDIA_INTERNAL_TOKEN not set")
+        r = self._post(json=self._BODY, headers={"Authorization": f"Bearer {token}"})
+        self._assert_blocked(r)
+
+    def test_internal_callback_absent_from_openapi(self):
+        """Internal callback routes must not appear in the public OpenAPI schema."""
+        r = requests.get(f"{MEDIA_BASE}/openapi.json", timeout=TIMEOUT)
+        paths = r.json().get("paths", {})
+        internal_paths = [p for p in paths if "/internal/" in p]
+        assert not internal_paths, (
+            f"[APP MISCONFIGURATION] Internal routes exposed in OpenAPI: "
+            f"{internal_paths}. Ensure the internal router uses include_in_schema=False."
         )

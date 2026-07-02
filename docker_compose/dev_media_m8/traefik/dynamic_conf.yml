@@ -75,7 +75,13 @@ http:
 
     # Media-Service: public routes on HTTPS.
     # SECURITY CONTRACT — paths below are NEVER routed from the public internet:
-    #   /media/metrics — Prometheus scrape endpoint, internal only
+    #   /media/metrics     — Prometheus scrape endpoint, internal only
+    #   /media/v1/internal — service-to-service worker callbacks (item 11.1).
+    #                        Reachable ONLY on the internal `api` entrypoint via
+    #                        media-internal-router. App-layer bearer validation
+    #                        (MEDIA_INTERNAL_SERVICE_TOKEN) stays as defense in
+    #                        depth, but a stolen worker token must not be replayable
+    #                        through the public domain.
     # /media/health is intentionally public (Design B, item 9.4): the ungated body
     # is a constant {"status":"ok"} — no dependency state leaks; the detail body
     # requires HEALTH_DETAIL_CREDENTIAL (item 9.3, fail-closed).
@@ -87,7 +93,7 @@ http:
       # LOCALHOST-ONLY by default: Host(`localhost`) limits this route to the Docker
       # host. TO EXPOSE /media ON THE LAN, delete the `Host(`localhost`) && ` prefix.
       # The path exclusions are the SECURITY CONTRACT and MUST stay regardless.
-      rule: "Host(`localhost`) && PathPrefix(`/media`) && !PathPrefix(`/media/metrics`)"
+      rule: "Host(`localhost`) && PathPrefix(`/media`) && !(PathPrefix(`/media/metrics`) || PathPrefix(`/media/v1/internal`))"
       service: media-service
       middlewares:
         - security-headers

@@ -96,6 +96,42 @@ class TestMediaMetricsInternalOnly:
         )
 
 
+# ── /media/v1/internal — internal-only worker callbacks (item 11.1) ──────────
+
+
+class TestMediaInternalCallbacksInternalOnly:
+    """11.1: /media/v1/internal must be excluded from the media-public-router.
+
+    Worker service-to-service callbacks live under /media/v1/internal. They are
+    gated at the app layer by MEDIA_INTERNAL_SERVICE_TOKEN, but must never be
+    routable from the public internet — a stolen worker token must not be
+    replayable through the public domain. They stay reachable only on the
+    internal `api` entrypoint via media-internal-router.
+    """
+
+    @pytest.mark.parametrize("conf_path", _ALL_DYNAMIC_CONFS)
+    def test_media_internal_excluded_from_public_router(self, conf_path: Path):
+        conf = _load(conf_path)
+        rule = _router_rule(conf, "media-public-router")
+        assert "/media/v1/internal" in rule, (
+            f"{conf_path.name}: /media/v1/internal must be excluded from the "
+            "media-public-router (item 11.1 — service-to-service worker callbacks "
+            "are internal only; a stolen worker token must not be replayable "
+            "through the public domain)"
+        )
+
+    @pytest.mark.parametrize("conf_path", _ALL_DYNAMIC_CONFS)
+    def test_media_internal_still_routed_on_internal_entrypoint(self, conf_path: Path):
+        conf = _load(conf_path)
+        internal = conf["http"]["routers"]["media-internal-router"]
+        # The internal router matches the whole /media prefix on the `api`
+        # entrypoint with no exclusion, so /media/v1/internal stays reachable.
+        assert "PathPrefix(`/media`)" in internal["rule"]
+        assert "/media/v1/internal" not in internal["rule"]
+        assert "api" in internal["entryPoints"]
+        assert "internal-only" in internal["middlewares"]
+
+
 # ── /user/health — publicly exposed (9.4 Design B, symmetric with /media/health) ──
 
 

@@ -28,6 +28,11 @@ router = APIRouter(
     prefix="/internal",
     tags=["internal"],
     dependencies=[Depends(require_service_token)],
+    # item 11.1: internal service-to-service callbacks are never user-facing and
+    # must not be discoverable on the public API surface. Keep them out of the
+    # OpenAPI schema (mirrors the auth /private and /metrics posture); Traefik
+    # additionally blocks /media/v1/internal at the public ingress.
+    include_in_schema=False,
 )
 
 
