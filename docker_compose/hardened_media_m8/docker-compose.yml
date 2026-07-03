@@ -303,7 +303,7 @@ services:
   # repo, not under this stack). Only the .env file is mounted, matching the
   # media_service pattern.
   media_worker:
-    image: tepochtli/media-worker-m8:0.2.0
+    image: tepochtli/media-worker-m8:0.3.0
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -347,7 +347,7 @@ services:
       - scan_net
 
   media_service:
-    image: tepochtli/media-service-m8:0.0.9
+    image: tepochtli/media-service-m8:0.0.11
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -393,7 +393,7 @@ services:
   # this command override bypasses docker_start.sh. Outbound-only: no Traefik
   # label, no exposed port.
   media_service_worker:
-    image: tepochtli/media-service-m8:0.0.9
+    image: tepochtli/media-service-m8:0.0.11
     command: ["arq", "media_service.maintenance_worker.WorkerSettings"]
     security_opt:
       - no-new-privileges:true

@@ -49,7 +49,7 @@ dev convenience).
 | auth_user_service | `tepochtli/fa-auth-m8:1.1.0` | `/user` via Traefik |
 | media_service | local `../../media_service` build | `/media` via Traefik |
 | media_service_worker | local `../../media_service` build (arq command override) | internal — no port; lifecycle/outbox crons |
-| media_worker | `tepochtli/media-worker-m8:0.2.0` | internal — enqueue-driven (scan + variants) |
+| media_worker | `tepochtli/media-worker-m8:0.3.0` | internal — enqueue-driven (scan + variants) |
 | clamav | `clamav/clamav:1.5-debian13-slim` | internal `scan_net` only |
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |

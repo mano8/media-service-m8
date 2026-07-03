@@ -6,12 +6,11 @@ Same hardened posture as `hardened_media_m8` (PostgreSQL 18, two Redis instances
 (auth + media), MinIO, Traefik, Prometheus, Grafana, RS256/JWKS auth, container
 hardening, network segmentation), with two developer conveniences:
 
-- **`media_service` and `media_service_worker` are built from local source**
-  (`../../media_service`) instead of pulling the published image.
+- **All M8 services are built from local source:** `auth_user_service` from
+  `../../../fa-auth-m8`, `media_worker` from `../../../media-worker-m8`, and
+  `media_service` + `media_service_worker` from `../../media_service`.
 - **MinIO is published on loopback** (`127.0.0.1:9005`/`9006`) so you can reach
   the API/console from the host while iterating.
-
-`auth_user_service` and `media_worker` still use the published Docker Hub images.
 
 ## Architecture
 
@@ -46,10 +45,10 @@ dev convenience).
 | Service | Image/build | Local access |
 | --- | --- | --- |
 | traefik | `traefik:v3.7.5` | `:8000`, `:4430`, `127.0.0.1:9000`, `127.0.0.1:8080` |
-| auth_user_service | `tepochtli/fa-auth-m8:1.1.0` | `/user` via Traefik |
+| auth_user_service | local `../../../fa-auth-m8` build | `/user` via Traefik |
 | media_service | local `../../media_service` build | `/media` via Traefik |
 | media_service_worker | local `../../media_service` build (arq command override) | internal — no port; lifecycle/outbox crons |
-| media_worker | `tepochtli/media-worker-m8:0.2.0` | internal — enqueue-driven (scan + variants) |
+| media_worker | local `../../../media-worker-m8` build | internal — enqueue-driven (scan + variants) |
 | clamav | `clamav/clamav:1.5-debian13-slim` | internal `scan_net` only |
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
