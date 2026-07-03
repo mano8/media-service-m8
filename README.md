@@ -489,6 +489,34 @@ Requirements are split into `requirements_base.txt` (runtime, incl. all DB
 drivers), `requirements_prod.txt` (+ gunicorn), and `requirements_dev.txt`
 (+ pytest, ruff, bandit). Token slugs use `python-slugify`.
 
+### Reproducible release builds
+
+Release (non-development) Docker images do **not** resolve the loose lower-bound
+ranges in `requirements_base.txt` / `requirements_prod.txt` at build time. They
+install from `media_service/requirements_prod.lock` — a fully pinned,
+`sha256`-hashed lock — with `pip install --require-hashes`. This guarantees that
+rebuilding the same source cannot silently pull a different dependency graph, and
+that the published SBOM describes exactly what shipped.
+
+- The loose ranges remain the source of truth for *what* the service depends on.
+- The lock is the pinned, hashed *resolution* of those ranges for release images.
+- All packages (including the internal `media-sdk-m8` and `fastapi-m8`) resolve
+  from public PyPI only — the lock carries no custom index URL.
+
+Regenerate the lock whenever a range in `requirements_base.txt` or
+`requirements_prod.txt` changes, then re-run the audit gate:
+
+```bash
+cd media_service
+pip-compile --generate-hashes --no-emit-index-url \
+    --output-file=requirements_prod.lock requirements_prod.txt
+pip-audit -r requirements_prod.lock          # must report no known vulnerabilities
+```
+
+The lock, the Dockerfile `--require-hashes` install, and the
+"SBOM reflects the locked environment" invariant are enforced by
+`tests/test_dependency_lock.py`.
+
 ## License
 
 See [LICENSE](LICENSE).

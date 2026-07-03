@@ -9,6 +9,24 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **11.8: hash-locked dependency set for release Docker builds.** Release
+  (non-development) images now install from `media_service/requirements_prod.lock`
+  — a fully pinned, `sha256`-hashed lock generated with
+  `pip-compile --generate-hashes --no-emit-index-url` — via
+  `pip install --require-hashes`, so rebuilding the same source cannot silently
+  resolve a different dependency graph and the published SBOM describes exactly
+  what shipped. The loose lower-bound ranges in `requirements_base.txt` /
+  `requirements_prod.txt` remain the source of truth; the lock is their pinned
+  resolution. All packages — including the internal `media-sdk-m8` and
+  `fastapi-m8` — resolve from public PyPI only (no custom index URL). The
+  development Dockerfile branch keeps the unpinned base+dev install.
+  `tests/test_dependency_lock.py` (10 tests) locks the invariants: every
+  requirement pinned + hashed, no version ranges, no custom index, internal
+  packages pinned, all declared deps covered, Dockerfile copies the lock and
+  installs it with `--require-hashes`, and the publish workflow's SBOM reflects
+  the locked production environment. README gains a "Reproducible release builds"
+  section documenting the regenerate + `pip-audit` gate.
+
 - **9.4 (Design B): expose `/media/health` on the public HTTPS entrypoint.** The
   ungated `/media/health` response is a constant `{"status":"ok"}` with HTTP 200 —
   no dependency state (Redis, DB, degraded flag) ever leaks to anonymous callers.
