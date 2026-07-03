@@ -9,13 +9,15 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
-## [0.0.11] — 2026-07-03 · OWASP security remediation + platform alignment
+## [1.0.0] — 2026-07-03 · OWASP security remediation + platform alignment + 1.0 promotion
 
 ### Changed
 
-- **Service version `0.0.10→0.0.11`; `CONTRACT_RANGE` bumped to `>=0.0.11 <0.1.0`.**
-  The `GET {prefix}/meta` service-version range now opens at `0.0.11`; `CONTRACT_VERSION`
-  stays `0.0` (pre-1.0 line). Clients asserting the range must allow `>=0.0.11`.
+- **Service version `0.0.10→1.0.0`; `CONTRACT_VERSION` promoted to `1.0`;
+  `CONTRACT_RANGE` bumped to `>=1.0.0 <2.0.0`.** The service is considered
+  stable: 902 tests at 100% coverage, full supply-chain hardening (hashed lock,
+  SBOM, provenance, cosign), and OWASP remediation complete. Clients must allow
+  `>=1.0.0`.
 
 - **Platform floors lifted: `fastapi-m8>=3.3.0`, `auth-sdk-m8>=2.1.1` (transitive),
   `media-sdk-m8>=0.5.1`.** `fastapi-m8` 3.3.0 is the minimum that carries the
