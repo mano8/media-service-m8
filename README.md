@@ -32,11 +32,11 @@ All routes are mounted under `API_PREFIX` (default `/media`). Domain routers:
 
 ### Service metadata & health
 
-Auto-mounted by `fastapi-m8` (≥ 2.1.0) `create_app` — the standard m8 triad:
+Auto-mounted by `fastapi-m8` (≥ 3.3.0) `create_app` — the standard m8 triad:
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@0.0`, service-version range `>=0.0.10 <0.1.0`. |
+| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@0.0`, service-version range `>=0.0.11 <0.1.0`. |
 | GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
 | GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / MinIO). |
 
@@ -298,7 +298,7 @@ with no tenant never matches a `TENANT` object. Mutations (`PATCH`/`DELETE`)
 remain owner-or-superuser only.
 
 Tenancy is taken from the caller's `tenant_id` claim (surfaced on `UserModel` by
-`auth-sdk-m8`, requires `fastapi-m8>=1.6.0`) and stamped onto each object at
+`auth-sdk-m8`, requires `fastapi-m8>=3.3.0`) and stamped onto each object at
 upload — never from the request body. Objects created by an untenanted caller
 stay `tenant_id IS NULL`, for which `TENANT` resolves as owner/superuser-only.
 
@@ -353,7 +353,7 @@ Set these to match `auth_user_service` exactly:
 - **`TOKEN_MODE`:** `stateless` | `hybrid` | `stateful`. In `stateful` mode set
   `INTROSPECTION_URL` (HTTP revocation checks) plus the private-API credential
   described next.
-- **Per-consumer internal auth (`fastapi-m8 >= 3.1.0`):** the private-API call to
+- **Per-consumer internal auth (`fastapi-m8 >= 3.3.0`):** the private-API call to
   fa-auth authenticates as a named consumer. Set
   `INTERNAL_CLIENT_ID=media-service`; `PRIVATE_API_SECRET` then becomes this
   consumer's **bootstrap credential**, sent as `X-Internal-Client` +
@@ -375,7 +375,7 @@ Set these to match `auth_user_service` exactly:
   `PRIVATE_API_SECRET`. Reuse of the private-API secret as either
   `HEALTH_DETAIL_CREDENTIAL` or `METRICS_SCRAPE_CREDENTIAL` is a fatal startup
   error; unset → the gate fails closed (shallow status only, no detail body).
-- **Boundary claims:** `auth-sdk-m8 >= 1.0.0` defaults `TOKEN_STRICT_VALIDATION`
+- **Boundary claims:** `auth-sdk-m8 >= 2.1.1` defaults `TOKEN_STRICT_VALIDATION`
   on, so `TOKEN_ISSUER` and `TOKEN_AUDIENCE` are required at boot (or opt out
   with `TOKEN_STRICT_VALIDATION=false` for local dev).
 - **Event signing:** `EVENT_SIGNING_ENABLED` defaults on; a strong
@@ -383,7 +383,7 @@ Set these to match `auth_user_service` exactly:
   match `auth_user_service` — SSE event-stream payloads (below) are
   HMAC-SHA256 signed and verified with it. Set `EVENT_SIGNING_ENABLED=false` to
   disable signing/verification entirely.
-- **Auth event stream (`fastapi-m8 >= 1.5.0`):** when `INTROSPECTION_URL` is set,
+- **Auth event stream (`fastapi-m8 >= 3.3.0`):** when `INTROSPECTION_URL` is set,
   the lifespan starts an `AuthEventStreamClient` that consumes session-revoked /
   user-deleted events from fa-auth's private SSE bridge and evicts the local
   validation cache early. It is a **best-effort cache accelerator** — the JTI
@@ -398,8 +398,8 @@ network segmentation), see
 
 ## Response security headers
 
-Headers are applied by the shared `auth-sdk-m8 >= 1.2.1` layer (wired through
-`fastapi-m8 >= 1.5.0`) in three tiers:
+Headers are applied by the shared `auth-sdk-m8 >= 2.1.1` layer (wired through
+`fastapi-m8 >= 3.3.0`) in three tiers:
 
 - **Always on:** `X-Content-Type-Options`, `X-Frame-Options`.
 - **Production gate:** `Referrer-Policy`, `Permissions-Policy`.
