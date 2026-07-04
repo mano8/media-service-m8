@@ -72,14 +72,25 @@ class PresetSpec(SQLModel):
 
         Applied on every construction path — user create/update *and* loading a
         stored row or a built-in default — so no recipe can demand unbounded
-        geometry, encode budget, or duplicate-format fan-out.
+        geometry, encode budget, or duplicate-format fan-out. Each ceiling is
+        checked in its own helper to keep this path flat.
         """
+        self._check_dimensions()
+        self._check_pixel_area()
+        self._check_byte_size()
+        self._check_unique_formats()
+        return self
+
+    def _check_dimensions(self) -> None:
         size = self.image_size
         for value in (size.fixed_width, size.fixed_height, size.fixed_size):
             if value is not None and value > MAX_PRESET_DIMENSION:
                 raise ValueError(
                     f"Preset dimension {value} exceeds maximum {MAX_PRESET_DIMENSION}."
                 )
+
+    def _check_pixel_area(self) -> None:
+        size = self.image_size
         if (
             size.fixed_width is not None
             and size.fixed_height is not None
@@ -89,6 +100,8 @@ class PresetSpec(SQLModel):
                 f"Preset output area {size.fixed_width * size.fixed_height} "
                 f"exceeds maximum {MAX_PRESET_PIXEL_AREA}."
             )
+
+    def _check_byte_size(self) -> None:
         if (
             self.max_byte_size is not None
             and self.max_byte_size > MAX_PRESET_MAX_BYTE_SIZE
@@ -97,10 +110,11 @@ class PresetSpec(SQLModel):
                 f"Preset max_byte_size {self.max_byte_size} exceeds maximum "
                 f"{MAX_PRESET_MAX_BYTE_SIZE}."
             )
+
+    def _check_unique_formats(self) -> None:
         exts = [fmt.ext for fmt in self.formats]
         if len(set(exts)) != len(exts):
             raise ValueError("Preset formats must be unique.")
-        return self
 
 
 class ImagePresetCreate(SQLModel):

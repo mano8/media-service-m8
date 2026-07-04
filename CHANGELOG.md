@@ -7,6 +7,19 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+### Security
+
+- **Runtime image patches OpenSSL to `3.5.6-1~deb13u2`** (`openssl`,
+  `libssl3t64`, `openssl-provider-legacy`) to close CVE-2026-45447 (heap
+  use-after-free in `PKCS7_verify`), which is not yet fixed in the pinned
+  `python:3.14-slim` base. Matches the media-worker-m8 remediation.
+
+### Changed
+
+- `PresetSpec._enforce_cost_bounds` split its per-ceiling checks into helper
+  methods (behavior unchanged) to keep each path under the complexity limit.
+- `.codacy.yml` excludes `AGENTS.md` from analysis (not repo source code).
+
 ---
 
 ## [1.0.0] — 2026-07-03 · OWASP security remediation + platform alignment + 1.0 promotion
