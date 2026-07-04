@@ -46,16 +46,16 @@ dev convenience).
 | Service | Image/build | Local access |
 | --- | --- | --- |
 | traefik | `traefik:v3.7.5` | `:8000`, `:4430`, `127.0.0.1:9000`, `127.0.0.1:8080` |
-| auth_user_service | `tepochtli/fa-auth-m8:0.9.9` | `/user` via Traefik |
+| auth_user_service | `tepochtli/fa-auth-m8:1.1.0` | `/user` via Traefik |
 | media_service | local `../../media_service` build | `/media` via Traefik |
 | media_service_worker | local `../../media_service` build (arq command override) | internal — no port; lifecycle/outbox crons |
-| media_worker | `tepochtli/media-worker-m8:0.2.0` | internal — enqueue-driven (scan + variants) |
+| media_worker | `tepochtli/media-worker-m8:0.3.0` | internal — enqueue-driven (scan + variants) |
 | clamav | `clamav/clamav:1.5-debian13-slim` | internal `scan_net` only |
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
-| minio | `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
-| minio-init | `quay.io/minio/mc:RELEASE.2025-04-03T17-07-38Z` | one-shot: buckets + `media-rw` policy |
+| minio | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
+| minio-init | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` | one-shot: buckets + `media-rw` policy |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 
@@ -239,6 +239,11 @@ Resetting the DB is destructive:
 bash init.sh --reset-db --yes
 ```
 
+`--reset-db` removes `db_data/` even when PostgreSQL owns it as the container
+uid — it falls back to a throwaway root container, so no manual `sudo rm` is
+needed on WSL2/Linux bind mounts. On every run `init.sh` also enforces
+`chmod 600` on each runtime `*.env` file and private key.
+
 ## Troubleshooting
 
 **`changethis` rejection on startup**: replace placeholder values in `.env`,
@@ -250,8 +255,11 @@ Set them (identically across auth + media), or set `EVENT_SIGNING_ENABLED=false`
 / `TOKEN_STRICT_VALIDATION=false` for local-only runs.
 
 **Media service cannot connect to MinIO**: inside Docker, use `MINIO_HOST=minio`
-and `MINIO_PORT=9000`. Host ports `9005` and `9006` are only for local
-browser/tool access.
+and `MINIO_PORT=9000`. The **browser**, however, uses `MINIO_PUBLIC_ENDPOINT`
+(`http://127.0.0.1:9005`) to reach MinIO directly for presigned uploads/downloads;
+this is distinct from the internal `minio:9000` endpoint. This separation
+enables browser-direct Option A uploads (presigned POSTs and GETs), which
+requires the public endpoint for the signatures to validate correctly.
 
 **`minio-init` fails or buckets are missing**: check `docker-compose logs minio-init`.
 It waits for MinIO to be healthy, then creates buckets and the `media-rw` user.

@@ -1,0 +1,398 @@
+[
+  {
+    "path": "/media/category/",
+    "method": "GET",
+    "tag": "category",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List categories — requires valid bearer token"
+  },
+  {
+    "path": "/media/category/add/",
+    "method": "POST",
+    "tag": "category",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Create category — requires valid bearer token"
+  },
+  {
+    "path": "/media/category/delete/{item_id}/",
+    "method": "DELETE",
+    "tag": "category",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Delete category — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/category/edit/{item_id}/",
+    "method": "PUT",
+    "tag": "category",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Update category — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/category/get/{item_id}/",
+    "method": "GET",
+    "tag": "category",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Get category by id — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/dashboard/users/activity/",
+    "method": "GET",
+    "tag": "dashboard",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "All-users activity summary — requires valid bearer token (superuser sees all)"
+  },
+  {
+    "path": "/media/dashboard/users/activity/current/",
+    "method": "GET",
+    "tag": "dashboard",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Current-user activity summary — requires valid bearer token"
+  },
+  {
+    "path": "/media/health/",
+    "method": "GET",
+    "tag": "health",
+    "exposure": "health",
+    "in_openapi": false,
+    "traefik_router": "public",
+    "note": "Health check — public endpoint; excluded from OpenAPI schema"
+  },
+  {
+    "path": "/media/meta",
+    "method": "GET",
+    "tag": "meta",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Service metadata and SDK compat check — public"
+  },
+  {
+    "path": "/media/ping",
+    "method": "GET",
+    "tag": "meta",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Liveness probe — public"
+  },
+  {
+    "path": "/media/v1/admin/maintenance/orphans",
+    "method": "GET",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Report storage/DB orphans (read-only) — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/maintenance/orphans/repair",
+    "method": "POST",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Reconcile orphans (delete storage orphans when confirm=true) — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/maintenance/purge-expired",
+    "method": "POST",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Hard-delete soft-deleted objects past retention window — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/quotas/{owner_user_id}",
+    "method": "GET",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Return storage usage and quotas for an owner/tenant scope — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/quotas/{owner_user_id}",
+    "method": "PUT",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Set quota overrides for an owner/tenant scope — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/storage/stats",
+    "method": "GET",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Object counts and bytes by status/category — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/subscriptions",
+    "method": "GET",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List webhook subscriptions — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/subscriptions",
+    "method": "POST",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Register webhook subscription — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/subscriptions/{subscription_id}",
+    "method": "DELETE",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Delete webhook subscription — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/uploads/purge-stale",
+    "method": "POST",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Mark stale INITIATED sessions EXPIRED — requires superuser"
+  },
+  {
+    "path": "/media/v1/admin/uploads/stale",
+    "method": "GET",
+    "tag": "admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List expired upload sessions still in INITIATED state — requires superuser"
+  },
+  {
+    "path": "/media/v1/internal/objects/{object_id}/scan-result",
+    "method": "POST",
+    "tag": "internal",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "Apply antivirus verdict from worker — internal only; requires MEDIA_INTERNAL_SERVICE_TOKEN bearer"
+  },
+  {
+    "path": "/media/v1/internal/objects/{object_id}/variants",
+    "method": "POST",
+    "tag": "internal",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "Register variant written by worker — internal only; requires MEDIA_INTERNAL_SERVICE_TOKEN bearer"
+  },
+  {
+    "path": "/media/v1/internal/variant-jobs/{job_id}",
+    "method": "PATCH",
+    "tag": "internal",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "Advance variant job status from worker — internal only; requires MEDIA_INTERNAL_SERVICE_TOKEN bearer"
+  },
+  {
+    "path": "/media/v1/objects",
+    "method": "GET",
+    "tag": "objects",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List media objects (cursor-paginated) — requires valid bearer token"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}",
+    "method": "DELETE",
+    "tag": "objects",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Soft-delete a media object — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}",
+    "method": "GET",
+    "tag": "objects",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Get media object metadata — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}",
+    "method": "PATCH",
+    "tag": "objects",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Patch media object metadata — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}/download-url",
+    "method": "GET",
+    "tag": "objects",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Generate presigned download URL — requires valid bearer token + ownership; rate-limited"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}/shares",
+    "method": "GET",
+    "tag": "shares",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List share links for an object — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}/shares",
+    "method": "POST",
+    "tag": "shares",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Mint a share link — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}/variants",
+    "method": "GET",
+    "tag": "variants",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List generated variants for an object — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}/variants/jobs/{job_id}",
+    "method": "GET",
+    "tag": "variants",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Get variant job progress — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}/variants/{variant_id}",
+    "method": "DELETE",
+    "tag": "variants",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Delete a generated variant — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/objects/{object_id}/variants:generate",
+    "method": "POST",
+    "tag": "variants",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Create variant job and enqueue — requires valid bearer token + ownership; rate-limited"
+  },
+  {
+    "path": "/media/v1/presets",
+    "method": "GET",
+    "tag": "presets",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List built-in and user presets — requires valid bearer token"
+  },
+  {
+    "path": "/media/v1/presets",
+    "method": "POST",
+    "tag": "presets",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Create a user preset — requires valid bearer token"
+  },
+  {
+    "path": "/media/v1/presets/{preset_id}",
+    "method": "DELETE",
+    "tag": "presets",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Delete a user preset — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/presets/{preset_id}",
+    "method": "PATCH",
+    "tag": "presets",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Replace a user preset's recipe — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/shares/{token_id}",
+    "method": "DELETE",
+    "tag": "shares",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Revoke a share link — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/shares/{token}",
+    "method": "GET",
+    "tag": "shares",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Resolve a share token to a presigned download URL — public; anonymous rate-limited"
+  },
+  {
+    "path": "/media/v1/uploads/initiate",
+    "method": "POST",
+    "tag": "uploads",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Create a presigned PUT URL and upload session — requires valid bearer token; rate-limited"
+  },
+  {
+    "path": "/media/v1/uploads/{session_id}/abort",
+    "method": "POST",
+    "tag": "uploads",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Cancel an upload session and remove partial object — requires valid bearer token + ownership"
+  },
+  {
+    "path": "/media/v1/uploads/{session_id}/complete",
+    "method": "POST",
+    "tag": "uploads",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Verify object in storage and promote to MediaObject — requires valid bearer token + ownership; rate-limited"
+  }
+]

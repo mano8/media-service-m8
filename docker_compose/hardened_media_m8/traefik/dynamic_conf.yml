@@ -39,9 +39,11 @@ http:
       tls: {}
 
     # Auth-User-Service: public routes on HTTPS.
-    # SECURITY CONTRACT — paths below are NEVER routed from the public internet:
-    #   /user/health   — internal readiness probe only
-    #   /user/metrics  — Prometheus scrape endpoint, internal only
+    # SECURITY CONTRACT (Design B, item 9.4):
+    #   /user/health   — PUBLIC shallow liveness. The ungated body is a constant
+    #                    {"status":"ok"}; the deep detail is gated at the app layer
+    #                    by HEALTH_DETAIL_CREDENTIAL (fail-closed), not by Traefik.
+    #   /user/metrics  — Prometheus scrape endpoint, internal only (NEVER public)
     #   /user/private  — inter-service API; app also requires X-Internal-Token,
     #                    but Traefik must block it first so the route is invisible.
     # If you add new internal paths, add them here AND write a live test in
@@ -51,8 +53,10 @@ http:
         - websecure
       # LOCALHOST-ONLY by default: Host(`localhost`) limits this route to the Docker
       # host. TO EXPOSE /user ON THE LAN, delete the `Host(`localhost`) && ` prefix.
-      # The path exclusions are the SECURITY CONTRACT and MUST stay regardless.
-      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
+      # The path exclusions are the SECURITY CONTRACT and MUST stay regardless —
+      # /user/metrics + /user/private are never public on ANY host. /user/health is
+      # public-shallow (its deep detail stays app-gated, fail-closed).
+      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
       service: auth-service
       middlewares:
         - security-headers
@@ -71,8 +75,16 @@ http:
 
     # Media-Service: public routes on HTTPS.
     # SECURITY CONTRACT — paths below are NEVER routed from the public internet:
-    #   /media/health  — internal readiness probe only
-    #   /media/metrics — Prometheus scrape endpoint, internal only
+    #   /media/metrics     — Prometheus scrape endpoint, internal only
+    #   /media/v1/internal — service-to-service worker callbacks (item 11.1).
+    #                        Reachable ONLY on the internal `api` entrypoint via
+    #                        media-internal-router. App-layer bearer validation
+    #                        (MEDIA_INTERNAL_SERVICE_TOKEN) stays as defense in
+    #                        depth, but a stolen worker token must not be replayable
+    #                        through the public domain.
+    # /media/health is intentionally public (Design B, item 9.4): the ungated body
+    # is a constant {"status":"ok"} — no dependency state leaks; the detail body
+    # requires HEALTH_DETAIL_CREDENTIAL (item 9.3, fail-closed).
     # If you add new internal paths, add them here AND write a live test in
     # tests/live/test_security_live.py (see TestMedia_MetricsAPI).
     media-public-router:
@@ -81,7 +93,7 @@ http:
       # LOCALHOST-ONLY by default: Host(`localhost`) limits this route to the Docker
       # host. TO EXPOSE /media ON THE LAN, delete the `Host(`localhost`) && ` prefix.
       # The path exclusions are the SECURITY CONTRACT and MUST stay regardless.
-      rule: "Host(`localhost`) && PathPrefix(`/media`) && !(PathPrefix(`/media/health`) || PathPrefix(`/media/metrics`))"
+      rule: "Host(`localhost`) && PathPrefix(`/media`) && !(PathPrefix(`/media/metrics`) || PathPrefix(`/media/v1/internal`))"
       service: media-service
       middlewares:
         - security-headers
@@ -97,6 +109,26 @@ http:
         - security-headers
         - internal-only
 
+    # MinIO S3 data-path: browser-direct presigned uploads/downloads over TLS.
+    # SECURITY CONTRACT:
+    #   - Only the S3 data path is routed — /minio (admin API + console) is EXPLICITLY
+    #     EXCLUDED by !PathPrefix(`/minio`). The console (:9001) gains NO router.
+    #   - Every successful op still requires a presigned URL minted by media-service
+    #     after fa-auth authentication; no raw credentials cross the public interface.
+    #   - passHostHeader: true on the backend is REQUIRED: GET SigV4 signatures bind
+    #     the Host header, so the reverse proxy MUST forward the original Host unchanged
+    #     for the signature to validate at MinIO.
+    media-storage-router:
+      entryPoints:
+        - websecure
+      # LOCALHOST-ONLY by default: Host(`storage.localhost`) limits this route to the
+      # Docker host. TO EXPOSE storage ON THE LAN/WAN, replace Host(`storage.localhost`)
+      # with your real storage FQDN (e.g. Host(`storage.example.com`)). The
+      # !PathPrefix(`/minio`) exclusion is the SECURITY CONTRACT and MUST stay regardless.
+      rule: "Host(`storage.localhost`) && !PathPrefix(`/minio`)"
+      service: minio-storage
+      tls: {}
+
   services:
     auth-service:
       loadBalancer:
@@ -106,6 +138,11 @@ http:
       loadBalancer:
         servers:
           - url: "http://media_service:8000"
+    minio-storage:
+      loadBalancer:
+        passHostHeader: true   # REQUIRED — GET SigV4 signs the Host; proxy MUST forward it unchanged
+        servers:
+          - url: "http://minio:9000"
 
   middlewares:
     ip-allowlist:

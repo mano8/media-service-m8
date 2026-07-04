@@ -7,7 +7,203 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+### Security
+
+- **Runtime image patches OpenSSL to `3.5.6-1~deb13u2`** (`openssl`,
+  `libssl3t64`, `openssl-provider-legacy`) to close CVE-2026-45447 (heap
+  use-after-free in `PKCS7_verify`), which is not yet fixed in the pinned
+  `python:3.14-slim` base. Matches the media-worker-m8 remediation.
+
 ### Changed
+
+- `PresetSpec._enforce_cost_bounds` split its per-ceiling checks into helper
+  methods (behavior unchanged) to keep each path under the complexity limit.
+- `.codacy.yml` excludes `AGENTS.md` from analysis (not repo source code).
+
+---
+
+## [1.0.0] — 2026-07-03 · OWASP security remediation + platform alignment + 1.0 promotion
+
+### Changed
+
+- **Service version `0.0.10→1.0.0`; `CONTRACT_VERSION` promoted to `1.0`;
+  `CONTRACT_RANGE` bumped to `>=1.0.0 <2.0.0`.** The service is considered
+  stable: 902 tests at 100% coverage, full supply-chain hardening (hashed lock,
+  SBOM, provenance, cosign), and OWASP remediation complete. Clients must allow
+  `>=1.0.0`.
+
+- **Platform floors lifted: `fastapi-m8>=3.3.0`, `auth-sdk-m8>=2.1.1` (transitive),
+  `media-sdk-m8>=0.5.1`.** `fastapi-m8` 3.3.0 is the minimum that carries the
+  `build_internal_auth` per-consumer bootstrap, the static-`PRIVATE_API_SECRET`
+  retirement, and the full Design-B health surface. `auth-sdk-m8` 2.1.1 is pulled
+  transitively. `media-sdk-m8` 0.5.1 carries the `public_endpoint` presigned-URL
+  overrides consumed by `MINIO_PUBLIC_ENDPOINT`. `requirements_prod.lock` regenerated;
+  all packages resolve from public PyPI only.
+
+### Security
+
+- **11.8: hash-locked dependency set for release Docker builds.** Release
+  (non-development) images now install from `media_service/requirements_prod.lock`
+  — a fully pinned, `sha256`-hashed lock generated with
+  `pip-compile --generate-hashes --no-emit-index-url` — via
+  `pip install --require-hashes`, so rebuilding the same source cannot silently
+  resolve a different dependency graph and the published SBOM describes exactly
+  what shipped. The loose lower-bound ranges in `requirements_base.txt` /
+  `requirements_prod.txt` remain the source of truth; the lock is their pinned
+  resolution. All packages — including the internal `media-sdk-m8` and
+  `fastapi-m8` — resolve from public PyPI only (no custom index URL). The
+  development Dockerfile branch keeps the unpinned base+dev install.
+  `tests/test_dependency_lock.py` (10 tests) locks the invariants: every
+  requirement pinned + hashed, no version ranges, no custom index, internal
+  packages pinned, all declared deps covered, Dockerfile copies the lock and
+  installs it with `--require-hashes`, and the publish workflow's SBOM reflects
+  the locked production environment. README gains a "Reproducible release builds"
+  section documenting the regenerate + `pip-audit` gate.
+
+- **9.4 (Design B): expose `/media/health` on the public HTTPS entrypoint.** The
+  ungated `/media/health` response is a constant `{"status":"ok"}` with HTTP 200 —
+  no dependency state (Redis, DB, degraded flag) ever leaks to anonymous callers.
+  The detail body (`checks`, `service`) still requires `HEALTH_DETAIL_CREDENTIAL`
+  (item 9.3, fail-closed). All five Traefik `dynamic_conf.yml` / `production_dynamic_conf.yml`
+  files updated: `/media/health` dropped from the `media-public-router` exclusion
+  (only `/media/metrics` remains blocked); SECURITY CONTRACT comment updated in each.
+  `tests/test_compose_traefik_routing.py` (20 tests) asserts the contract statically:
+  `/media/health` not excluded, `/media/metrics` excluded, `/user/private` and
+  `/user/metrics` still excluded from `auth-public-router`. Four new tests in
+  `test_health_guard.py` assert the constant ungated body and that failing checks
+  never leak into the anonymous response.
+
+- **Auth issuer `/user/health` exposed on the public HTTPS entrypoint (Design B,
+  item 9.4), symmetric with `/media/health`.** All five Traefik configs
+  (`dynamic_conf.yml` ×4 + `production_dynamic_conf.yml`) drop `/user/health`
+  from the `auth-public-router` exclusion — only `/user/metrics` and
+  `/user/private` stay blocked. The issuer's ungated `/health` body is a constant
+  `{"status":"ok"}` (no dependency state leaks); the deep detail stays app-gated
+  by `HEALTH_DETAIL_CREDENTIAL` (fail-closed, item 9.3), not by Traefik. The
+  SECURITY CONTRACT comments are updated in each file, and
+  `test_compose_traefik_routing.py` gains `TestUserHealthPubliclyExposed` (asserts
+  `/user/health` is not excluded in any stack) alongside the existing
+  `/user/private` + `/user/metrics` exclusion checks. Aligns media with the
+  canonical `fa-auth-m8` example stacks, which already expose `/user/health`.
+
+- **Compose `init-common.sh` hardened to the fleet-canonical version.** The shared
+  init script now enforces `chmod 600` on every runtime `*.env` file and private
+  key before `docker compose up` (closing a group/world-readable-secret regression),
+  and keeps media's safer DB reset: `--reset-db` falls back to a throwaway root
+  container to remove a postgres-owned `db_data/` bind mount that a host `rm`
+  cannot delete. The script is now byte-identical to
+  `fa-auth-m8/examples/docker_compose/shared/scripts/init-common.sh`.
+
+### Changed
+
+- **`PRIVATE_API_CONSUMERS` aligned to the canonical compact form across all four
+  stacks' `auth.env.example`.** `dev_media_m8`, `worspace_dev_media_m8`, and
+  `hardened_media_m8` dropped the stale spaced placeholder
+  (`{"media-service": {"secret": "sha256$salt$hash", "scopes": ["introspection"]}}`)
+  for the compact `{"media-service":{"secret":"changethis","scopes":["introspection","event-stream"]}}`
+  already used by `dev_local_media_m8` — adding the `event-stream` scope so the
+  SSE bridge works. Non-secret placeholders aligned to fa-auth
+  (`DB_USER=changethis_auth_user`, `ACCESS_KEY_ID=changethis_hex_kid`).
+
+- **Bundled issuer migrated to the per-consumer `1.0.0` image + live-test harness
+  alignment (security-tests-m8 ≥ 0.2.0).**
+  - `dev_media_m8` and `hardened_media_m8` now pin `tepochtli/fa-auth-m8:1.0.0`
+    (was `0.9.9`); `worspace_dev_media_m8` / `dev_local_media_m8` build the issuer
+    from source (already `1.0.0`). Every stack now runs a **per-consumer** issuer
+    with no legacy single-secret fallback.
+  - `PRIVATE_API_CONSUMERS` is now **active** (uncommented) in all four
+    `auth.env.example` files — the `1.0.0` issuer fails closed without it, so the
+    `media-service` consumer (`INTERNAL_CLIENT_ID=media-service`, already set)
+    must be registered. `test_consumer_auth_config.py` flips from asserting the
+    registry is commented to asserting it is active and registers `media-service`.
+  - All stack `test.env` / `test.env.example` + `shared_live_tests/env.example`
+    gain `LIVE_TEST_PRIVATE_API_CLIENT_ID=media-service` (`X-Internal-Client`;
+    enables the harness F06 legacy-detection check) and a documented opt-in
+    `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` (deep `/health` detail via the dedicated
+    credential decoupled from `PRIVATE_API_SECRET`). `shared_live_tests` README
+    env table aligned.
+
+### Added
+
+- **`dev_local_media_m8` local compose stack.** A source-built dev stack (auth +
+  media + worker + MinIO/Redis/Postgres/observability) that runs the per-consumer
+  `1.0.0` issuer from source, with `PRIVATE_API_CONSUMERS` active and the
+  live-test harness env (`LIVE_TEST_PRIVATE_API_CLIENT_ID=media-service`,
+  opt-in `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL`) wired like the other stacks.
+- **README per-consumer / health-detail consumer-auth documentation.** The root
+  `README.md` documents per-consumer internal auth (`INTERNAL_CLIENT_ID` +
+  `PRIVATE_API_CONSUMERS`, bootstrap vs. service-token), the revocation
+  failure-mode (`ACCESS_REVOCATION_FAILURE_MODE`), and the dedicated
+  `HEALTH_DETAIL_CREDENTIAL` health gate (decoupled from `PRIVATE_API_SECRET`).
+
+- **Production overlay with `_FILE` secret mounts (plan 6.1).** Added
+  `docker_compose/hardened_media_m8/docker-compose.production.yml` — a thin
+  production overlay applied on top of the base stack via
+  `docker compose -f docker-compose.yml -f docker-compose.production.yml up -d`.
+  Secrets are sourced from operator-managed `./secrets/<name>.txt` files mounted
+  at `/run/secrets/` inside each container; the corresponding `*_FILE` env vars
+  (e.g. `DB_PASSWORD_FILE`, `MEDIA_INTERNAL_SERVICE_TOKEN_FILE`,
+  `MEDIA_SHARE_SIGNING_SECRET_FILE`, `MEDIA_REDIS_PASSWORD_FILE`,
+  `MINIO_ACCESS_KEY_FILE`, `MINIO_SECRET_KEY_FILE`, and auth/event-signing
+  secrets) are injected by the overlay so values never appear in `docker inspect`.
+  Source-code bind mounts are removed from `media_service` / `media_service_worker`
+  (pinned published images are used as-is). Production env example files
+  (`auth.env.production.example`, `media.env.production.example`,
+  `worker.env.production.example`) carry `ENVIRONMENT=production` +
+  `STRICT_PRODUCTION_MODE=true` and omit all plaintext secret fields.
+  `traefik/production_dynamic_conf.yml` replaces `localhost` host rules with FQDN
+  placeholders and raises the TLS floor to 1.3. `tests/test_compose_secrets_policy.py`
+  (47 tests) asserts all five `_FILE` categories from plan 6.1, the Docker
+  `secrets:` block, no `changethis` in the overlay YAML, and that production env
+  examples omit plaintext secrets. 665 tests, 100% cov, ruff + mypy green.
+
+- **`MINIO_PUBLIC_ENDPOINT` setting** — optional full URL (e.g.
+  `http://127.0.0.1:9005` or `https://storage.example.com`) that, when set,
+  makes presigned upload and download URLs target the browser-reachable MinIO
+  endpoint instead of the internal `MINIO_HOST:MINIO_PORT`. All other ops
+  (stat, copy, verify, health) continue to use the internal endpoint. Empty
+  string (default) preserves existing behaviour.
+
+- **Per-consumer internal auth (9.1 — fastapi-m8 ≥ 3.1.0).** `INTERNAL_CLIENT_ID`
+  is now documented and set in all three compose stacks (`dev_media_m8`,
+  `hardened_media_m8`, `worspace_dev_media_m8`). When set to `media-service`,
+  `build_internal_auth` (fastapi-m8 3.1.0) switches the revocation/introspection
+  private call from the legacy single `X-Internal-Token` to per-consumer
+  `X-Internal-Client` + `X-Internal-Token` bootstrap mode. `PRIVATE_API_SECRET`
+  then carries this consumer's per-consumer bootstrap secret (matched against its
+  entry in the issuer's `PRIVATE_API_CONSUMERS` registry). The optional
+  `SERVICE_TOKEN_EXCHANGE_ENABLED` flag (commented out — opt-in only) enables
+  short-TTL Bearer service-token exchange. `PRIVATE_API_CONSUMERS` is documented
+  in all three `auth.env.example` files to show the issuer-side configuration.
+  `tests/test_consumer_auth_config.py` audits the env examples and verifies the
+  legacy/bootstrap header selection via `build_internal_auth`. 609 tests, 100% cov.
+
+### Changed
+
+- **Bump `fastapi-m8` floor to `>=3.1.0,<4.0.0`** (from `>=3.0.0,<4.0.0`; the
+  `3.0.0` floor was set in the SDK-v2 alignment pass on this branch).
+  `fastapi-m8` 3.1.0 adds `build_internal_auth` + per-consumer `INTERNAL_CLIENT_ID`
+  / `SERVICE_TOKEN_EXCHANGE_ENABLED` settings on `ConsumerServiceSettings`; it
+  consumes `auth-sdk-m8>=2.0.1,<3.0.0`. `constraints.txt` / `constraints-all.txt`
+  updated to pin `fastapi-m8==3.1.0` and `auth-sdk-m8==2.1.0`.
+- **Prior SDK-v2 alignment (on this branch — `fastapi-m8` 3.0.0 / `auth-sdk-m8` 2.0.1).**
+  `fastapi-m8` 3.0.0 consumes `auth-sdk-m8>=2.0.1,<3.0.0`; this carried SDK 2.x
+  transitively. (Merged into the 3.1.0 bump above.)
+- **Activate `tenant_id` in the upload object-key path.**  `initiate_upload` now
+  passes `tenant_id` from the authenticated principal to `build_object_key`, so
+  tenanted uploads are stored under `tenants/{tenant_id}/users/{owner}/...` rather
+  than the flat `users/{owner}/...` path.  Non-tenanted callers (no `tenant_id`
+  claim) are unaffected — they continue to use the flat path.  This completes the
+  `TENANT`-visibility activation started in the 0.0.9 security pass and ensures
+  `build_variant_key` (which already receives `media_object.tenant_id`) produces
+  a consistent key when the worker processes the original object.
+- **`/ping` route is single-mount at `{prefix}/ping` (SDK 2.0.0).** `auth-sdk-m8`
+  2.0.0 dropped the dual-mount pattern (bare root `/ping` + prefixed `/ping`);
+  with a configured prefix the route is registered exactly once at `/media/ping`.
+  Tests updated accordingly: `test_ping_route_prefix_independent` is replaced by
+  `test_ping_route_not_at_bare_root` (asserts 404), and
+  `test_ping_schema_carries_single_operation` now asserts `/media/ping` is in the
+  schema and `/ping` is absent.
 
 - **Service version → `0.0.9`** (`media_service.__version__`, from `0.0.8`). The
   `GET {prefix}/meta` contract id stays `media-service-m8@0.0` (the whole pre-1.0
@@ -57,6 +253,102 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Security
 
+- **P0.3 Variant preset/job fan-out bounded by cost (service-side).** An
+  authenticated caller could multiply CPU, memory, queue time, and storage writes
+  with oversized presets or large/duplicate variant jobs — the request path had no
+  cost ceilings. media-service is now the request-policy owner with fixed,
+  single-validated-path bounds: per preset, each fixed dimension/`fixed_size` ≤
+  **8192 px**, `fixed_width × fixed_height` ≤ **32 MP**, `max_byte_size` ≤
+  **25 MiB**, and ≤ **5** distinct formats (`PresetSpec` enforces these on every
+  construction path — user create/update *and* loading a stored row or a built-in
+  default). Per `:generate` request, ≤ **16** preset names (raw, then
+  order-preserving de-duplication before resolution), the expansion may not exceed
+  **32** outputs, and the summed per-output pixel-area cost (unspecified dimensions
+  charged at the per-side max) may not exceed **256 MP** — any overrun is a
+  deterministic **422** before a `VariantJob` is created or enqueued. Ceilings are
+  fixed code constants (not per-deployment tunables), so no user-facing policy is
+  duplicated into clients; `media-worker-m8` keeps its own independent runtime
+  ceilings as defense in depth. New `tests/test_variant_cost_bounds.py` covers the
+  per-preset, per-request, and per-job bounds plus the `_geometry_cost` upper-bound
+  helper; `tests/test_variants_generate.py` adds end-to-end dedupe and
+  too-many-presets cases. README variant + preset sections updated. 745 tests,
+  100% cov, ruff + mypy + bandit green.
+
+- **P0.2 Upload quota enforced against actual stored size.** Upload quota could
+  be bypassed by under-declaring `expected_size_bytes`: initiate checked the
+  *declared* size and completion never re-checked the actual object against the
+  quota. Now `UploadInitiateRequest` requires `expected_size_bytes >= 1` and
+  within the category maximum (**422** otherwise), and the presigned POST policy
+  is signed for the **declared** size, not the category maximum, so a small
+  declaration cannot smuggle a large object through the signed form. Completion
+  rejects when the actual `stat.size` exceeds the declared/category ceiling, and
+  a new `quotas.reserve_storage_for_object` takes a **row lock** (`FOR UPDATE`)
+  on the owner's `storage_usage` row to enforce the byte/object quota against the
+  *actual* stored size in the same transaction that promotes the object —
+  closing the under-declare bypass and serialising concurrent completions so they
+  cannot both overrun the ceiling. Over-quota completions are rejected (**422**,
+  staged bytes removed, `media_uploads_quota_rejected_total` incremented) and
+  never credited. `tests/test_uploads.py` / `tests/test_quotas.py` cover zero /
+  negative / over-category declarations, under-declared completion, actual-size
+  over-quota at completion, tenant scoping, and a serialised concurrent-completion
+  no-overrun case. README storage-quota section updated. 725 tests, 100% cov,
+  ruff + mypy + bandit green.
+
+- **P0.1 Variant generation scan-readiness gate.** `:generate`
+  (`VariantsController.generate`) now requires the source object to have cleared
+  antivirus scanning **and** reached its ready lifecycle state
+  (`scan_status == CLEAN` and `status == READY`) before a `VariantJob` is created
+  or enqueued — previously it accepted any `UPLOADED` object regardless of scan
+  outcome, so unscanned/quarantined/infected bytes could be handed to the image
+  worker for decoding. All pre-ready, pending, failed, quarantined, infected, or
+  mismatched states now return a uniform **409** (matching the download/share scan
+  gates) before any ARQ enqueue; soft-deleted sources remain **404**.
+  `tests/test_variants_generate.py` is reworked to assert the `READY/CLEAN` happy
+  path enqueues exactly one job and that every rejected state fails with no job
+  row and no enqueue. README variant section updated.
+
+- **9.3 Decouple the deep-`/health` detail gate from `PRIVATE_API_SECRET`.** The
+  `/{prefix}/health/` detail body is now gated by a dedicated, separately-rotatable
+  `HEALTH_DETAIL_CREDENTIAL` (+`_FILE`) instead of reusing the private-API secret —
+  **fail-closed** when unset (shallow status only, no detail body). A startup
+  assertion makes reuse of `PRIVATE_API_SECRET` as either `HEALTH_DETAIL_CREDENTIAL`
+  or `METRICS_SCRAPE_CREDENTIAL` a fatal `ConfigurationError`. `HEALTH_DETAIL_CREDENTIAL`
+  is documented (commented-out, fail-closed by default) in all three stack
+  `media.env.example` files and in `media.env.production.example` (with its `_FILE`
+  sourcing note). `tests/test_health_guard.py` gains 5 tests: fail-closed when unset;
+  `PRIVATE_API_SECRET` no longer opens detail; both reuse variants fatal; distinct
+  credentials accepted. Mirrors the fastapi-m8 / fa-auth-m8 decoupling so no
+  operational surface reuses the private-API secret. 699 tests, 100% cov, ruff +
+  mypy + bandit green.
+
+- **9.2 Compose `SECURITY.md` — inter-service trust model + mTLS guidance.** Added
+  `docker_compose/SECURITY.md`: an inter-service trust-model table
+  (`media_service` → auth private API, `media_worker` → `media_service` internal
+  callback), a network-segmentation diagram, and single-host vs. multi-host mTLS
+  guidance cross-referencing the canonical auth-sdk-m8 `SECURITY.md` section. The
+  app-layer per-consumer credential check is stated as the **primary** control,
+  mTLS as defense-in-depth. `docker_compose/README.md` and the root README link to
+  it. 694 tests, 100% cov, ruff + mypy + bandit green.
+
+- **5.5 Consumer-side revocation-503 degradation matrix.**
+  `ACCESS_REVOCATION_FAILURE_MODE` is documented in all three `media.env.example`
+  files (`fail_closed` commented-out in the dev stacks; explicit `fail_closed` in
+  `hardened_media_m8`). When introspection is unavailable, `fail_closed` returns
+  **503** end-to-end through `get_current_user`; `fail_open` accepts the token and
+  logs the conscious opt-out (`security.revocation_fail_open`). New
+  `tests/test_revocation_degradation.py` (9 tests) covers the matrix, verifies
+  `fail_closed` is the default, and audits all three env examples for the setting.
+  auth-sdk-m8 2.0.1 / fastapi-m8 3.0.0 minimum. 618 tests, 100% cov, ruff + mypy +
+  bandit green.
+
+- **5.4 `API_BIND_IP` static compose-policy tests.** New
+  `tests/test_compose_api_bind_ip.py` (29 tests): all three dev stacks assert
+  `${API_BIND_IP:-127.0.0.1}:9000` (never `0.0.0.0:9000`); the production overlay
+  is verified to drop `:9000` entirely (`traefik ports: !override` → `:80`/`:443`
+  only); 18 env examples are scanned for `API_BIND_IP=0.0.0.0`; the merge-tag
+  (`!reset`/`!override`) loader is exercised. Mirrors the fa-auth-m8 static suite.
+  694 tests, 100% cov, ruff + mypy + bandit green.
+
 - **6.x.1 Per-service scoped Redis ACLs.** Both compose stacks (`dev_media_m8`,
   `hardened_media_m8`) replaced the open `appuser ~* +@all` ACL on **both** Redis
   services with scoped per-service users. `redis_cache` (the bundled auth
@@ -95,8 +387,8 @@ All notable changes to `media-service-m8` are documented here.
   any version tag: `alpine` (cert-init), `quay.io/minio/minio`, and `minio/mc`
   (untagged = pulls whatever `latest` is at pull time, non-reproducible and
   unauditable). All three are now pinned to explicit version tags:
-  `alpine:3.21.3`, `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z`,
-  `quay.io/minio/mc:RELEASE.2025-04-03T17-07-38Z` (switched from Docker Hub
+  `alpine:3.21.3`, `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772`,
+  `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` (switched from Docker Hub
   `minio/mc` to `quay.io/minio/mc` for registry consistency with the server
   image). Static policy tests in `tests/test_compose_image_pins.py` (13 tests)
   assert both stacks: no bare image names, no `:latest` tag, and the three

@@ -1,4 +1,4 @@
-"""Per-user Redis rate limiter for the media service."""
+"""Per-user and anonymous IP-only Redis rate limiters for the media service."""
 
 import logging
 from typing import Annotated, cast
@@ -39,6 +39,42 @@ def get_redis_client() -> redis_lib.Redis:  # pragma: no cover
 RedisDep = Annotated[redis_lib.Redis, Depends(get_redis_client)]
 
 
+def _check_window(
+    redis_client: redis_lib.Redis, key: str, limit: int, window_seconds: int
+) -> None:
+    """Increment one fixed window and raise 429 when it exceeds *limit*."""
+    # The sync client returns an int; redis-py's shared sync/async typing
+    # widens INCR to ``Awaitable | int``, so narrow it for the comparisons.
+    count = cast(int, redis_client.incr(key))
+    if count == 1:
+        redis_client.expire(key, window_seconds)
+    if count > limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded. Max {limit} requests per {window_seconds}s.",
+            headers={"Retry-After": str(window_seconds)},
+        )
+
+
+def _resolve_failure_mode(override: str | None) -> str:
+    if override is not None:
+        return override
+    from media_service.core.config import settings  # lazy — avoids circular import
+
+    return settings.MEDIA_RATE_LIMIT_FAILURE_MODE
+
+
+def _handle_redis_error(exc: Exception, action: str, mode: str) -> None:
+    _metrics.inc_rate_limit_redis_error(mode)
+    if mode == "fail_closed":
+        _logger.error("rate_limit.redis_error action=%s mode=fail_closed → 503", action)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Rate limiter temporarily unavailable. Please retry.",
+        ) from exc
+    _logger.warning("rate_limit.redis_error action=%s mode=fail_open → pass", action)
+
+
 class RateLimiter:
     """FastAPI callable dependency — enforces per-user + per-IP rate limits.
 
@@ -75,21 +111,7 @@ class RateLimiter:
         self._failure_mode = failure_mode
 
     def _check(self, redis_client: redis_lib.Redis, key: str, limit: int) -> None:
-        """Increment one window and raise 429 if it exceeds *limit*."""
-        # The sync client returns an int; redis-py's shared sync/async typing
-        # widens INCR to ``Awaitable | int``, so narrow it for the comparisons.
-        count = cast(int, redis_client.incr(key))
-        if count == 1:
-            redis_client.expire(key, self.window_seconds)
-        if count > limit:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=(
-                    f"Rate limit exceeded. "
-                    f"Max {self.limit} requests per {self.window_seconds}s."
-                ),
-                headers={"Retry-After": str(self.window_seconds)},
-            )
+        _check_window(redis_client, key, limit, self.window_seconds)
 
     def __call__(
         self,
@@ -102,31 +124,50 @@ class RateLimiter:
         peer = request.client.host if request.client else "unknown"
         ip = "".join(c for c in peer if c.isprintable())[:_MAX_IP_LEN]
         ip_key = _config.key(f"ratelimit:ip:{self.action}", ip)
-        if self._failure_mode is not None:
-            mode = self._failure_mode
-        else:
-            from media_service.core.config import (
-                settings,
-            )  # lazy — avoids circular import at module load
-
-            mode = settings.MEDIA_RATE_LIMIT_FAILURE_MODE
+        mode = _resolve_failure_mode(self._failure_mode)
         try:
             self._check(redis_client, user_key, self.limit)
             self._check(redis_client, ip_key, self.limit * _IP_LIMIT_FACTOR)
         except HTTPException:
             raise
-        except Exception:
-            _metrics.inc_rate_limit_redis_error(mode)
-            if mode == "fail_closed":
-                _logger.error(
-                    "rate_limit.redis_error action=%s mode=fail_closed → 503",
-                    self.action,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Rate limiter temporarily unavailable. Please retry.",
-                )
-            _logger.warning(
-                "rate_limit.redis_error action=%s mode=fail_open → pass",
-                self.action,
-            )
+        except Exception as exc:
+            _handle_redis_error(exc, self.action, mode)
+
+
+class AnonRateLimiter:
+    """FastAPI callable dependency — IP-only rate limit for anonymous routes.
+
+    Used on public (unauthenticated) endpoints where there is no user identity
+    to key on.  A single per-IP fixed-window counter is maintained; the same
+    Redis backend and failure-mode semantics as :class:`RateLimiter` apply.
+    """
+
+    def __init__(
+        self,
+        action: str,
+        limit: int,
+        window_seconds: int = 60,
+        *,
+        failure_mode: str | None = None,
+    ) -> None:
+        self.action = action
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._failure_mode = failure_mode
+
+    def __call__(
+        self,
+        request: Request,
+        redis_client: RedisDep,
+    ) -> None:
+        """Increment the IP counter and raise HTTP 429 if the limit is exceeded."""
+        peer = request.client.host if request.client else "unknown"
+        ip = "".join(c for c in peer if c.isprintable())[:_MAX_IP_LEN]
+        ip_key = _config.key(f"ratelimit:ip:{self.action}", ip)
+        mode = _resolve_failure_mode(self._failure_mode)
+        try:
+            _check_window(redis_client, ip_key, self.limit, self.window_seconds)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _handle_redis_error(exc, self.action, mode)

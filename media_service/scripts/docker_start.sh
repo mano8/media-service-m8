@@ -3,14 +3,27 @@ set -e
 
 # Run migrations
 # Check if alembic/versions has no .py files (ignores .gitkeep)
-if [ -z "$(find /opt/shared_migrations/m8_app/versions -maxdepth 1 -name '*.py' -print -quit)" ]; then
+MIGRATION_DIR=/opt/shared_migrations/media/versions
+LEGACY_MIGRATION_DIR=/opt/shared_migrations/m8_app/versions
+mkdir -p "$MIGRATION_DIR"
+if [ -z "$(find "$MIGRATION_DIR" -maxdepth 1 -name '*.py' -print -quit)" ] && [ -d "$LEGACY_MIGRATION_DIR" ]; then
+    for revision in "$LEGACY_MIGRATION_DIR"/*.py; do
+        [ -f "$revision" ] || continue
+        if grep -q "media_service" "$revision"; then
+            cp "$revision" "$MIGRATION_DIR/"
+        fi
+    done
+fi
+if [ -z "$(find "$MIGRATION_DIR" -maxdepth 1 -name '*.py' -print -quit)" ]; then
     echo "Generating Alembic migration..."
-    if ! alembic -c /opt/media_service/alembic.ini revision --autogenerate -m "Initial m8 migration"; then
+    if ! alembic -c /opt/media_service/alembic.ini revision --autogenerate -m "Initial media migration"; then
         echo "Failed to generate initial migration"
         exit 1
     else
         echo "Initial migration generated..."
     fi
+else
+    echo "Migrations already exist, skipping generation."
 fi
 
 # Run any pre-start tasks

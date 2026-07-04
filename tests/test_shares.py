@@ -8,6 +8,7 @@ object is hard-purged.
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -431,3 +432,187 @@ def test_create_controller_uses_explicit_expiry(session: Session, current_user):
     )
     delta = _as_aware(out.expires_at) - datetime.now(timezone.utc)
     assert timedelta(seconds=90) < delta < timedelta(seconds=121)
+
+
+# ── Rate limiting on GET /shares/{token} ─────────────────────────────────────
+
+
+def _make_redis_over_limit() -> MagicMock:
+    mock = MagicMock()
+    mock.incr.return_value = 9999
+    return mock
+
+
+def test_resolve_rate_limited_returns_429(
+    session: Session, mock_storage: MagicMock, current_user
+):
+    """Route returns 429 when the IP window is over threshold."""
+    from media_service.app.deps import get_storage
+    from media_service.core.deps import get_current_user, get_db
+    from media_service.core.rate_limit import get_redis_client
+    from media_service.main import app
+
+    obj = _make_object(session, current_user.id)
+    share = _make_share(session, media_object_id=obj.id, owner_id=current_user.id)
+
+    def _override_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_current_user] = lambda: current_user
+    app.dependency_overrides[get_storage] = lambda: mock_storage
+    app.dependency_overrides[get_redis_client] = _make_redis_over_limit
+
+    try:
+        with TestClient(app) as tc:
+            resp = tc.get(f"/media/v1/shares/{_sign(share.id)}")
+        assert resp.status_code == 429
+        assert "Retry-After" in resp.headers
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_resolve_valid_share_passes_below_rate_limit(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    """Valid share resolves normally when the rate limit is not exceeded."""
+    obj = _make_object(session, current_user.id)
+    share = _make_share(session, media_object_id=obj.id, owner_id=current_user.id)
+    mock_storage.presigned_get_object.return_value = "https://minio/download"
+    resp = client.get(f"/media/v1/shares/{_sign(share.id)}")
+    assert resp.status_code == 200
+
+
+def test_resolve_invalid_token_uniform_response_under_rate_limit(
+    client: TestClient,
+):
+    """Probing with bad tokens returns 404 (not 429) when under the limit."""
+    resp = client.get("/media/v1/shares/nodot")
+    assert resp.status_code == 404
+
+
+# ── Share resolve metrics ─────────────────────────────────────────────────────
+
+
+def test_metrics_emitted_on_success(
+    session: Session, mock_storage: MagicMock, current_user
+):
+    obj = _make_object(session, current_user.id)
+    share = _make_share(session, media_object_id=obj.id, owner_id=current_user.id)
+    mock_storage.presigned_get_object.return_value = "https://minio/dl"
+    with patch("media_service.controllers.shares._metrics") as m:
+        SharesController.resolve(
+            session=session, token=_sign(share.id), storage=mock_storage
+        )
+    m.inc_share_resolve.assert_called_once_with("success")
+
+
+def test_metrics_emitted_on_invalid_token_bad_signature(session: Session, current_user):
+    with patch("media_service.controllers.shares._metrics") as m:
+        with pytest.raises(Exception):
+            SharesController.resolve(
+                session=session,
+                token=f"{uuid.uuid4().hex}.badsig",
+                storage=MagicMock(),
+            )
+    m.inc_share_resolve.assert_called_once_with("invalid_token")
+
+
+def test_metrics_emitted_on_unknown_token(session: Session, current_user):
+    with patch("media_service.controllers.shares._metrics") as m:
+        with pytest.raises(Exception):
+            SharesController.resolve(
+                session=session,
+                token=_sign(uuid.uuid4()),
+                storage=MagicMock(),
+            )
+    m.inc_share_resolve.assert_called_once_with("invalid_token")
+
+
+def test_metrics_emitted_on_revoked(session: Session, current_user):
+    obj = _make_object(session, current_user.id)
+    share = _make_share(
+        session, media_object_id=obj.id, owner_id=current_user.id, revoked=True
+    )
+    with patch("media_service.controllers.shares._metrics") as m:
+        with pytest.raises(Exception):
+            SharesController.resolve(
+                session=session, token=_sign(share.id), storage=MagicMock()
+            )
+    m.inc_share_resolve.assert_called_once_with("expired_or_revoked")
+
+
+def test_metrics_emitted_on_expired(session: Session, current_user):
+    obj = _make_object(session, current_user.id)
+    share = _make_share(
+        session,
+        media_object_id=obj.id,
+        owner_id=current_user.id,
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+    with patch("media_service.controllers.shares._metrics") as m:
+        with pytest.raises(Exception):
+            SharesController.resolve(
+                session=session, token=_sign(share.id), storage=MagicMock()
+            )
+    m.inc_share_resolve.assert_called_once_with("expired_or_revoked")
+
+
+def test_metrics_emitted_on_max_uses_exhausted_at_load(session: Session, current_user):
+    obj = _make_object(session, current_user.id)
+    share = _make_share(
+        session,
+        media_object_id=obj.id,
+        owner_id=current_user.id,
+        max_uses=1,
+        uses=1,
+    )
+    with patch("media_service.controllers.shares._metrics") as m:
+        with pytest.raises(Exception):
+            SharesController.resolve(
+                session=session, token=_sign(share.id), storage=MagicMock()
+            )
+    m.inc_share_resolve.assert_called_once_with("max_uses_exhausted")
+
+
+def test_metrics_emitted_on_max_uses_exhausted_concurrent_race(
+    session: Session, mock_storage: MagicMock, current_user, monkeypatch
+):
+    obj = _make_object(session, current_user.id)
+    share = _make_share(
+        session,
+        media_object_id=obj.id,
+        owner_id=current_user.id,
+        max_uses=1,
+        uses=0,
+    )
+    monkeypatch.setattr(
+        SharesController, "_consume_use", staticmethod(lambda *_a, **_kw: False)
+    )
+    with patch("media_service.controllers.shares._metrics") as m:
+        with pytest.raises(Exception):
+            SharesController.resolve(
+                session=session, token=_sign(share.id), storage=mock_storage
+            )
+    m.inc_share_resolve.assert_called_once_with("max_uses_exhausted")
+
+
+def test_metrics_emitted_on_scan_pending(session: Session, current_user):
+    obj = _make_object(session, current_user.id, scan_status=ScanStatus.PENDING)
+    share = _make_share(session, media_object_id=obj.id, owner_id=current_user.id)
+    with patch("media_service.controllers.shares._metrics") as m:
+        with pytest.raises(Exception):
+            SharesController.resolve(
+                session=session, token=_sign(share.id), storage=MagicMock()
+            )
+    m.inc_share_resolve.assert_called_once_with("scan_pending")
+
+
+def test_metrics_emitted_on_object_not_found(session: Session, current_user):
+    share = _make_share(session, media_object_id=uuid.uuid4(), owner_id=current_user.id)
+    with patch("media_service.controllers.shares._metrics") as m:
+        with pytest.raises(Exception):
+            SharesController.resolve(
+                session=session, token=_sign(share.id), storage=MagicMock()
+            )
+    m.inc_share_resolve.assert_called_once_with("invalid_token")

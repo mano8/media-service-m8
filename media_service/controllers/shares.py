@@ -25,6 +25,7 @@ from sqlmodel import Session, col, select
 
 from auth_sdk_m8.schemas.user import UserModel
 
+import media_service.metrics as _metrics
 from media_service.controllers.objects import _load_object
 from media_service.core.config import settings
 from media_service.db_models.media_objects import MediaObject, ScanStatus, utcnow
@@ -206,13 +207,16 @@ class SharesController:
         share = SharesController._load_active_share(session, token)
         obj = session.get(MediaObject, share.media_object_id)
         if obj is None or obj.deleted_at is not None:
+            _metrics.inc_share_resolve("invalid_token")
             raise _invalid_token()
         if obj.scan_status != ScanStatus.CLEAN:
+            _metrics.inc_share_resolve("scan_pending")
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Object is not available for download until it passes scanning.",
             )
         if not SharesController._consume_use(session, share.id):
+            _metrics.inc_share_resolve("max_uses_exhausted")
             raise _rejected("Share link has reached its usage limit.")
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
         url = create_download_url(
@@ -223,6 +227,7 @@ class SharesController:
             filename=obj.original_filename,
         )
         expires_at = utcnow() + timedelta(seconds=expires)
+        _metrics.inc_share_resolve("success")
         return DownloadUrlResponse(url=url, expires_at=expires_at)
 
     @staticmethod
@@ -244,15 +249,23 @@ class SharesController:
     @staticmethod
     def _load_active_share(session: Session, token: str) -> ShareToken:
         """Verify a token and load a live (non-expired/revoked/exhausted) row."""
-        token_id = _verify(token)
+        try:
+            token_id = _verify(token)
+        except HTTPException:
+            _metrics.inc_share_resolve("invalid_token")
+            raise
         share = session.get(ShareToken, token_id)
         if share is None:
+            _metrics.inc_share_resolve("invalid_token")
             raise _invalid_token()
         if share.revoked:
+            _metrics.inc_share_resolve("expired_or_revoked")
             raise _rejected("Share link has been revoked.")
         if _as_aware(share.expires_at) <= utcnow():
+            _metrics.inc_share_resolve("expired_or_revoked")
             raise _rejected("Share link has expired.")
         if share.max_uses is not None and share.uses >= share.max_uses:
+            _metrics.inc_share_resolve("max_uses_exhausted")
             raise _rejected("Share link has reached its usage limit.")
         return share
 

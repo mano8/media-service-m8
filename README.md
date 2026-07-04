@@ -32,11 +32,11 @@ All routes are mounted under `API_PREFIX` (default `/media`). Domain routers:
 
 ### Service metadata & health
 
-Auto-mounted by `fastapi-m8` (≥ 2.1.0) `create_app` — the standard m8 triad:
+Auto-mounted by `fastapi-m8` (≥ 3.3.0) `create_app` — the standard m8 triad:
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@0.0`, service-version range `>=0.0.9 <0.1.0`. |
+| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.0`, service-version range `>=1.0.0 <2.0.0`. |
 | GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
 | GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / MinIO). |
 
@@ -88,7 +88,8 @@ owners stay hidden — see [Access control](#access-control--visibility). Suppor
 query parameters:
 `category`, `visibility`, `status`, `mime_prefix` (e.g. `image/`),
 `created_from`/`created_to`, `q` (filename contains), `sort_by`
-(`created_at`|`size_bytes`), `order` (`asc`|`desc`), and `limit` (1–100).
+(`original_filename`|`category`|`status`|`size_bytes`|`created_at`), `order`
+(`asc`|`desc`), and `limit` (1–100).
 Pagination is keyset/cursor based: the response carries an opaque `next_cursor`;
 pass it back as `?cursor=` to fetch the next page. Soft-deleted objects are
 excluded unless a superuser passes `include_deleted=true`.
@@ -149,11 +150,22 @@ The guard is applied at the router level via
 | GET | `/v1/objects/{id}/variants/jobs/{jid}` | user | — | Variant job progress |
 | DELETE | `/v1/objects/{id}/variants/{vid}` | user | — | Delete a variant (row + bytes) |
 
-`:generate` accepts `{ "presets": ["thumb", "web", …] }`. The object must be
-`UPLOADED` (**409** otherwise) and a processable image (**422** otherwise);
+`:generate` accepts `{ "presets": ["thumb", "web", …] }`. The object must have
+cleared antivirus scanning and reached `READY` (`scan_status == CLEAN` **and**
+`status == READY`, **409** otherwise — matching the download/share scan gates)
+and be a processable image (**422** otherwise);
 unknown preset names are **422**. The resolver expands each preset × format into
 the `VariantSpec`s carried by the enqueued `generate_variants` job — media-service
 never imports `imgtools_m8`.
+
+The request is **cost-bounded** so one authenticated caller cannot fan a single
+job out into unbounded work: at most **16** preset names per request (duplicates
+are de-duplicated, order-preserving, before resolution), the expansion may not
+exceed **32** outputs, and the summed per-output pixel-area cost may not exceed
+**256 MP** (unspecified dimensions are charged at the per-side maximum). Any
+overrun is a deterministic **422** before a job is created or enqueued.
+media-service is the request-policy owner here; `media-worker-m8` carries its own
+independent runtime safety ceilings as defense in depth.
 
 ### Presets — `/{prefix}/v1/presets`
 
@@ -168,6 +180,12 @@ Built-in defaults (`thumb`/`small`/`medium`/`large`) ship as code constants; a
 user row of the same name shadows the built-in at resolve time. Each preset is a
 local, imgtools-free recipe: one geometry (`image_size`) rendered into one+
 formats (`ext` ∈ `WEBP|JPEG|PNG|GIF|AVIF`, `quality` 1–100).
+
+Every recipe — built-in or user-defined — is expanded through one validated path
+with fixed per-preset cost ceilings: each fixed dimension/`fixed_size` ≤ **8192
+px**, `fixed_width × fixed_height` ≤ **32 MP**, `max_byte_size` ≤ **25 MiB**, and
+at most **5** formats, which must be distinct. A recipe over any ceiling is
+rejected at create/update time (**422**).
 
 ### Internal (service-to-service) — `/{prefix}/v1/internal`
 
@@ -235,8 +253,22 @@ Every completed upload credits, and every soft-delete debits, a running
 of accounting truth in [`core/quotas.py`](media_service/core/quotas.py)).
 `POST /v1/uploads/initiate` refuses up front when the declared
 `expected_size_bytes` would push the owner past their ceiling: **413** over the
-byte quota, **409** over the object-count quota. Ceilings resolve to the
-per-scope admin override if set, otherwise the `MEDIA_DEFAULT_QUOTA_BYTES` /
+byte quota, **409** over the object-count quota. The declared
+`expected_size_bytes` must be `>= 1` and within the category maximum (rejected
+**422** otherwise), and the presigned POST policy is signed for that declared
+size — not the category maximum — so a small declaration cannot smuggle a large
+object through the signed form.
+
+Declared size is only an upper-bound policy input; the **actual stored size** is
+the accounting authority. `POST /v1/uploads/{id}/complete` re-checks the real
+object size (`stat.size`) against the declared/category ceiling and, in the same
+transaction that promotes the object, takes a **row lock** on the owner's
+`storage_usage` row to enforce the byte/object quota against the actual size
+before crediting it. This closes the under-declare bypass and serialises
+concurrent completions so they cannot both overrun the ceiling. An over-quota
+completion is rejected (**422**, the staged bytes are removed like any other
+content failure) and is never credited. Ceilings resolve to the per-scope admin
+override if set, otherwise the `MEDIA_DEFAULT_QUOTA_BYTES` /
 `MEDIA_DEFAULT_QUOTA_OBJECTS` defaults (unset = unlimited). Refusals increment
 `media_uploads_quota_rejected_total{reason="bytes"|"objects"}`. Both quota
 endpoints (and the optional `?tenant_id=`) are superuser-only.
@@ -266,9 +298,38 @@ with no tenant never matches a `TENANT` object. Mutations (`PATCH`/`DELETE`)
 remain owner-or-superuser only.
 
 Tenancy is taken from the caller's `tenant_id` claim (surfaced on `UserModel` by
-`auth-sdk-m8`, requires `fastapi-m8>=1.6.0`) and stamped onto each object at
+`auth-sdk-m8`, requires `fastapi-m8>=3.3.0`) and stamped onto each object at
 upload — never from the request body. Objects created by an untenanted caller
 stay `tenant_id IS NULL`, for which `TENANT` resolves as owner/superuser-only.
+
+## MinIO — browser-direct uploads/downloads via presigned URLs
+
+The **browser-direct upload/download** flow (Option A) routes file I/O through
+MinIO presigned URLs rather than the media-service proxy. This requires a
+browser-reachable MinIO endpoint:
+
+By default every presigned URL is built from the internal `MINIO_HOST:MINIO_PORT`
+address, which the browser cannot reach in most deployments. Set
+`MINIO_PUBLIC_ENDPOINT` to the **full URL** the browser can reach:
+
+```
+# dev / loopback (MinIO already bound to 127.0.0.1:9005 in dev stacks)
+MINIO_PUBLIC_ENDPOINT=http://127.0.0.1:9005
+
+# hardened / production (Traefik storage router + TLS)
+MINIO_PUBLIC_ENDPOINT=https://storage.example.com
+```
+
+When set, presigned upload POST URLs and presigned GET download URLs are
+signed for the public endpoint; all internal operations (health, stat, copy,
+verify) continue to use `MINIO_HOST:MINIO_PORT`. An empty value (the default)
+preserves the existing behaviour and is appropriate for proxy-through
+deployments where the service streams bytes on behalf of the browser.
+
+**Ingress:** The hardened stacks expose MinIO's data path (buckets only, not
+admin or console) via a dedicated Traefik router on `websecure` (TLS) — see
+[hardened_media_m8/README.md](docker_compose/hardened_media_m8/README.md) for
+the storage ingress setup and CORS configuration.
 
 ## Visibility → bucket mapping
 
@@ -290,8 +351,31 @@ Set these to match `auth_user_service` exactly:
   shared secret or private key needed.
 - **HS256:** `ACCESS_TOKEN_ALGORITHM=HS256` + a shared `ACCESS_SECRET_KEY`.
 - **`TOKEN_MODE`:** `stateless` | `hybrid` | `stateful`. In `stateful` mode set
-  `INTROSPECTION_URL` + `PRIVATE_API_SECRET` (HTTP revocation checks).
-- **Boundary claims:** `auth-sdk-m8 >= 1.0.0` defaults `TOKEN_STRICT_VALIDATION`
+  `INTROSPECTION_URL` (HTTP revocation checks) plus the private-API credential
+  described next.
+- **Per-consumer internal auth (`fastapi-m8 >= 3.3.0`):** the private-API call to
+  fa-auth authenticates as a named consumer. Set
+  `INTERNAL_CLIENT_ID=media-service`; `PRIVATE_API_SECRET` then becomes this
+  consumer's **bootstrap credential**, sent as `X-Internal-Client` +
+  `X-Internal-Token` and matched against the issuer's `PRIVATE_API_CONSUMERS`
+  registry entry. Leaving `INTERNAL_CLIENT_ID` unset falls back to the legacy
+  single `X-Internal-Token` shape. Optionally set
+  `SERVICE_TOKEN_EXCHANGE_ENABLED=true` to exchange the bootstrap credential for
+  short-TTL Bearer service tokens at `{issuer}/private/v1/service-token`. The same
+  credential authenticates the SSE event stream (below).
+- **Revocation failure mode (`ACCESS_REVOCATION_FAILURE_MODE`):** `fail_closed`
+  (default) returns **503** when introspection is unavailable so a possibly-revoked
+  token never passes; `fail_open` accepts tokens during an outage
+  (availability-first) and the opt-out is logged loudly and counted
+  (`revocation_check_failures_total{mode="fail_open"}`). `fail_closed` is
+  recommended in production (set in the hardened stack).
+- **Health-detail gate (`HEALTH_DETAIL_CREDENTIAL`):** the deep
+  `/{prefix}/health/` detail body is gated by its **own** dedicated,
+  separately-rotatable credential (presented as `X-Internal-Token`), never reusing
+  `PRIVATE_API_SECRET`. Reuse of the private-API secret as either
+  `HEALTH_DETAIL_CREDENTIAL` or `METRICS_SCRAPE_CREDENTIAL` is a fatal startup
+  error; unset → the gate fails closed (shallow status only, no detail body).
+- **Boundary claims:** `auth-sdk-m8 >= 2.1.1` defaults `TOKEN_STRICT_VALIDATION`
   on, so `TOKEN_ISSUER` and `TOKEN_AUDIENCE` are required at boot (or opt out
   with `TOKEN_STRICT_VALIDATION=false` for local dev).
 - **Event signing:** `EVENT_SIGNING_ENABLED` defaults on; a strong
@@ -299,17 +383,23 @@ Set these to match `auth_user_service` exactly:
   match `auth_user_service` — SSE event-stream payloads (below) are
   HMAC-SHA256 signed and verified with it. Set `EVENT_SIGNING_ENABLED=false` to
   disable signing/verification entirely.
-- **Auth event stream (`fastapi-m8 >= 1.5.0`):** when `INTROSPECTION_URL` is set,
+- **Auth event stream (`fastapi-m8 >= 3.3.0`):** when `INTROSPECTION_URL` is set,
   the lifespan starts an `AuthEventStreamClient` that consumes session-revoked /
   user-deleted events from fa-auth's private SSE bridge and evicts the local
   validation cache early. It is a **best-effort cache accelerator** — the JTI
   blacklist behind `INTROSPECTION_URL` stays authoritative and stream loss is
   non-fatal. Tune with `EVENT_STREAM_CONNECT_TIMEOUT` / `EVENT_STREAM_READ_TIMEOUT`.
+  The stream authenticates with the **same** per-consumer credential as
+  introspection (legacy `X-Internal-Token`, bootstrap pair, or service token).
+
+For multi-host deployments and the inter-service trust model (mTLS guidance,
+network segmentation), see
+[`docker_compose/SECURITY.md`](docker_compose/SECURITY.md).
 
 ## Response security headers
 
-Headers are applied by the shared `auth-sdk-m8 >= 1.2.1` layer (wired through
-`fastapi-m8 >= 1.5.0`) in three tiers:
+Headers are applied by the shared `auth-sdk-m8 >= 2.1.1` layer (wired through
+`fastapi-m8 >= 3.3.0`) in three tiers:
 
 - **Always on:** `X-Content-Type-Options`, `X-Frame-Options`.
 - **Production gate:** `Referrer-Policy`, `Permissions-Policy`.
@@ -398,6 +488,34 @@ bandit -r media_service
 Requirements are split into `requirements_base.txt` (runtime, incl. all DB
 drivers), `requirements_prod.txt` (+ gunicorn), and `requirements_dev.txt`
 (+ pytest, ruff, bandit). Token slugs use `python-slugify`.
+
+### Reproducible release builds
+
+Release (non-development) Docker images do **not** resolve the loose lower-bound
+ranges in `requirements_base.txt` / `requirements_prod.txt` at build time. They
+install from `media_service/requirements_prod.lock` — a fully pinned,
+`sha256`-hashed lock — with `pip install --require-hashes`. This guarantees that
+rebuilding the same source cannot silently pull a different dependency graph, and
+that the published SBOM describes exactly what shipped.
+
+- The loose ranges remain the source of truth for *what* the service depends on.
+- The lock is the pinned, hashed *resolution* of those ranges for release images.
+- All packages (including the internal `media-sdk-m8` and `fastapi-m8`) resolve
+  from public PyPI only — the lock carries no custom index URL.
+
+Regenerate the lock whenever a range in `requirements_base.txt` or
+`requirements_prod.txt` changes, then re-run the audit gate:
+
+```bash
+cd media_service
+pip-compile --generate-hashes --no-emit-index-url \
+    --output-file=requirements_prod.lock requirements_prod.txt
+pip-audit -r requirements_prod.lock          # must report no known vulnerabilities
+```
+
+The lock, the Dockerfile `--require-hashes` install, and the
+"SBOM reflects the locked environment" invariant are enforced by
+`tests/test_dependency_lock.py`.
 
 ## License
 

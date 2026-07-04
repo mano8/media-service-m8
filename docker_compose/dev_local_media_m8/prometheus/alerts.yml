@@ -1,0 +1,172 @@
+
+groups:
+  - name: auth_user_service_health
+    rules:
+      - alert: AuthUserServiceDown
+        expr: up{job="auth_user_service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Auth user service Prometheus target is down"
+          description: >
+            Prometheus cannot scrape auth_user_service at /user/metrics.
+
+      - alert: AuthUserServiceHighErrorRatio
+        expr: |
+          sum(rate(user_http_errors_total[5m]))
+          /
+          clamp_min(sum(rate(user_http_requests_total[5m])), 1)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Auth user service HTTP error ratio above 5%"
+          description: >
+            More than 5% of auth_user_service requests are returning 4xx/5xx responses.
+
+      - alert: AuthUserServiceHighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(user_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Auth user service p95 latency above 1s"
+          description: >
+            auth_user_service p95 HTTP latency is above 1 second.
+
+      - alert: AuthRedisCircuitBreakerOpen
+        expr: user_auth_redis_circuit_breaker_open == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Auth Redis circuit breaker is open"
+          description: >
+            Redis-dependent auth controls are unavailable. In fail_closed mode,
+            protected requests may be denied.
+
+      - alert: AuthDegradedDecisions
+        expr: sum(rate(user_auth_degraded_decision_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Auth service is making degraded-mode decisions"
+          description: >
+            auth_user_service is taking fail_open/fail_closed degraded decisions
+            for Redis-dependent controls.
+
+  - name: media_service_health
+    rules:
+      - alert: MediaServiceDown
+        expr: up{job="media_service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Media service Prometheus target is down"
+          description: >
+            Prometheus cannot scrape media_service at /media/metrics.
+
+      - alert: MediaServiceHighErrorRatio
+        expr: |
+          sum(rate(media_http_errors_total[5m]))
+          /
+          clamp_min(sum(rate(media_http_requests_total[5m])), 1)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Media service HTTP error ratio above 5%"
+          description: >
+            More than 5% of media_service requests are returning 4xx/5xx responses.
+
+      - alert: MediaServiceHighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(media_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Media service p95 latency above 1s"
+          description: >
+            media_service p95 HTTP latency is above 1 second.
+
+  - name: api_key_rate_limits
+    rules:
+      # Block ratio above 10% — potential abuse or misconfigured limits.
+      # sum() is mandatory: any single-instance rate() would miss traffic
+      # handled by other replicas and give a false low ratio.
+      - alert: ApiKeyBlockRatioHigh
+        expr: |
+          sum(rate(user_auth_api_key_rate_limit_hits_total[5m]))
+          /
+          sum(rate(user_auth_api_key_rate_limit_checks_total{result="checked"}[5m]))
+          > 0.10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API key rate limit block ratio above 10%"
+          description: >
+            API key requests are being rate limited above the configured threshold.
+            Investigate for abuse or review default limits.
+
+      # Instrumentation invariant: hits can never exceed checks.
+      # A 10% tolerance absorbs sub-second scrape-interval skew; anything
+      # beyond that signals a counter increment bug.
+      - alert: ApiKeyRateLimitInvariantViolation
+        expr: |
+          sum(rate(user_auth_api_key_rate_limit_hits_total[5m]))
+          >
+          sum(rate(user_auth_api_key_rate_limit_checks_total{result="checked"}[5m])) * 1.1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API key rate limit instrumentation invariant violated"
+          description: >
+            hits_total > checks_total * 1.1 — a counter is being incremented
+            without the corresponding check. Instrumentation bug.
+
+  - name: api_key_health
+    rules:
+      # Flush p99 latency above 500 ms indicates Redis or DB degradation.
+      - alert: ApiKeyFlushLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum(rate(user_auth_api_key_flush_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API key last_used_at flush p99 latency above 500ms"
+          description: >
+            The write-behind flush of last_used_at to the database is slow
+            (p99 = {{ printf "%.2f" $value }}s). Check Redis and database health.
+
+      # High rate of invalid key presentations — credential stuffing or misconfigured clients.
+      - alert: ApiKeyHighInvalidRate
+        expr: |
+          sum(rate(user_auth_api_key_validations_total{result=~"invalid|revoked|expired"}[5m]))
+          > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate of invalid API key presentations"
+          description: >
+            More than 1 invalid/revoked/expired API key presentation per second
+            over the last 5 minutes. May indicate credential stuffing or broken clients.

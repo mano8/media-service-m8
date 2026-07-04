@@ -25,3 +25,4 @@ exclude_paths:
   - "**/__pycache__/**"
   - "**/alembic/versions/**"
   - "docker_compose/**"
+  - "AGENTS.md"

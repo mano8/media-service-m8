@@ -1,4 +1,4 @@
-fastapi-m8[db,postgres,mysql]>=2.1.0,<3.0.0
+fastapi-m8[db,postgres,mysql]>=3.3.0,<4.0.0
 uvicorn>=0.46.0
 
 alembic>=1.18.4
@@ -23,7 +23,7 @@ minio>=7.2.18
 # (incl. OutboxEventPayload — the Phase 16 outbound webhook contract, and the
 # 0.4.0 chunked ObjectStorage.stream_object primitive used by streaming SHA-256
 # verification, plan item 6.x.3)
-media-sdk-m8>=0.4.0
+media-sdk-m8>=0.5.1
 
 # Background-job producer: enqueues scan + variant jobs for media-worker-m8
 arq>=0.28.0

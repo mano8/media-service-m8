@@ -2,12 +2,13 @@
 
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from auth_sdk_m8.controllers.base import BaseController
 
 from media_service.app.deps import CurrentUser, SessionDep, StorageDep
 from media_service.controllers.shares import SharesController
+from media_service.core.rate_limit import AnonRateLimiter
 from media_service.schemas.objects import DownloadUrlResponse
 from media_service.schemas.shares import (
     ShareTokenCreate,
@@ -16,6 +17,8 @@ from media_service.schemas.shares import (
 )
 
 router = APIRouter(tags=["shares"])
+
+_share_resolve_limit = AnonRateLimiter("shares:resolve", limit=60, window_seconds=60)
 
 
 @router.post(
@@ -83,6 +86,7 @@ def revoke_share(
     "/shares/{token}",
     response_model=DownloadUrlResponse,
     responses=BaseController.get_error_responses(),
+    dependencies=[Depends(_share_resolve_limit)],
 )
 def resolve_share(
     *,

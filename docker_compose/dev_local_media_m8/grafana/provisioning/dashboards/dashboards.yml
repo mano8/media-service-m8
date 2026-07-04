@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: M8
+    orgId: 1
+    folder: M8
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+

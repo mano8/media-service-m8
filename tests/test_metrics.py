@@ -14,6 +14,7 @@ def test_setup_disabled_leaves_all_counters_none():
     assert metrics_mod._bytes_uploaded is None
     assert metrics_mod._download_urls_generated is None
     assert metrics_mod._rate_limit_redis_errors is None
+    assert metrics_mod._share_resolves is None
 
 
 def test_inc_upload_initiated_noop_when_disabled():
@@ -107,4 +108,17 @@ def test_inc_rate_limit_redis_error_calls_labels_inc(monkeypatch):
     monkeypatch.setattr(metrics_mod, "_rate_limit_redis_errors", mock_counter)
     metrics_mod.inc_rate_limit_redis_error("fail_closed")
     mock_counter.labels.assert_called_once_with(mode="fail_closed")
+    mock_counter.labels.return_value.inc.assert_called_once()
+
+
+def test_inc_share_resolve_noop_when_disabled():
+    metrics_mod._share_resolves = None
+    metrics_mod.inc_share_resolve("success")  # must not raise
+
+
+def test_inc_share_resolve_calls_labels_inc(monkeypatch):
+    mock_counter = MagicMock()
+    monkeypatch.setattr(metrics_mod, "_share_resolves", mock_counter)
+    metrics_mod.inc_share_resolve("scan_pending")
+    mock_counter.labels.assert_called_once_with(result="scan_pending")
     mock_counter.labels.return_value.inc.assert_called_once()

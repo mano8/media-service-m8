@@ -41,16 +41,16 @@ through that network.
 | Service | Image/build | Local access |
 | --- | --- | --- |
 | traefik | `traefik:v3.7.5` | `:8000`, `:4430`, `127.0.0.1:9000`, `127.0.0.1:8080` |
-| auth_user_service | `tepochtli/fa-auth-m8:0.9.9` | `/user` via Traefik |
-| media_service | `tepochtli/media-service-m8:0.0.9` | `/media` via Traefik |
-| media_service_worker | `tepochtli/media-service-m8:0.0.9` (arq command override) | internal — no port; lifecycle/outbox crons |
-| media_worker | `tepochtli/media-worker-m8:0.2.0` | internal — enqueue-driven (scan + variants) |
+| auth_user_service | `tepochtli/fa-auth-m8:1.1.0` | `/user` via Traefik |
+| media_service | `tepochtli/media-service-m8:1.0.0` | `/media` via Traefik |
+| media_service_worker | `tepochtli/media-service-m8:1.0.0` (arq command override) | internal — no port; lifecycle/outbox crons |
+| media_worker | `tepochtli/media-worker-m8:0.3.0` | internal — enqueue-driven (scan + variants) |
 | clamav | `clamav/clamav:1.5-debian13-slim` | internal `scan_net` only |
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
-| minio | `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z` | internal data network — **no host port** |
-| minio-init | `quay.io/minio/mc:RELEASE.2025-04-03T17-07-38Z` | one-shot: buckets + `media-rw` policy |
+| minio | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772` | internal data network — **no host port** |
+| minio-init | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` | one-shot: buckets + `media-rw` policy |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 
@@ -147,7 +147,21 @@ equivalent.
 In the hardened stack MinIO is **not** published to the host — it has no
 `ports:` mapping and is reachable only by the application services on the
 internal `data_net` (security item 0.2 removed the public host-port exposure).
-Reach the console/API for debugging via `docker compose exec` or by temporarily
+
+However, the browser accesses MinIO **indirectly** via a dedicated Traefik router
+for presigned uploads/downloads. The storage router is configured on the
+**`websecure`** (TLS) entrypoint, published as `https://storage.localhost` (mapped
+to Traefik host port `4430`; use your FQDN in staging/production). The route
+explicitly excludes `/minio/*` paths to prevent access to the admin API or console
+(`:9001`); only the S3 data path (`/{bucket}/{key}`) is exposed.
+
+Configuration:
+- `MINIO_PUBLIC_ENDPOINT=https://storage.localhost` in `media.env`
+- `MINIO_API_CORS_ALLOW_ORIGIN: "https://localhost:4430"` in minio environment (edit for your FQDN)
+- Traefik router uses `passHostHeader: true` — **required** for presigned GET signatures
+  to validate correctly (SigV4 binds the Host header).
+
+For debugging, reach the console/API via `docker compose exec` or by temporarily
 adding a loopback `ports:` mapping; the dev stack (`dev_media_m8`) keeps the
 loopback ports for convenience.
 
@@ -231,6 +245,11 @@ Resetting the DB is destructive:
 ```sh
 bash init.sh --reset-db --yes
 ```
+
+`--reset-db` removes `db_data/` even when PostgreSQL owns it as the container
+uid — it falls back to a throwaway root container, so no manual `sudo rm` is
+needed on WSL2/Linux bind mounts. On every run `init.sh` also enforces
+`chmod 600` on each runtime `*.env` file and private key.
 
 ## Troubleshooting
 
