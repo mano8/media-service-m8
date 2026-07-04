@@ -199,6 +199,8 @@ security-tests-m8 run --env-file test.env
 
 The suite auto-detects the stack's algorithm and token mode and skips checks that don't apply, so the same workflow covers every stack here. **Clean up afterward:** the suite does not delete the dedicated test superuser (or the `redteam_*` users it creates) — remove or disable them after a run on any shared or long-lived stack.
 
+**Opt-in probes (`security-tests-m8` ≥ 0.4.0).** Two extra suites need a secret to run and self-skip otherwise, both documented inline in every stack's `test.env.example`: Category G (`LIVE_TEST_MEDIA_INTERNAL_TOKEN` = the plaintext `MEDIA_INTERNAL_SERVICE_TOKEN` from `worker.env`/`media.env`) proves a *valid* worker token is still blocked at the public edge for `/media/v1/internal/*`; Category N (`LIVE_TEST_API_KEY` + `LIVE_TEST_API_KEY_STRICT_RATE_LIMIT`) proves a *valid* API key fails closed with `503` while Redis is down. These stacks keep the media limiter at its default `MEDIA_RATE_LIMIT_FAILURE_MODE=fail_open`, so leave `LIVE_TEST_API_KEY` unset and `LIVE_TEST_API_KEY_STRICT_RATE_LIMIT=false`; flip the latter to `true` only against a `fail_closed` stack.
+
 **Advanced — pytest mode.** For local marker selection, custom tests, or suite extension, use [`shared_live_tests/`](shared_live_tests/), which also documents the full rationale: why a dedicated superuser, when to run, and cleanup.
 
 For a manual smoke test, check the health endpoint after `docker compose up`:
