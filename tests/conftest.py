@@ -50,12 +50,14 @@ _paths_mod.find_dotenv = lambda *_a, **_kw: ""
 
 # ── 3. Now safe to import media_service ──────────────────────────────────────
 import pytest  # noqa: E402
+from fastapi import HTTPException, status  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 from sqlmodel.pool import StaticPool  # noqa: E402
 from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 
 from auth_sdk_m8.schemas.user import UserModel  # noqa: E402
+from fastapi_m8 import has_superuser_privileges  # noqa: E402
 
 # Import all table models so SQLModel.metadata is populated before create_all.
 import media_service.db_models.categories  # noqa: F401, E402
@@ -70,7 +72,7 @@ import media_service.db_models.variant_jobs  # noqa: F401, E402
 
 from media_service.app.deps import get_storage  # noqa: E402
 from media_service.core.arq import get_arq_pool  # noqa: E402
-from media_service.core.deps import get_current_user, get_db  # noqa: E402
+from media_service.core.deps import auth, get_current_user, get_db  # noqa: E402
 from media_service.core.rate_limit import get_redis_client  # noqa: E402
 from media_service.main import app  # noqa: E402
 from media_service.storage.client import ObjectStorage  # noqa: E402
@@ -171,6 +173,20 @@ def _make_client(
     def _override_user():
         return user
 
+    def _override_active_superuser():
+        # fastapi-m8 4.x's get_current_active_superuser resolves off its own
+        # fresh, no-positive-cache dependency chain (_get_current_user_fresh),
+        # never through get_current_user — overriding get_current_user alone
+        # does not reach it (A7a). Re-run the real dual-evidence predicate
+        # against the fixture user so admin routes still 403 a non-superuser
+        # client and 200 a superuser one, exactly as the live dependency does.
+        if not has_superuser_privileges(user.role, user.is_superuser):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The user doesn't have enough privileges",
+            )
+        return user
+
     def _override_storage():
         return mock_storage
 
@@ -182,6 +198,9 @@ def _make_client(
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_current_user] = _override_user
+    app.dependency_overrides[auth.get_current_active_superuser] = (
+        _override_active_superuser
+    )
     app.dependency_overrides[get_storage] = _override_storage
     app.dependency_overrides[get_redis_client] = _override_redis
     app.dependency_overrides[get_arq_pool] = _override_arq_pool

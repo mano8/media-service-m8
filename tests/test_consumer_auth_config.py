@@ -39,13 +39,20 @@ _AUTH_PROD_EXAMPLE = _HARDENED_DIR / "auth.env.production.example"
 # ── Dependency floor ──────────────────────────────────────────────────────────
 
 
-def test_fastapi_m8_floor_is_3_1():
-    """requirements_base.txt must pin fastapi-m8 floor at >=3.1.0 for 9.1 auth."""
+def test_fastapi_m8_floor_is_4_2_2():
+    """requirements_base.txt must pin fastapi-m8 floor at >=4.2.2 (A7).
+
+    Raised from the 3.1.0-era floor this test used to assert: 4.2.2 is the
+    version constraints.txt/constraints-all.txt actually resolve against
+    (auth-sdk-m8>=3.1.2), and the reader/writer/admin/superuser tier guards
+    this repo depends on (Depends(auth.get_current_active_superuser) in
+    app/routes/admin.py) only exist from the 4.x line.
+    """
     content = _REQS_BASE.read_text()
     for line in content.splitlines():
         if line.startswith("fastapi-m8"):
-            assert re.search(r">=\s*3\.[1-9]", line), (
-                f"fastapi-m8 floor must be >=3.1.0 for per-consumer auth: {line!r}"
+            assert re.search(r">=\s*4\.2\.2", line), (
+                f"fastapi-m8 floor must be >=4.2.2 for the tier-guard API: {line!r}"
             )
             return
     pytest.fail("fastapi-m8 not found in requirements_base.txt")
