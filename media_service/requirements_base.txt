@@ -1,4 +1,4 @@
-fastapi-m8[db,postgres,mysql]>=3.3.0,<4.0.0
+fastapi-m8[db,postgres,mysql]>=4.2.2,<5.0.0
 uvicorn>=0.46.0
 
 alembic>=1.18.4
@@ -15,7 +15,9 @@ bcrypt>=5.0.0
 python-multipart>=0.0.28
 itsdangerous>=2.2.0
 
-# important: arq requires redis <6.0.0
+# important: arq requires redis <6.0.0. fastapi-m8 does not request the SDK's
+# `redis` extra, so this cap and the template's `redis>=8.0.1` floor do not
+# collide today — latent conflict only, tracked by A7/F13, not fixed here.
 redis>=5.3.1,<6.0.0
 minio>=7.2.18
 
