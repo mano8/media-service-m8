@@ -9,7 +9,11 @@ coverage>=7.14.0
 debugpy>=1.8.20
 
 # Linting / formatting / security
-ruff>=0.11.0
+# ruff pinned exactly (A27): unpinned floors let CI resolve whatever ruff
+# publishes that day, and 0.16.x enables a materially broader default rule
+# set than 0.15.x, making `ruff check .` non-reproducible across two runs.
+# Matches fa-auth-m8's exact-pin convention.
+ruff==0.15.18
 mypy>=2.1.0
 bandit>=1.9.0
 pip-audit>=2.7.3
