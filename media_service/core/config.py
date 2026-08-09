@@ -6,7 +6,7 @@ are all inherited from ConsumerServiceSettings (fastapi-m8).
 
 import ipaddress
 from pathlib import Path
-from typing import Literal, Optional
+from typing import ClassVar, Literal, Optional
 from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, model_validator
@@ -33,7 +33,7 @@ def _is_loopback_host(host: str) -> bool:
 class Settings(ConsumerServiceSettings):
     """media_service settings — extends ConsumerServiceSettings."""
 
-    ENV_FILE_DIR: Path = Path(__file__).resolve().parent
+    ENV_FILE_DIR: ClassVar[Path] = Path(__file__).resolve().parent
 
     model_config = SettingsConfigDict(
         env_file=find_dotenv(Path(__file__).resolve().parent),
