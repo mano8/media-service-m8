@@ -56,6 +56,8 @@ from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 from sqlmodel.pool import StaticPool  # noqa: E402
 from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 
+from auth_sdk_m8 import has_minimum_role  # noqa: E402
+from auth_sdk_m8.schemas.base import RoleType  # noqa: E402
 from auth_sdk_m8.schemas.user import UserModel  # noqa: E402
 from fastapi_m8 import has_superuser_privileges  # noqa: E402
 
@@ -72,7 +74,12 @@ import media_service.db_models.variant_jobs  # noqa: F401, E402
 
 from media_service.app.deps import get_storage  # noqa: E402
 from media_service.core.arq import get_arq_pool  # noqa: E402
-from media_service.core.deps import auth, get_current_user, get_db  # noqa: E402
+from media_service.core.deps import (  # noqa: E402
+    auth,
+    get_current_user,
+    get_db,
+    get_optional_user,
+)
 from media_service.core.rate_limit import get_redis_client  # noqa: E402
 from media_service.main import app  # noqa: E402
 from media_service.storage.client import ObjectStorage  # noqa: E402
@@ -138,19 +145,28 @@ def fake_arq_pool() -> MagicMock:
 def _make_user(
     is_superuser: bool = False, user_id: uuid.UUID | None = None
 ) -> UserModel:
+    """Build the fixture principal for the shared clients.
+
+    The non-superuser default is ``writer``, not ``user`` (A16): under the role
+    tiers a ``USER`` principal may read public items and nothing else, so it
+    cannot own the objects, categories, presets and share links the bulk of this
+    suite creates and mutates. ``writer`` is the lowest tier that can actually be
+    the owner these tests assume. The deny side of every tier is proved
+    end-to-end in ``test_role_tiers.py`` against real tokens, not here.
+    """
     uid = user_id or uuid.uuid4()
     return UserModel(
         id=str(uid),
         email="test@example.com",
         is_active=True,
         is_superuser=is_superuser,
-        role="superadmin" if is_superuser else "user",
+        role="superadmin" if is_superuser else "writer",
     )
 
 
 @pytest.fixture
 def current_user() -> UserModel:
-    """Regular (non-superuser) authenticated user."""
+    """Regular (non-superuser) authenticated user, writer tier."""
     return _make_user()
 
 
@@ -187,6 +203,21 @@ def _make_client(
             )
         return user
 
+    def _override_role_guard(minimum: RoleType):
+        # Same reasoning as _override_active_superuser: fastapi-m8's role guards
+        # resolve off _get_current_user_fresh, which overriding get_current_user
+        # never reaches. Re-run the real SDK predicate against the fixture user
+        # so a tier-gated route still 403s a principal below the threshold.
+        def _dependency():
+            if not has_minimum_role(user.role, minimum):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="The user doesn't have enough privileges",
+                )
+            return user
+
+        return _dependency
+
     def _override_storage():
         return mock_storage
 
@@ -198,6 +229,20 @@ def _make_client(
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_current_user] = _override_user
+    # The public read surface resolves through get_optional_user, which calls
+    # get_current_user directly rather than through Depends — so it does not see
+    # the override above. Override it too, or every shared client silently
+    # becomes anonymous on those routes.
+    app.dependency_overrides[get_optional_user] = _override_user
+    app.dependency_overrides[auth.get_current_active_reader] = _override_role_guard(
+        RoleType.READER
+    )
+    app.dependency_overrides[auth.get_current_active_writer] = _override_role_guard(
+        RoleType.WRITER
+    )
+    app.dependency_overrides[auth.get_current_active_admin] = _override_role_guard(
+        RoleType.ADMIN
+    )
     app.dependency_overrides[auth.get_current_active_superuser] = (
         _override_active_superuser
     )

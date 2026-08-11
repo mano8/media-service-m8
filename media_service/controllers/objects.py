@@ -111,10 +111,20 @@ def _keyset_predicate(
 
 
 def _scoped_query(
-    current_user: UserModel, params: ObjectListParams
+    current_user: UserModel | None, params: ObjectListParams
 ) -> SelectOfScalar[MediaObject]:
-    """Build the base query with owner scoping and soft-delete handling."""
+    """Build the base query with owner scoping and soft-delete handling.
+
+    ``current_user is None`` is the anonymous caller (A16): the listing narrows
+    to live ``PUBLIC`` rows and nothing else, so the public read surface can
+    never widen past what an unauthenticated visitor is entitled to see.
+    """
     statement = select(MediaObject)
+    if current_user is None:
+        return statement.where(
+            col(MediaObject.visibility) == MediaVisibility.PUBLIC,
+            col(MediaObject.deleted_at).is_(None),
+        )
     if current_user.is_superuser:
         if params.owner_user_id is not None:
             statement = statement.where(
@@ -201,13 +211,26 @@ def _fetch_object(
     return obj
 
 
-def require_visibility_access(obj: MediaObject, current_user: UserModel) -> None:
+def require_visibility_access(obj: MediaObject, current_user: UserModel | None) -> None:
     """Authorize read/download access to ``obj`` by its visibility policy.
 
     Superusers and the owner always pass. Otherwise: ``PUBLIC`` is readable by
-    any authenticated user; ``TENANT`` only by callers in the same (non-null)
-    tenant; ``PRIVATE``/``SENSITIVE`` by nobody else. Raises 403 when denied.
+    anyone — including an anonymous caller (A16) — ``TENANT`` only by callers in
+    the same (non-null) tenant; ``PRIVATE``/``SENSITIVE`` by nobody else. Raises
+    403 when an authenticated caller is denied.
+
+    An anonymous caller is denied with **404, not 403**: a 403 would tell an
+    unauthenticated visitor that a given id exists while a missing id answers
+    404, turning the public surface into an existence oracle over every private
+    object. Authenticated denials keep their 403 — that caller already
+    distinguishes the two cases through ``_fetch_object``.
     """
+    if current_user is None:
+        if obj.visibility == MediaVisibility.PUBLIC:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Media object not found."
+        )
     owner_id = uuid.UUID(str(current_user.id))
     if current_user.is_superuser or obj.owner_user_id == owner_id:
         return
@@ -246,10 +269,16 @@ def _load_object(
 
 def _load_object_for_read(
     session: Session,
-    current_user: UserModel,
+    current_user: UserModel | None,
     object_id: uuid.UUID,
 ) -> MediaObject:
-    """Fetch a MediaObject for read/download, enforcing visibility access."""
+    """Fetch a MediaObject for read/download, enforcing visibility access.
+
+    Read path only. Widening this to admit anonymous ``PUBLIC`` reads must never
+    widen a write: ``_load_object`` above stays owner-or-superuser and takes a
+    non-optional principal, so a public object can be read by a stranger and
+    still not be patched or deleted by one.
+    """
     obj = _fetch_object(session, object_id)
     require_visibility_access(obj, current_user)
     return obj
@@ -312,10 +341,13 @@ class ObjectsController:
     def list_objects(
         *,
         session: Session,
-        current_user: UserModel,
+        current_user: UserModel | None,
         params: ObjectListParams,
     ) -> ObjectListResponse:
-        """Return a filtered, cursor-paginated page of media objects."""
+        """Return a filtered, cursor-paginated page of media objects.
+
+        ``current_user is None`` lists the public catalogue (A16).
+        """
         statement = _apply_filters(_scoped_query(current_user, params), params)
         sort_col = _sort_column(params.sort_by)
         id_col = col(MediaObject.id)
@@ -347,7 +379,7 @@ class ObjectsController:
     def get_object(
         *,
         session: Session,
-        current_user: UserModel,
+        current_user: UserModel | None,
         object_id: uuid.UUID,
     ) -> MediaObjectPublic:
         """Return public metadata for a media object."""
@@ -358,7 +390,7 @@ class ObjectsController:
     def download_url(
         *,
         session: Session,
-        current_user: UserModel,
+        current_user: UserModel | None,
         object_id: uuid.UUID,
         storage: ObjectStorage,
     ) -> DownloadUrlResponse:

@@ -30,6 +30,28 @@ README for stack setup.
 
 All routes are mounted under `API_PREFIX` (default `/media`). Domain routers:
 
+### Role tiers
+
+Every route states the **minimum role** it requires, and the guards are the
+SDK-built ones `fastapi-m8` exposes (`auth.get_current_active_reader` /
+`_writer` / `_admin`), re-exported once from `app/deps.py` as `CurrentReader` /
+`CurrentWriter` / `CurrentAdmin`. `is_superuser` alone never satisfies a role
+threshold — the flag cannot bypass a writer or admin guard.
+
+| Tier in the tables below | Minimum role | May do |
+| --- | --- | --- |
+| **public** | none — no token at all | Read `PUBLIC` objects: list them, fetch metadata, get a download URL, list variants |
+| `user` | `USER` | Everything `public` allows, with an identity; nothing owned |
+| `reader` | `READER` | Read owned lists and owned items |
+| `writer` | `WRITER` | Create, edit and delete owned records; uploads; dashboard |
+| `superuser` | `SUPERADMIN` **and** `is_superuser` | The `/v1/admin` surface |
+
+Domain routers mount their floor with `dependencies=[Depends(require_...)]`, so a
+route added later inherits it. The two read routers (`objects.read_router`,
+`variants.read_router`) and the share-resolution router deliberately mount no
+floor: they admit anonymous callers on `PUBLIC` records, so no dependency admits
+every route on them, and each handler names its own tier instead.
+
 ### Service metadata & health
 
 Auto-mounted by `fastapi-m8` (≥ 3.3.0) `create_app` — the standard m8 triad:
@@ -49,9 +71,9 @@ so the service fails closed at boot if its identity is undeclared.
 
 | Method | Path | Auth | Rate limit | Purpose |
 | --- | --- | --- | --- | --- |
-| POST | `/v1/uploads/initiate` | user | 20/min | Create an upload session + presigned PUT URL |
-| POST | `/v1/uploads/{session_id}/complete` | user | 20/min | Finalize after the client PUTs to MinIO |
-| POST | `/v1/uploads/{session_id}/abort` | user | — | Abort an in-progress session |
+| POST | `/v1/uploads/initiate` | writer | 20/min | Create an upload session + presigned PUT URL |
+| POST | `/v1/uploads/{session_id}/complete` | writer | 20/min | Finalize after the client PUTs to MinIO |
+| POST | `/v1/uploads/{session_id}/abort` | writer | — | Abort an in-progress session |
 
 Flow: `initiate` returns a presigned `PUT` URL and a session id → client uploads
 bytes directly to MinIO → `complete` runs three integrity checks then promotes
@@ -75,17 +97,23 @@ On any failure the session is marked `ABORTED`, a `MediaObject` with
 
 | Method | Path | Auth | Rate limit | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `/v1/objects` | user | 120/min | List objects (filtered, cursor-paginated) |
-| GET | `/v1/objects/{object_id}` | user | — | Fetch object metadata |
-| GET | `/v1/objects/{object_id}/download-url` | user | 60/min | Presigned GET URL for download |
-| PATCH | `/v1/objects/{object_id}` | user | — | Update mutable metadata |
-| DELETE | `/v1/objects/{object_id}` | user | — | Soft-delete (idempotent) |
+| GET | `/v1/objects` | **public** | 120/min | List objects (filtered, cursor-paginated) |
+| GET | `/v1/objects/{object_id}` | **public** | — | Fetch object metadata |
+| GET | `/v1/objects/{object_id}/download-url` | **public** | 60/min | Presigned GET URL for download |
+| PATCH | `/v1/objects/{object_id}` | writer | — | Update mutable metadata |
+| DELETE | `/v1/objects/{object_id}` | writer | — | Soft-delete (idempotent) |
 
-`GET /v1/objects` returns, for a regular user, their own objects plus anything
-`PUBLIC` and same-tenant `TENANT` objects (superusers see all and may pass
-`owner_user_id` / `include_deleted`); `PRIVATE`/`SENSITIVE` objects of other
-owners stay hidden — see [Access control](#access-control--visibility). Supported
-query parameters:
+The three `GET` routes are **public**: a caller with no token sees live `PUBLIC`
+objects and nothing else, and a denial there answers **404**, never 403, so the
+public surface is not an existence oracle over private ids. A caller who does
+present a token is resolved normally — a broken or expired token is rejected,
+never silently downgraded to anonymous. `GET /v1/objects` returns, for a regular
+authenticated user, their own objects plus anything `PUBLIC` and same-tenant
+`TENANT` objects (superusers see all and may pass `owner_user_id` /
+`include_deleted`); `PRIVATE`/`SENSITIVE` objects of other owners stay hidden —
+see [Access control](#access-control--visibility). Rate limiting follows the
+caller: per-user **and** per-IP once identified, per-IP only while anonymous.
+Supported query parameters:
 `category`, `visibility`, `status`, `mime_prefix` (e.g. `image/`),
 `created_from`/`created_to`, `q` (filename contains), `sort_by`
 (`original_filename`|`category`|`status`|`size_bytes`|`created_at`), `order`
@@ -98,9 +126,9 @@ excluded unless a superuser passes `include_deleted=true`.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| POST | `/v1/objects/{object_id}/shares` | owner | Mint a time-boxed signed share link (**201**) |
-| GET | `/v1/objects/{object_id}/shares` | owner | List an object's share links |
-| DELETE | `/v1/shares/{token_id}` | owner | Revoke a share link (idempotent, **204**) |
+| POST | `/v1/objects/{object_id}/shares` | writer + owner | Mint a time-boxed signed share link (**201**) |
+| GET | `/v1/objects/{object_id}/shares` | reader + owner | List an object's share links |
+| DELETE | `/v1/shares/{token_id}` | writer + owner | Revoke a share link (idempotent, **204**) |
 | GET | `/v1/shares/{token}` | **public** | Resolve a signed token → presigned download URL |
 
 Creation, listing and revocation are owner-only (superusers may revoke any
@@ -145,10 +173,10 @@ The guard is applied at the router level via
 
 | Method | Path | Auth | Rate limit | Purpose |
 | --- | --- | --- | --- | --- |
-| POST | `/v1/objects/{id}/variants:generate` | user | 30/min | Create a variant job from named presets (**202**) and enqueue it |
-| GET | `/v1/objects/{id}/variants` | user | — | List generated variants |
-| GET | `/v1/objects/{id}/variants/jobs/{jid}` | user | — | Variant job progress |
-| DELETE | `/v1/objects/{id}/variants/{vid}` | user | — | Delete a variant (row + bytes) |
+| POST | `/v1/objects/{id}/variants:generate` | writer | 30/min | Create a variant job from named presets (**202**) and enqueue it |
+| GET | `/v1/objects/{id}/variants` | **public** | — | List generated variants (follows the object's visibility) |
+| GET | `/v1/objects/{id}/variants/jobs/{jid}` | reader | — | Variant job progress |
+| DELETE | `/v1/objects/{id}/variants/{vid}` | writer | — | Delete a variant (row + bytes) |
 
 `:generate` accepts `{ "presets": ["thumb", "web", …] }`. The object must have
 cleared antivirus scanning and reached `READY` (`scan_status == CLEAN` **and**
@@ -171,10 +199,10 @@ independent runtime safety ceilings as defense in depth.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/v1/presets` | user | Built-in presets merged with the caller's named presets |
-| POST | `/v1/presets` | user | Create a user-owned named preset (**201**) |
-| PATCH | `/v1/presets/{id}` | user | Replace a preset's recipe |
-| DELETE | `/v1/presets/{id}` | user | Delete a user preset |
+| GET | `/v1/presets` | reader | Built-in presets merged with the caller's named presets |
+| POST | `/v1/presets` | writer | Create a user-owned named preset (**201**) |
+| PATCH | `/v1/presets/{id}` | writer | Replace a preset's recipe |
+| DELETE | `/v1/presets/{id}` | writer | Delete a user preset |
 
 Built-in defaults (`thumb`/`small`/`medium`/`large`) ship as code constants; a
 user row of the same name shadows the built-in at resolve time. Each preset is a
@@ -276,7 +304,11 @@ endpoints (and the optional `?tenant_id=`) are superuser-only.
 ### Category & Dashboard
 
 `/{prefix}/category` (CRUD) and `/{prefix}/dashboard` (user-activity stats) are
-inherited consumer-template routers retained for ecosystem parity.
+inherited consumer-template routers retained for ecosystem parity. A category
+carries no visibility column, so it has no public form: reads are **reader**
+tier, the three mutations are **writer**. Both `/dashboard` routes are **writer**
+tier — an operational activity view sits above plain read access, matching the
+decision `prompt-engine-m8` records for its identical pair.
 
 > **Note:** media variants (`db_models/media_variants.py`, `schemas/variants.py`,
 > `app/routes/variants.py`) are **reserved stubs** — the model exists but no
@@ -289,13 +321,16 @@ listing returns) is governed by each object's `visibility`:
 
 | Visibility | Who may read / download |
 | --- | --- |
-| `PUBLIC` | Any authenticated user |
+| `PUBLIC` | **Anyone, including a caller with no token at all** |
 | `TENANT` | The owner, superusers, and callers in the **same (non-null) tenant** |
 | `PRIVATE` / `SENSITIVE` | The owner and superusers only |
 
 The owner and superusers always have access regardless of visibility. A caller
-with no tenant never matches a `TENANT` object. Mutations (`PATCH`/`DELETE`)
-remain owner-or-superuser only.
+with no tenant never matches a `TENANT` object. Widening the read never widens
+the write: mutations (`PATCH`/`DELETE`) remain **writer tier and
+owner-or-superuser**, so a stranger who can read a `PUBLIC` object still cannot
+change or delete it. An anonymous caller denied by visibility gets **404**, not
+403 — an authenticated one still gets 403.
 
 Tenancy is taken from the caller's `tenant_id` claim (surfaced on `UserModel` by
 `auth-sdk-m8`, requires `fastapi-m8>=3.3.0`) and stamped onto each object at
