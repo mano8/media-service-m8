@@ -8,8 +8,7 @@ from typing import Any
 from sqlalchemy import case, and_
 from sqlmodel import Session, func, select
 
-from auth_sdk_m8.controllers.base import BaseController
-from fastapi_m8 import UserModel
+from fastapi_m8 import BaseController, UserModel
 from media_service.db_models.categories import Category
 from media_service.schemas.dashboard import (
     ActivityCounter,

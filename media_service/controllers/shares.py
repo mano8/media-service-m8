@@ -23,7 +23,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import CursorResult, or_, update
 from sqlmodel import Session, col, select
 
-from auth_sdk_m8.schemas.user import UserModel
+from fastapi_m8 import UserModel
 
 import media_service.metrics as _metrics
 from media_service.controllers.objects import _load_object

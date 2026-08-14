@@ -7,7 +7,7 @@ from sqlalchemy import UniqueConstraint
 from sqlmodel import Column, Field, SQLModel
 from slugify import slugify
 
-from auth_sdk_m8.models.shared import TimestampMixin
+from fastapi_m8 import TimestampMixin
 from media_service.core.db_models import UUIDString, prefixed_tables
 from media_service.core.config import settings
 

@@ -5,7 +5,7 @@ import uuid
 from fastapi import HTTPException, status
 from sqlmodel import Session, col, select
 
-from auth_sdk_m8.schemas.user import UserModel
+from fastapi_m8 import UserModel
 
 from media_service.core.presets import BUILTIN_PRESETS, _user_tenant_id
 from media_service.db_models.image_presets import ImagePreset

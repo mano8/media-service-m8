@@ -39,20 +39,23 @@ _AUTH_PROD_EXAMPLE = _HARDENED_DIR / "auth.env.production.example"
 # ── Dependency floor ──────────────────────────────────────────────────────────
 
 
-def test_fastapi_m8_floor_is_4_2_2():
-    """requirements_base.txt must pin fastapi-m8 floor at >=4.2.2 (A7).
+def test_fastapi_m8_floor_is_4_3_0():
+    """requirements_base.txt must pin fastapi-m8 floor at >=4.3.0 (A19).
 
-    Raised from the 3.1.0-era floor this test used to assert: 4.2.2 is the
+    Raised from the 4.2.2-era floor this test used to assert: 4.3.0 is the
     version constraints.txt/constraints-all.txt actually resolve against
-    (auth-sdk-m8>=3.1.2), and the reader/writer/admin/superuser tier guards
-    this repo depends on (Depends(auth.get_current_active_superuser) in
-    app/routes/admin.py) only exist from the 4.x line.
+    (auth-sdk-m8==3.1.2, unchanged) and the version that first re-exports the
+    five `auth_sdk_m8` symbols (`BaseController`, `UserModel`, `TimestampMixin`,
+    `find_dotenv`, `make_scrape_credential_guard`, `REGISTRY`, `render_metrics`,
+    `ResponseMessage`, `ResponseModelBase`) this repo's `media_service/` package
+    now imports exclusively through `fastapi_m8` per the operator ruling that
+    `auth-sdk-m8` is never called from a consumer repository (§F5).
     """
     content = _REQS_BASE.read_text()
     for line in content.splitlines():
         if line.startswith("fastapi-m8"):
-            assert re.search(r">=\s*4\.2\.2", line), (
-                f"fastapi-m8 floor must be >=4.2.2 for the tier-guard API: {line!r}"
+            assert re.search(r">=\s*4\.3\.0", line), (
+                f"fastapi-m8 floor must be >=4.3.0 for the SDK re-export surface: {line!r}"
             )
             return
     pytest.fail("fastapi-m8 not found in requirements_base.txt")

@@ -9,7 +9,7 @@ import uuid
 
 from fastapi import APIRouter, Depends
 
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import BaseController
 
 from media_sdk_m8 import ScanJobPayload
 

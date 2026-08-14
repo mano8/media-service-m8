@@ -7,7 +7,7 @@ from datetime import timedelta
 from fastapi import HTTPException, status
 from sqlmodel import Session
 
-from auth_sdk_m8.schemas.user import UserModel
+from fastapi_m8 import UserModel
 
 from media_service.core.config import settings
 from media_service.core.quotas import (

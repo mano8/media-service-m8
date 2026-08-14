@@ -13,7 +13,7 @@ from sqlalchemy import and_, func, or_
 from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
-from auth_sdk_m8.schemas.user import UserModel
+from fastapi_m8 import UserModel
 
 from media_service.core.config import settings
 from media_service.core.outbox import (

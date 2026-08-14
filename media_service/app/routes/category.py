@@ -23,8 +23,7 @@ from media_service.db_models.categories import (
     CategoryUpdate,
     CategoriesPublic,
 )
-from auth_sdk_m8.schemas.base import ResponseMessage, ResponseModelBase
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import BaseController, ResponseMessage, ResponseModelBase
 
 router = APIRouter(
     prefix="/category",

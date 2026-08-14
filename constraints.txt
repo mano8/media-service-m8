@@ -42,8 +42,6 @@ click==8.4.1
     # via
     #   arq
     #   uvicorn
-colorama==0.4.6
-    # via click
 cryptography==49.0.0
     # via
     #   auth-sdk-m8
@@ -58,7 +56,7 @@ fastapi==0.137.2
     # via
     #   auth-sdk-m8
     #   fastapi-m8
-fastapi-m8[db,mysql,postgres]==4.2.2
+fastapi-m8[db,mysql,postgres]==4.3.0
     # via -r media_service/requirements_base.txt
 filetype==1.2.0
     # via -r media_service/requirements_base.txt
