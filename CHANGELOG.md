@@ -748,7 +748,12 @@ the producer↔consumer job contracts.
 
 ---
 
-## [0.0.3] — 2026-06-13 · Phase 15a · access control — visibility & tenant enforcement
+## [0.0.3] — 2026-06-13 · Phase 15a + 13 · access control (visibility & tenant enforcement) + storage quotas & accounting
+
+> **`A32` note (2026-08-15):** this heading previously appeared twice under
+> `[0.0.3]` (Phase 15a and Phase 13 as separate entries). Only one `v0.0.3` tag
+> was ever cut — both phases shipped in the same release — so the two entries
+> are merged here rather than left as duplicate headings.
 
 ### Added
 
@@ -767,32 +772,6 @@ the producer↔consumer job contracts.
 - **`tests/test_access_control.py`** — full visibility matrix over the helper,
   the `GET`/`download-url` routes, and list scoping (incl. tenant isolation);
   plus a tenant-stamping upload test.
-
-### Changed
-
-- **`GET /v1/objects/{id}` and `…/download-url`** now enforce `visibility`
-  instead of bare ownership: previously every non-owner was refused, so `PUBLIC`
-  and same-tenant `TENANT` objects were unreachable by users entitled to them.
-- **`GET /v1/objects` (listing)** — a non-superuser now sees their own objects
-  **plus** anything `PUBLIC` and same-tenant `TENANT` objects, mirroring
-  `require_visibility_access` so the list never surfaces a row the caller could
-  not also fetch by id. `PRIVATE`/`SENSITIVE` objects of other owners stay
-  hidden. Owner-scoping and superuser scoping are unchanged.
-- **Requirements** — `fastapi-m8` floor bumped `>=1.5.0` → `>=1.6.0`, which
-  pins `auth-sdk-m8>=1.3.0` (the release that carries the `tenant_id` claim on
-  `UserModel`). No new direct dependency.
-
-> No schema change (`MediaObject.tenant_id` already existed). Tenant matching is
-> now live wherever the auth layer issues a `tenant_id` claim; objects created
-> by untenanted callers stay `tenant_id IS NULL` and `TENANT` behaves as
-> owner/superuser-only for them.
-
----
-
-## [0.0.3] — 2026-06-13 · Phase 13 · storage quotas & accounting
-
-### Added
-
 - **`db_models/storage_usage.py`** — `StorageUsage` table tracking
   `total_bytes` / `object_count` and optional `quota_bytes` / `quota_objects`
   overrides per `(owner_user_id, tenant_id)` scope, unique on the scope pair.
@@ -816,14 +795,35 @@ the producer↔consumer job contracts.
 
 ### Changed
 
+- **`GET /v1/objects/{id}` and `…/download-url`** now enforce `visibility`
+  instead of bare ownership: previously every non-owner was refused, so `PUBLIC`
+  and same-tenant `TENANT` objects were unreachable by users entitled to them.
+- **`GET /v1/objects` (listing)** — a non-superuser now sees their own objects
+  **plus** anything `PUBLIC` and same-tenant `TENANT` objects, mirroring
+  `require_visibility_access` so the list never surfaces a row the caller could
+  not also fetch by id. `PRIVATE`/`SENSITIVE` objects of other owners stay
+  hidden. Owner-scoping and superuser scoping are unchanged.
+- **Requirements** — `fastapi-m8` floor bumped `>=1.5.0` → `>=1.6.0`, which
+  pins `auth-sdk-m8>=1.3.0` (the release that carries the `tenant_id` claim on
+  `UserModel`). No new direct dependency.
 - **`complete_upload`** credits, and **`delete_object`** debits, the owner's
   `StorageUsage` totals in the same transaction as the state change, so usage
   never diverges from the object set.
 
+> No schema change (`MediaObject.tenant_id` already existed). Tenant matching is
+> now live wherever the auth layer issues a `tenant_id` claim; objects created
+> by untenanted callers stay `tenant_id IS NULL` and `TENANT` behaves as
+> owner/superuser-only for them.
+
 ---
 
-## [0.0.2] — 2026-06-12 · SD · auth event-stream consumer + platform alignment
+## [0.0.2] — 2026-06-12 · SD + Phase 11 · auth event-stream consumer + platform alignment + upload validation & integrity hardening
 
+> **`A32` note (2026-08-15):** this heading previously appeared twice under
+> `[0.0.2]` (the "SD" auth event-stream entry and the Phase 11 upload-validation
+> entry, separately). Only one `v0.0.2` tag was ever cut, so the two are merged
+> here rather than left as duplicate headings.
+>
 > Tracks **`fastapi-m8 1.5.0`** / **`auth-sdk-m8 1.2.1`** / **`fa-auth-m8`** latest.
 
 ### Added
@@ -837,39 +837,6 @@ the producer↔consumer job contracts.
   authoritative and stream loss is non-fatal. The client starts only when
   `INTROSPECTION_URL` is configured. New tunables `EVENT_STREAM_CONNECT_TIMEOUT`
   / `EVENT_STREAM_READ_TIMEOUT` (inherited from `ConsumerServiceSettings`).
-
-### Changed
-
-- **`requirements_base.txt`** — `fastapi-m8` pin `>=1.4.0` → `>=1.5.0`, picking up
-  the tiered response-header model (`auth-sdk-m8 1.2.1`). No service code change:
-  `create_app` wires `add_security_headers_middleware` and the two new knobs
-  (`HSTS_ENABLED`, `CONTENT_SECURITY_POLICY_ENABLED`) are inherited from
-  `CommonSettings`.
-- **Response security headers — tiered model.** HSTS and CSP, previously inferred
-  from the production gate, are now **express opt-in** (both default off) and are
-  **never emitted when `ENVIRONMENT=local`** even when enabled. Documented in
-  README and every `.example_env` / `*.env.example`.
-- **Env examples** (`media_service/.example_env`,
-  `docker_compose/hardened_media_m8/{media,auth}.env.example`) — added the
-  three-tier **Response security headers** block and the **Auth event stream**
-  (SSE bridge) settings; corrected the stale "event bus not wired into any
-  service yet" note now that the SSE consumer is live. `auth.env.example` gains
-  the fa-auth publisher-side stream knobs (`EVENT_STREAM_ENABLED`,
-  `EVENT_STREAM_BUFFER_SIZE`, `EVENT_STREAM_HEARTBEAT_SECONDS`,
-  `EVENT_STREAM_MAX_QUEUE`).
-- **Compose stack** (`docker_compose/hardened_media_m8`) — image bumps
-  (PostgreSQL 18, Redis 8.8, Traefik v3.7.5, Prometheus 26.04); Traefik hardened
-  to mirror `fa-auth-m8`: TLS 1.2 floor + strong ciphers, pinned `172.16.0.0/16`
-  subnet with gateway-trust allowlists, dashboard on the loopback `traefik`
-  entrypoint (`api.insecure=false`), encoded-character path hardening, and a
-  longer DB `start_period` for slow first-boot init.
-
----
-
-## [0.0.2] — 2026-06-12 · Phase 11 · upload validation & integrity hardening
-
-### Added
-
 - **`core/validation.py`** — pure content-validation helpers:
   - `sniff_mime(head)` — magic-byte MIME detection via `filetype`.
   - `mime_consistent(declared, sniffed)` — tolerant same-major check for
@@ -902,7 +869,29 @@ the producer↔consumer job contracts.
 
 ### Changed
 
-- `requirements_base.txt` — added `filetype>=1.2.0`.
+- **`requirements_base.txt`** — `fastapi-m8` pin `>=1.4.0` → `>=1.5.0`, picking up
+  the tiered response-header model (`auth-sdk-m8 1.2.1`). No service code change:
+  `create_app` wires `add_security_headers_middleware` and the two new knobs
+  (`HSTS_ENABLED`, `CONTENT_SECURITY_POLICY_ENABLED`) are inherited from
+  `CommonSettings`. Also added `filetype>=1.2.0`.
+- **Response security headers — tiered model.** HSTS and CSP, previously inferred
+  from the production gate, are now **express opt-in** (both default off) and are
+  **never emitted when `ENVIRONMENT=local`** even when enabled. Documented in
+  README and every `.example_env` / `*.env.example`.
+- **Env examples** (`media_service/.example_env`,
+  `docker_compose/hardened_media_m8/{media,auth}.env.example`) — added the
+  three-tier **Response security headers** block and the **Auth event stream**
+  (SSE bridge) settings; corrected the stale "event bus not wired into any
+  service yet" note now that the SSE consumer is live. `auth.env.example` gains
+  the fa-auth publisher-side stream knobs (`EVENT_STREAM_ENABLED`,
+  `EVENT_STREAM_BUFFER_SIZE`, `EVENT_STREAM_HEARTBEAT_SECONDS`,
+  `EVENT_STREAM_MAX_QUEUE`).
+- **Compose stack** (`docker_compose/hardened_media_m8`) — image bumps
+  (PostgreSQL 18, Redis 8.8, Traefik v3.7.5, Prometheus 26.04); Traefik hardened
+  to mirror `fa-auth-m8`: TLS 1.2 floor + strong ciphers, pinned `172.16.0.0/16`
+  subnet with gateway-trust allowlists, dashboard on the loopback `traefik`
+  entrypoint (`api.insecure=false`), encoded-character path hardening, and a
+  longer DB `start_period` for slow first-boot init.
 - `tests/test_metrics.py` — added noop + counter assertions for
   `inc_upload_rejected`; `test_setup_disabled` asserts `_uploads_rejected` is
   `None`.
