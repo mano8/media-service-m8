@@ -11,17 +11,25 @@ a prefix is configured, so GET /ping returns 404.
 
 from fastapi.testclient import TestClient
 
+from media_service import __version__
+from media_service.core.config import settings
 from media_service.main import app
 
 client = TestClient(app)
 
 
 def test_meta_route_exposes_service_contract() -> None:
+    # `version` is read from the package rather than repeated as a literal: a
+    # hard-coded copy has to be hand-edited on every release and silently
+    # asserts nothing about the service once it drifts (the A30 stale-literal
+    # shape). The contract block stays literal on purpose — it is the published
+    # HTTP contract, which must *not* move when the package version does, so a
+    # change there should fail this test.
     resp = client.get("/media/meta")
     assert resp.status_code == 200
     assert resp.json() == {
         "service": "M8TestApp",
-        "version": "1.0.0",
+        "version": __version__,
         "api_version": "v1",
         "contract": {
             "name": "media-service-m8",
@@ -29,6 +37,12 @@ def test_meta_route_exposes_service_contract() -> None:
             "range": ">=1.0.0 <2.0.0",
         },
     }
+
+
+def test_meta_version_tracks_the_package_version() -> None:
+    """`SERVICE_VERSION` must be the package version, not a second copy of it."""
+    assert settings.SERVICE_VERSION == __version__
+    assert client.get("/media/meta").json()["version"] == __version__
 
 
 def test_meta_route_is_cacheable() -> None:

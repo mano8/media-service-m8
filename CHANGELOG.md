@@ -13,6 +13,15 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-08-16 · role-tier enforcement + `fastapi-m8` 4.4.0 alignment
+
+**Major bump.** The reader/writer role tiers wired below (`A16`) change who may
+call this service's routes: a token that was merely authenticated no longer
+suffices, and `PUBLIC` objects became readable with no token at all. That is a
+breaking change to the authorization contract, so this releases as `2.0.0`
+rather than `1.1.0`. Everything previously listed under `[Unreleased]` ships
+here.
+
 ### Security
 
 - **Runtime image patches OpenSSL to `3.5.6-1~deb13u2`** (`openssl`,
