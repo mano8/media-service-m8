@@ -83,6 +83,19 @@ INTROSPECTION_URL=http://127.0.0.1:9000/user/private/v1/jti-status
 # Strong shared secret: >= 32 chars, upper, lower, digit, special char (no spaces).
 PRIVATE_API_SECRET=changethis
 
+# ── API-key remote introspection (§3.12) ──────────────────────────────────────
+# Enables the remote API-key principal dependencies (get_current_api_key_principal /
+# require_api_key_role) so a key resolves its owner's *live* role via the issuer's
+# POST /private/v1/api-keys/introspect — never a bare/cached key check. Fails
+# closed at startup if incomplete. Independent of TOKEN_MODE/INTROSPECTION_URL
+# above (that pair is JTI-revocation only). Requires this consumer to hold the
+# api-key-introspection scope in auth_user_service PRIVATE_API_CONSUMERS.
+# media_service does not support API keys today — no route depends on
+# get_current_api_key_reader/_writer, so this block stays commented out.
+# tests/test_core_deps.py asserts the wiring stays that way (audit_api_key_routes).
+# API_KEY_INTROSPECTION_ENABLED=true
+# API_KEY_INTROSPECTION_URL=http://127.0.0.1:9000/user/private/v1/api-keys/introspect
+
 # ── Event signing — auth-sdk-m8 1.0.0 boot validator (fail-closed when enabled) ──
 # EVENT_SIGNING_ENABLED defaults to true; boot fails closed without a strong key.
 # Must match EVENT_SIGNING_KEY in auth_user_service. SSE event-stream payloads

@@ -4,10 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi_m8 import audit_api_key_routes
 
 from media_service.app.deps import get_storage
 from media_service.core.config import settings
-from media_service.core.deps import require_service_token
+from media_service.core.deps import auth, require_service_token
+from media_service.main import app
 from media_service.storage.client import ObjectStorage
 
 _TOKEN = settings.MEDIA_INTERNAL_SERVICE_TOKEN.get_secret_value()
@@ -39,3 +41,18 @@ def test_require_service_token_rejects_bad_headers(header):
     with pytest.raises(HTTPException) as exc:
         require_service_token(authorization=header)
     assert exc.value.status_code == 403
+
+
+def test_no_route_depends_on_bare_api_key_principal():
+    """Wave 7 / A22 wiring lock (§3.3.1, APIKEY-CAP-01).
+
+    media_service does not wire any API-key routes today —
+    API_KEY_INTROSPECTION_ENABLED is unset, so `auth.get_current_api_key_principal`
+    is `None` and this is a no-op audit. It stays load-bearing: the day a route is
+    added on the bare principal instead of `get_current_api_key_reader`/`_writer`,
+    this assertion is what catches it.
+    """
+    findings = audit_api_key_routes(
+        app, bare_dependency=auth.get_current_api_key_principal
+    )
+    assert findings == []
