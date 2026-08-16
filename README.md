@@ -347,7 +347,7 @@ By default every presigned URL is built from the internal `MINIO_HOST:MINIO_PORT
 address, which the browser cannot reach in most deployments. Set
 `MINIO_PUBLIC_ENDPOINT` to the **full URL** the browser can reach:
 
-```
+```text
 # dev / loopback (MinIO already bound to 127.0.0.1:9005 in dev stacks)
 MINIO_PUBLIC_ENDPOINT=http://127.0.0.1:9005
 

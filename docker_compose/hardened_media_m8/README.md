@@ -156,6 +156,7 @@ explicitly excludes `/minio/*` paths to prevent access to the admin API or conso
 (`:9001`); only the S3 data path (`/{bucket}/{key}`) is exposed.
 
 Configuration:
+
 - `MINIO_PUBLIC_ENDPOINT=https://storage.localhost` in `media.env`
 - `MINIO_API_CORS_ALLOW_ORIGIN: "https://localhost:4430"` in minio environment (edit for your FQDN)
 - Traefik router uses `passHostHeader: true` — **required** for presigned GET signatures

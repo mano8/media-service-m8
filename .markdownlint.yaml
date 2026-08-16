@@ -1,0 +1,43 @@
+---
+# markdownlint configuration, also consumed by Codacy's markdownlint engine when
+# the repository is set to use its own configuration files.
+#
+# Scope note: a config file supplies markdownlint's *defaults* for every rule it
+# does not mention, so this file deliberately restates the rule this repository
+# already does not enforce (MD013). Without it, adding this file for MD024 alone
+# would turn one addressed rule into two and ~198 new findings across README.md
+# and the docker_compose sub-READMEs.
+#
+# Fleet baseline (A34): every repo with a CHANGELOG.md carries this MD024
+# override, worded identically, so Codacy's markdownlint engine does not fail
+# on the Keep a Changelog format. See fastapi-m8's `.markdownlint.yaml` for the
+# canonical rationale text this is copied from.
+
+# MD024/no-duplicate-heading — restrict to sibling headings.
+#
+# CHANGELOG.md follows Keep a Changelog, where every release section repeats the
+# same subsection names (### Added / ### Changed / ### Fixed / ### Security …).
+# Under the default setting that makes each release after the first a stack of
+# duplicate-heading errors, purely as a function of how many releases the file
+# records. The duplication is the format, not a defect, and renaming the
+# sections to be unique would break the convention every reader relies on.
+#
+# siblings_only flags a duplicate only when it shares a parent heading, so
+# "### Changed" under two different `## [x.y.z]` releases both pass, while two
+# "### Changed" blocks inside one release — a real editing mistake — still
+# fail. ⚠️ CHANGELOG.md's own `<!-- markdownlint-disable MD024 -->` comment
+# (top of file) currently suppresses this rule file-wide instead, and stays in
+# place: with it lifted, `## [1.0.0]` — the OWASP remediation release — has
+# three genuine same-release duplicates (`### Changed` ×2, `### Security` ×2)
+# that predate this step and are a content-merge decision, not a lint-config
+# one; recorded here as unstarted follow-on work rather than silently dropped
+# or force-merged in this pass. This config still applies `siblings_only` to
+# every other Markdown file in the repo for fleet parity.
+MD024:
+  siblings_only: true
+
+# MD013/line-length — off. README.md and the docker_compose sub-READMEs wrap
+# prose for readability rather than to a fixed column, and carry long URLs and
+# code lines that cannot be wrapped at all (198 findings). Python line length is
+# enforced separately, by ruff.
+MD013: false

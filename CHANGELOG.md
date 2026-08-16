@@ -1,4 +1,10 @@
 <!-- markdownlint-disable MD024 -->
+<!-- A34, 2026-08-15: kept file-wide rather than narrowed to siblings_only via
+     .markdownlint.yaml because `## [1.0.0]` has three genuine same-release
+     duplicate subheadings (### Changed x2, ### Security x2) predating this
+     step; merging them is a content decision, recorded as unstarted follow-on
+     work, not done in this pass. See .markdownlint.yaml for the fleet-baseline
+     siblings_only rule this file intentionally overrides. -->
 # Changelog
 
 All notable changes to `media-service-m8` are documented here.
