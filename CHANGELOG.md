@@ -48,6 +48,14 @@ here.
   in `7f7c225` when it was regenerated on a Windows host. The production image
   is `python:3.14-slim` (Linux), so the entry was never installable there;
   this lock was regenerated on Linux to match CI.
+- **CI test matrix floor raised to Python 3.12 (3.11 dropped)**, matching the
+  fleet's accepted 3.12–3.14 range (`A32` follow-up). The Codecov and Codacy
+  coverage uploads were conditioned on the 3.11 leg, so both moved to 3.12 with
+  it — dropping the leg alone would have silently stopped every coverage upload.
+- **`media-sdk-m8` floor raised `>=0.5.1` → `>=0.6.0,<0.7.0`.** The upper bound
+  is new: under the SDK's 0.x SemVer a minor bump is breaking (`0.6.0` itself
+  raises its Python floor to 3.12), so an unbounded floor would keep pulling
+  breaking minors.
 
 ---
 
