@@ -2,6 +2,9 @@
 
 from .categories import Category as Category
 from .image_presets import ImagePreset as ImagePreset
+from .media_object_categories import (
+    MediaObjectCategoryLink as MediaObjectCategoryLink,
+)
 from .media_objects import MediaObject as MediaObject
 from .media_variants import MediaVariant as MediaVariant
 from .outbox import OutboxEvent as OutboxEvent

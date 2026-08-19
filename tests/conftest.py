@@ -64,6 +64,7 @@ from fastapi_m8 import has_superuser_privileges  # noqa: E402
 # Import all table models so SQLModel.metadata is populated before create_all.
 import media_service.db_models.categories  # noqa: F401, E402
 import media_service.db_models.image_presets  # noqa: F401, E402
+import media_service.db_models.media_object_categories  # noqa: F401, E402
 import media_service.db_models.media_objects  # noqa: F401, E402
 import media_service.db_models.media_variants  # noqa: F401, E402
 import media_service.db_models.outbox  # noqa: F401, E402
