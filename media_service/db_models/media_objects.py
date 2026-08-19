@@ -2,13 +2,18 @@
 
 from datetime import datetime, timezone
 from enum import StrEnum
+from typing import TYPE_CHECKING
 import uuid
 
 from sqlalchemy import Column, DateTime, String, UniqueConstraint
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Relationship, SQLModel
 
 from media_service.core.config import settings
 from media_service.core.db_models import prefixed_tables
+from media_service.db_models.media_object_categories import MediaObjectCategoryLink
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a runtime import cycle
+    from media_service.db_models.categories import Category
 
 
 def utcnow() -> datetime:
@@ -122,6 +127,15 @@ class MediaObject(MediaObjectBase, SQLModel, table=True):
     deleted_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+
+    #: User-defined categories this object is filed into (many-to-many, `U3`).
+    #: Deliberately *not* named ``categories``: ``MediaObjectPublic`` carries a
+    #: ``categories`` field, and a matching attribute here would make
+    #: ``model_validate(obj)`` lazy-load the relationship once per row.
+    user_categories: list["Category"] = Relationship(
+        back_populates="media_objects",
+        link_model=MediaObjectCategoryLink,
     )
 
 
