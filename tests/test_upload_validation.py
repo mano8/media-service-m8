@@ -242,7 +242,7 @@ def test_complete_upload_rejects_oversized(
     )
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert "size_exceeded" in resp.json()["detail"]
+    assert resp.json()["detail"]["reason"] == "size_exceeded"
 
 
 def test_complete_upload_rejects_mime_mismatch(
@@ -253,7 +253,7 @@ def test_complete_upload_rejects_mime_mismatch(
     mock_storage.get_object_head.return_value = _PNG_BYTES
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert "mime_mismatch" in resp.json()["detail"]
+    assert resp.json()["detail"]["reason"] == "mime_mismatch"
 
 
 def test_complete_upload_rejects_sha256_mismatch(
@@ -268,7 +268,7 @@ def test_complete_upload_rejects_sha256_mismatch(
         f"/media/v1/uploads/{us.id}/complete", json={"sha256": wrong_sha256}
     )
     assert resp.status_code == 422
-    assert "sha256_mismatch" in resp.json()["detail"]
+    assert resp.json()["detail"]["reason"] == "sha256_mismatch"
 
 
 def test_complete_upload_passes_with_correct_sha256(
@@ -317,7 +317,7 @@ def test_complete_upload_rejects_when_get_object_head_raises(
     mock_storage.get_object_head.side_effect = Exception("storage error")
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert "mime_mismatch" in resp.json()["detail"]
+    assert resp.json()["detail"]["reason"] == "mime_mismatch"
 
 
 def test_complete_upload_sha256_stream_raises_422(
@@ -405,7 +405,7 @@ def test_complete_upload_rejects_unsniffable_payload_for_image(
     mock_storage.get_object_head.return_value = b"<svg><script>alert(1)</script></svg>"
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert "mime_mismatch" in resp.json()["detail"]
+    assert resp.json()["detail"]["reason"] == "mime_mismatch"
 
 
 def test_complete_upload_category_size_override_rejects(
@@ -418,7 +418,7 @@ def test_complete_upload_category_size_override_rejects(
         mock_storage.stat_object.return_value = _stat(size=2048)
         resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert "size_exceeded" in resp.json()["detail"]
+    assert resp.json()["detail"]["reason"] == "size_exceeded"
 
 
 def test_complete_upload_category_size_override_passes(

@@ -27,6 +27,7 @@ from media_service.schemas.uploads import (
     UploadCompleteResponse,
     UploadInitiateRequest,
     UploadInitiateResponse,
+    UploadRejectDetail,
 )
 from media_service.core.validation import (
     is_allowed_declared_mime,
@@ -129,9 +130,10 @@ def _reject_upload(
     except Exception as exc:  # noqa: BLE001
         _logger.warning("storage.remove_object failed during reject: %s", exc)
     inc_upload_rejected(reason)
+    detail = UploadRejectDetail(reason=reason, message=f"Upload rejected: {reason}.")
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        detail=f"Upload rejected: {reason}.",
+        detail=detail.model_dump(),
     )
 
 

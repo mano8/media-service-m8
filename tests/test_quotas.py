@@ -343,7 +343,7 @@ def test_complete_rejected_when_actual_pushes_over_byte_quota(
     mock_storage.get_object_head.return_value = _PDF_BYTES
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert "quota_bytes_exceeded" in resp.json()["detail"]
+    assert resp.json()["detail"]["reason"] == "quota_bytes_exceeded"
     mock_storage.remove_object.assert_called_once()
     usage = quotas._find_usage(session, owner_user_id=current_user.id, tenant_id=None)
     assert usage is not None
@@ -361,7 +361,7 @@ def test_complete_rejected_when_actual_pushes_over_object_quota(
     mock_storage.get_object_head.return_value = _PDF_BYTES
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert "quota_objects_exceeded" in resp.json()["detail"]
+    assert resp.json()["detail"]["reason"] == "quota_objects_exceeded"
     usage = quotas._find_usage(session, owner_user_id=current_user.id, tenant_id=None)
     assert usage is not None
     assert usage.object_count == 2  # not credited

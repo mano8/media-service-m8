@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import model_validator
 from sqlmodel import Field, SQLModel
@@ -65,3 +66,26 @@ class UploadCompleteResponse(SQLModel):
     """Response after an upload is confirmed in storage."""
 
     media_object: MediaObjectPublic
+
+
+class UploadRejectDetail(SQLModel):
+    """Structured 422 detail raised when a staged upload is rejected.
+
+    ``reason`` is the same stable token already computed for the
+    ``inc_upload_rejected`` metric, so the client can map it to friendly copy
+    instead of string-matching. ``message`` stays byte-identical to the prior
+    plain-string detail (``f"Upload rejected: {reason}."``) so the client's
+    ``messageFromDetail`` fallback keeps rendering unchanged. This is a flat
+    JSON object, never a list, so that fallback's ``{msg}``-array branch does
+    not need to change to read it.
+    """
+
+    code: Literal["upload_rejected"] = "upload_rejected"
+    reason: Literal[
+        "size_exceeded",
+        "mime_mismatch",
+        "sha256_mismatch",
+        "quota_bytes_exceeded",
+        "quota_objects_exceeded",
+    ]
+    message: str
