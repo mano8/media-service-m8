@@ -153,3 +153,66 @@ class CategoriesPublic(SQLModel):
     count: int = Field(
         description="Total categories count",
     )
+
+
+class CategoryNode(CategoryPublic):
+    """
+    One node of the nested category tree.
+
+    Both counts are carried so a tree pane can render "how much is in here"
+    without a second call and can skip fetching a genuinely empty subtree
+    (`U7`).
+    """
+
+    object_count: int = Field(
+        default=0,
+        ge=0,
+        description="Media objects filed directly on this category",
+    )
+    total_object_count: int = Field(
+        default=0,
+        ge=0,
+        description="Distinct media objects filed on this category or any descendant",
+    )
+    children: list["CategoryNode"] = Field(
+        default_factory=list,
+        description="Nested child nodes, ordered by name",
+    )
+
+
+CategoryNode.model_rebuild()
+
+
+class CategoryTreePublic(SQLModel):
+    """
+    Wrapper for the caller's nested category tree.
+    """
+
+    data: list[CategoryNode] = Field(
+        default_factory=list,
+        description="Root nodes of the tree",
+    )
+    count: int = Field(
+        default=0,
+        description="Total categories in the tree, at every depth",
+    )
+
+
+class MediaObjectCategoryRef(SQLModel):
+    """
+    A user category a media object is filed into, with its resolved path.
+
+    ``path`` is the slug chain from the root down to this category
+    (``"documents/invoices/2026"``), so a client can show where an object lives
+    without holding the whole tree.
+    """
+
+    id: int = Field(
+        description="Category ID",
+    )
+    name: str = Field(
+        description="Category name",
+    )
+    path: str = Field(
+        description="Slash-joined slug path from the tree root to this category",
+    )

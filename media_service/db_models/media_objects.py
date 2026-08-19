@@ -10,6 +10,7 @@ from sqlmodel import Field, Relationship, SQLModel
 
 from media_service.core.config import settings
 from media_service.core.db_models import prefixed_tables
+from media_service.db_models.categories import MediaObjectCategoryRef
 from media_service.db_models.media_object_categories import MediaObjectCategoryLink
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a runtime import cycle
@@ -146,3 +147,7 @@ class MediaObjectPublic(MediaObjectBase):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+    categories: list[MediaObjectCategoryRef] = Field(
+        default_factory=list,
+        description="User categories this object is filed into, with resolved paths",
+    )
