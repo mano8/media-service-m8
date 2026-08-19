@@ -65,3 +65,18 @@ class ScanResultRequest(SQLModel):
     """Internal worker callback carrying an antivirus verdict for an object."""
 
     scan_status: ScanStatus
+
+
+class DownloadNotAvailableDetail(SQLModel):
+    """Structured 409 detail raised when a non-clean object is downloaded.
+
+    Same flat-object shape as ``UploadRejectDetail``
+    (``schemas/uploads.py``): a stable ``code``, a machine-readable field —
+    here ``scan_status`` rather than ``reason`` — and a human ``message``, so
+    a quarantined/infected download reads "…failed the virus scan" instead of
+    the generic "not available for download" string.
+    """
+
+    code: Literal["scan_not_clean"] = "scan_not_clean"
+    scan_status: ScanStatus
+    message: str

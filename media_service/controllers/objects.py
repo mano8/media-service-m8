@@ -32,6 +32,7 @@ from media_service.db_models.media_objects import (
     utcnow,
 )
 from media_service.schemas.objects import (
+    DownloadNotAvailableDetail,
     DownloadUrlResponse,
     MediaObjectUpdate,
     ObjectListParams,
@@ -51,6 +52,13 @@ _SORT_COLUMNS: dict[str, Any] = {
     "created_at": MediaObject.created_at,
     "size_bytes": MediaObject.size_bytes,
 }
+
+
+def _download_not_available_message(scan_status: ScanStatus) -> str:
+    """Human copy for the download-guard 409, distinct for a scan rejection."""
+    if scan_status in (ScanStatus.INFECTED, ScanStatus.QUARANTINED):
+        return "Object is not available for download: it failed the virus scan."
+    return "Object is not available for download until it passes scanning."
 
 
 def _cursor_sort_value(*, sort_by: str, obj: MediaObject) -> Any:
@@ -399,9 +407,13 @@ class ObjectsController:
         # Bytes are non-downloadable until an antivirus scan clears them; an
         # unscanned/infected object must never hand out a working URL.
         if obj.scan_status != ScanStatus.CLEAN:
+            detail = DownloadNotAvailableDetail(
+                scan_status=obj.scan_status,
+                message=_download_not_available_message(obj.scan_status),
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Object is not available for download until it passes scanning.",
+                detail=detail.model_dump(mode="json"),
             )
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
         url = create_download_url(

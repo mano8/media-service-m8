@@ -242,7 +242,11 @@ def test_complete_upload_rejects_oversized(
     )
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert resp.json()["detail"]["reason"] == "size_exceeded"
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict)
+    assert detail["code"] == "upload_rejected"
+    assert detail["reason"] == "size_exceeded"
+    assert detail["message"] == "Upload rejected: size_exceeded."
 
 
 def test_complete_upload_rejects_mime_mismatch(
@@ -253,7 +257,11 @@ def test_complete_upload_rejects_mime_mismatch(
     mock_storage.get_object_head.return_value = _PNG_BYTES
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert resp.json()["detail"]["reason"] == "mime_mismatch"
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict)
+    assert detail["code"] == "upload_rejected"
+    assert detail["reason"] == "mime_mismatch"
+    assert detail["message"] == "Upload rejected: mime_mismatch."
 
 
 def test_complete_upload_rejects_sha256_mismatch(
@@ -268,7 +276,11 @@ def test_complete_upload_rejects_sha256_mismatch(
         f"/media/v1/uploads/{us.id}/complete", json={"sha256": wrong_sha256}
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"]["reason"] == "sha256_mismatch"
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict)
+    assert detail["code"] == "upload_rejected"
+    assert detail["reason"] == "sha256_mismatch"
+    assert detail["message"] == "Upload rejected: sha256_mismatch."
 
 
 def test_complete_upload_passes_with_correct_sha256(
