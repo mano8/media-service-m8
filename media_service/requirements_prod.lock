@@ -696,9 +696,9 @@ markupsafe==3.0.3 \
     # via
     #   jinja2
     #   mako
-media-sdk-m8==0.5.1 \
-    --hash=sha256:c888bb364fcaab1f851193d0fe8755b3cd8009981b6d9532cf3f93f15aa78e7f \
-    --hash=sha256:f0d396402ca5daf48d855d39e5510c2faf9f30aa277a2c2921723027e4571aee
+media-sdk-m8==0.6.0 \
+    --hash=sha256:4a1e228fa4c76683ae5fd724acff3f6afbeecf41bd044b6f34996bef8780d31d \
+    --hash=sha256:e8162c1abb21ff9c9c6eaed3f1cc3f85f2d3fd763c30b39ca2e58ed57d3e2876
     # via -r media_service/requirements_base.txt
 minio==7.2.20 \
     --hash=sha256:95898b7a023fbbfde375985aa77e2cd6a0762268db79cf886f002a9ea8e68598 \

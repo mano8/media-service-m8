@@ -92,7 +92,7 @@ markupsafe==3.0.3
     # via
     #   jinja2
     #   mako
-media-sdk-m8==0.5.1
+media-sdk-m8==0.6.0
     # via -r media_service/requirements_base.txt
 minio==7.2.20
     # via

@@ -55,7 +55,9 @@ here.
 - **`media-sdk-m8` floor raised `>=0.5.1` → `>=0.6.0,<0.7.0`.** The upper bound
   is new: under the SDK's 0.x SemVer a minor bump is breaking (`0.6.0` itself
   raises its Python floor to 3.12), so an unbounded floor would keep pulling
-  breaking minors.
+  breaking minors. `constraints.txt`, `constraints-all.txt` and
+  `requirements_prod.lock` regenerated on Linux against the published `0.6.0`;
+  no other pin moved.
 
 ---
 
