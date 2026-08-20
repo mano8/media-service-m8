@@ -7,7 +7,8 @@ from sqlmodel import Session, col, select
 
 from fastapi_m8 import UserModel
 
-from media_service.core.presets import BUILTIN_PRESETS, _user_tenant_id
+from media_service.core.presets import BUILTIN_PRESETS
+from media_service.core.tenancy import user_tenant_id
 from media_service.db_models.image_presets import ImagePreset
 from media_service.db_models.media_objects import utcnow
 from media_service.schemas.presets import (
@@ -56,7 +57,7 @@ class PresetsController:
     ) -> list[ImagePresetPublic]:
         """Return built-ins (minus shadowed names) followed by the user's rows."""
         owner_id = uuid.UUID(str(current_user.id))
-        tenant_id = _user_tenant_id(current_user)
+        tenant_id = user_tenant_id(current_user)
         statement = select(ImagePreset).where(
             col(ImagePreset.owner_user_id) == owner_id
         )
@@ -82,7 +83,7 @@ class PresetsController:
     ) -> ImagePresetPublic:
         """Create a user-owned preset; a duplicate name in scope raises 409."""
         owner_id = uuid.UUID(str(current_user.id))
-        tenant_id = _user_tenant_id(current_user)
+        tenant_id = user_tenant_id(current_user)
         statement = select(ImagePreset).where(
             col(ImagePreset.owner_user_id) == owner_id,
             col(ImagePreset.name) == req.name,

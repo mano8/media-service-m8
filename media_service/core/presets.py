@@ -16,6 +16,7 @@ from fastapi_m8 import UserModel
 
 from media_sdk_m8 import VariantSpec
 
+from media_service.core.tenancy import user_tenant_id
 from media_service.db_models.image_presets import ImagePreset
 from media_service.db_models.media_objects import MediaObject
 from media_service.schemas.presets import (
@@ -46,12 +47,6 @@ BUILTIN_PRESETS: dict[str, PresetSpec] = {
 }
 
 
-def _user_tenant_id(current_user: UserModel) -> uuid.UUID | None:
-    """Return the caller's tenant as a UUID, or ``None`` when untenanted."""
-    raw = getattr(current_user, "tenant_id", None)
-    return uuid.UUID(str(raw)) if raw is not None else None
-
-
 def _user_presets(
     session: Session, owner_id: uuid.UUID, tenant_id: uuid.UUID | None
 ) -> dict[str, PresetSpec]:
@@ -68,7 +63,7 @@ def _user_presets(
 def merged_presets(session: Session, current_user: UserModel) -> dict[str, PresetSpec]:
     """Return built-ins overlaid with the caller's named presets (user wins)."""
     owner_id = uuid.UUID(str(current_user.id))
-    tenant_id = _user_tenant_id(current_user)
+    tenant_id = user_tenant_id(current_user)
     return {**BUILTIN_PRESETS, **_user_presets(session, owner_id, tenant_id)}
 
 

@@ -16,6 +16,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a runtime import cyc
     from media_service.db_models.media_objects import MediaObject
 
 
+#: Upper bound on how many user categories one media object may be filed into in
+#: a single request. It bounds the ``IN (...)`` the assignment resolver builds
+#: straight out of a request body, so an unbounded client list cannot turn one
+#: call into an unbounded query (`SEC-VALIDATE-UNTRUSTED-INPUT`).
+MAX_CATEGORY_ASSIGNMENTS = 50
+
+
 # ---------------------------------------------------------------
 # ---------------------------------------------------------------
 # ------- Category

@@ -15,8 +15,13 @@ guarantee a real caller.
 Every query is additionally scoped by tenant (`D4`): a tenanted caller sees
 their tenant's shared categories, an untenanted caller falls back to their own
 ``owner_id`` scope. Tenant extraction reuses
-:func:`media_service.controllers.objects._user_tenant_id` rather than
-reinventing it here.
+:func:`media_service.core.tenancy.user_tenant_id` rather than reinventing it
+here.
+
+The same scope is what every *assignment* surface is validated against —
+:func:`resolve_category_ids` is the trust boundary for the ``category_ids`` a
+caller sends to upload initiate/complete and to the object PATCH — so a filing
+can only ever name a category that caller can already see.
 
 The hierarchy invariants live here too, because the database cannot express
 them: a parent must sit in the same scope as its child, the ``parent_id`` chain
@@ -27,6 +32,7 @@ from under them.
 """
 
 import uuid
+from collections.abc import Sequence
 
 from fastapi import HTTPException, status
 from sqlalchemy import and_, func
@@ -35,8 +41,12 @@ from sqlmodel.sql.expression import SelectOfScalar
 
 from fastapi_m8 import UserModel
 
-from media_service.controllers.objects import _user_tenant_id
-from media_service.core.category_tree import build_category_tree, count_category_nodes
+from media_service.core.category_tree import (
+    build_category_tree,
+    category_refs,
+    count_category_nodes,
+)
+from media_service.core.tenancy import user_tenant_id
 from media_service.db_models.categories import (
     CategoriesPublic,
     Category,
@@ -44,6 +54,7 @@ from media_service.db_models.categories import (
     CategoryPublic,
     CategoryTreePublic,
     CategoryUpdate,
+    MediaObjectCategoryRef,
 )
 from media_service.db_models.media_object_categories import MediaObjectCategoryLink
 
@@ -65,7 +76,7 @@ def _scoped_query(current_user: UserModel) -> SelectOfScalar[Category]:
     statement = select(Category)
     if current_user.is_superuser:
         return statement
-    tenant_id = _user_tenant_id(current_user)
+    tenant_id = user_tenant_id(current_user)
     if tenant_id is not None:
         return statement.where(col(Category.tenant_id) == tenant_id)
     return statement.where(
@@ -85,7 +96,7 @@ def _in_scope(current_user: UserModel, row: Category) -> bool:
     """
     if current_user.is_superuser:
         return True
-    tenant_id = _user_tenant_id(current_user)
+    tenant_id = user_tenant_id(current_user)
     if tenant_id is not None:
         return row.tenant_id == tenant_id
     return row.tenant_id is None and row.owner_id == _owner_id(current_user)
@@ -228,6 +239,86 @@ def _reject_duplicate_slug(
         )
 
 
+def _unique_ids(category_ids: Sequence[int]) -> list[int]:
+    """De-duplicate ids, preserving the order they were given in.
+
+    A filing is a set: the link table's composite primary key already makes a
+    repeated filing a no-op, so a body naming the same category twice is
+    collapsed rather than refused.
+    """
+    seen: set[int] = set()
+    unique: list[int] = []
+    for category_id in category_ids:
+        if category_id not in seen:
+            seen.add(category_id)
+            unique.append(category_id)
+    return unique
+
+
+def resolve_category_ids(
+    session: Session, current_user: UserModel, category_ids: Sequence[int]
+) -> list[Category]:
+    """Resolve caller-supplied ids to in-scope rows, refusing any that miss.
+
+    The trust boundary for every assignment surface (upload initiate, upload
+    complete, object PATCH): an id the caller cannot see is refused with the
+    same 404/403 pair ``GET /category/get/{id}`` answers, so a filing can never
+    reference another tenant's category — and cannot be used as an existence
+    oracle for one either.
+
+    One query resolves the whole set, so the cost does not grow with the number
+    of ids; the per-id reload below only runs on the refusal path, where the
+    scoped query cannot say *why* an id is absent.
+    """
+    wanted = _unique_ids(category_ids)
+    if not wanted:
+        return []
+    rows = session.exec(
+        _scoped_query(current_user).where(col(Category.id).in_(wanted))
+    ).all()
+    found = {row.id: row for row in rows}
+    for category_id in wanted:
+        if category_id not in found:
+            found[category_id] = _load_category(session, current_user, category_id)
+    return [found[category_id] for category_id in wanted]
+
+
+def categories_in_scope(
+    session: Session, current_user: UserModel, category_ids: Sequence[int]
+) -> list[Category]:
+    """Return the ids that still resolve in the caller's scope, dropping the rest.
+
+    The lenient counterpart to :func:`resolve_category_ids`, for ids that were
+    validated once and then stored — the filing declared at upload initiate and
+    replayed at completion. The object is in storage by then and the caller
+    cannot retry the upload, so a category deleted in between is dropped from
+    the filing rather than failing the completion outright.
+    """
+    wanted = _unique_ids(category_ids)
+    if not wanted:
+        return []
+    rows = session.exec(
+        _scoped_query(current_user).where(col(Category.id).in_(wanted))
+    ).all()
+    by_id = {row.id: row for row in rows}
+    return [by_id[category_id] for category_id in wanted if category_id in by_id]
+
+
+def assigned_category_refs(
+    session: Session, current_user: UserModel, categories: Sequence[Category]
+) -> list[MediaObjectCategoryRef]:
+    """Project one object's filing into public refs with resolved paths.
+
+    Single-object paths only (a write response echoing what it just filed). The
+    scope rows are loaded once per call to resolve the slug paths, which is one
+    extra query for one object; the list surface needs a per-page load instead
+    and is the next `U4` step, not this one.
+    """
+    if not categories:
+        return []
+    return category_refs(categories, session.exec(_scoped_query(current_user)).all())
+
+
 class CategoryController:
     """Handle CRUD over the caller's user-defined category records."""
 
@@ -310,7 +401,7 @@ class CategoryController:
         here: the row has no id yet, so nothing can point back at it.
         """
         owner_id = _owner_id(current_user)
-        tenant_id = _user_tenant_id(current_user)
+        tenant_id = user_tenant_id(current_user)
         if req.parent_id is not None:
             _load_parent(
                 session,

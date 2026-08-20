@@ -9,6 +9,11 @@ from sqlmodel import Session
 
 from fastapi_m8 import UserModel
 
+from media_service.controllers.category import (
+    assigned_category_refs,
+    categories_in_scope,
+    resolve_category_ids,
+)
 from media_service.core.config import settings
 from media_service.core.quotas import (
     QuotaExceededError,
@@ -169,6 +174,11 @@ class UploadsController:
             tenant_id=tenant_id,
             additional_bytes=req.expected_size_bytes,
         )
+        # Same reason as the quota refusal above: resolve the declared user
+        # categories before a presigned URL exists, so an unknown or foreign id
+        # is a refusal the caller can act on rather than a session carrying a
+        # filing its owner was never entitled to.
+        categories = resolve_category_ids(session, current_user, req.category_ids)
         object_key = build_object_key(
             owner_user_id=owner_id,
             media_id=media_id,
@@ -206,6 +216,7 @@ class UploadsController:
             expected_mime_type=req.mime_type,
             expected_size_bytes=req.expected_size_bytes,
             expires_at=expires_at,
+            category_ids=[category.id for category in categories],
         )
         session.add(upload_session)
         session.commit()
@@ -229,6 +240,20 @@ class UploadsController:
         """Verify the object landed in storage and promote the session to a MediaObject."""
         upload_session = _load_owned_session(session, current_user, session_id)
         _ensure_completable(session, upload_session)
+        # Set semantics: a body carrying ``category_ids`` replaces the filing
+        # declared at initiate (``[]`` completes the object unfiled) and is
+        # validated strictly, because it is caller input arriving now. The
+        # stored declaration is replayed leniently instead — the bytes are
+        # already in storage and the caller cannot re-run the upload, so a
+        # category deleted since initiate is dropped from the filing rather
+        # than failing a completion over it. Both run before anything is
+        # touched, so a refusal here leaves the session completable.
+        if req.category_ids is not None:
+            categories = resolve_category_ids(session, current_user, req.category_ids)
+        else:
+            categories = categories_in_scope(
+                session, current_user, upload_session.category_ids or []
+            )
 
         try:
             stat = storage.stat_object(
@@ -343,6 +368,10 @@ class UploadsController:
             sha256=req.sha256,
             status=MediaObjectStatus.UPLOADED,
         )
+        # Assigned through the relationship so the link rows are inserted in the
+        # same transaction that promotes the object, after its own INSERT — the
+        # link's FK cannot resolve before the media object exists.
+        media_object.user_categories = list(categories)
         upload_session.status = UploadSessionStatus.COMPLETED
         upload_session.completed_at = utcnow()
         session.add(media_object)
@@ -351,7 +380,14 @@ class UploadsController:
         session.refresh(media_object)
         inc_upload_completed(str(upload_session.category), stat.size)
         return UploadCompleteResponse(
-            media_object=MediaObjectPublic.model_validate(media_object)
+            media_object=MediaObjectPublic.model_validate(
+                media_object,
+                update={
+                    "categories": assigned_category_refs(
+                        session, current_user, categories
+                    )
+                },
+            )
         )
 
     @staticmethod

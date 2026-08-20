@@ -8,6 +8,7 @@ from pydantic import model_validator
 from sqlmodel import Field, SQLModel
 
 from media_service.core.validation import max_size_for_category
+from media_service.db_models.categories import MAX_CATEGORY_ASSIGNMENTS
 from media_service.db_models.media_objects import (
     MediaCategory,
     MediaObjectPublic,
@@ -28,6 +29,15 @@ class UploadInitiateRequest(SQLModel):
     # can shrink to slip past quota accounting (actual stored size is the
     # authority at completion).
     expected_size_bytes: int = Field(ge=1)
+    # Optional user categories to file the object into once it completes (`U4`).
+    # Validated here, before a URL is issued, and stored on the session so the
+    # filing survives to completion; the fixed ``category`` above is untouched
+    # and keeps driving policy (size cap, allowed MIME, quota).
+    category_ids: list[int] = Field(
+        default_factory=list,
+        max_length=MAX_CATEGORY_ASSIGNMENTS,
+        description="User categories to file the completed object into",
+    )
 
     @model_validator(mode="after")
     def _cap_to_category_maximum(self) -> "UploadInitiateRequest":
@@ -60,6 +70,15 @@ class UploadCompleteRequest(SQLModel):
     """Optional payload for completing an upload."""
 
     sha256: str | None = None
+    # ``None`` keeps whatever filing was declared at initiate; a list replaces
+    # it wholesale (set semantics), and ``[]`` completes the object unfiled.
+    # The distinction is why this is nullable rather than defaulting to ``[]``:
+    # a body sent only to carry ``sha256`` must not silently clear the filing.
+    category_ids: list[int] | None = Field(
+        default=None,
+        max_length=MAX_CATEGORY_ASSIGNMENTS,
+        description="Replaces the categories declared at initiate; [] files none",
+    )
 
 
 class UploadCompleteResponse(SQLModel):

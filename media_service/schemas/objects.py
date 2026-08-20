@@ -6,6 +6,7 @@ import uuid
 
 from sqlmodel import Field, SQLModel
 
+from media_service.db_models.categories import MAX_CATEGORY_ASSIGNMENTS
 from media_service.db_models.media_objects import (
     MediaCategory,
     MediaObjectPublic,
@@ -26,6 +27,16 @@ class MediaObjectUpdate(SQLModel):
     visibility: MediaVisibility | None = None
     original_filename: str | None = None
     category: MediaCategory | None = None
+    # Set semantics (`U4`): a body carrying ``category_ids`` replaces the
+    # object's whole filing — ``[]`` unfiles it — while omitting the field
+    # leaves the existing filing alone. That is what ``None`` means here, so it
+    # cannot default to ``[]``. Not a column on ``MediaObject``: the filing is
+    # link rows, which is what lets one object sit in several categories.
+    category_ids: list[int] | None = Field(
+        default=None,
+        max_length=MAX_CATEGORY_ASSIGNMENTS,
+        description="Replaces every user category this object is filed into",
+    )
 
 
 class DownloadUrlResponse(SQLModel):

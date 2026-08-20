@@ -15,6 +15,10 @@ from sqlmodel.sql.expression import SelectOfScalar
 
 from fastapi_m8 import UserModel
 
+from media_service.controllers.category import (
+    assigned_category_refs,
+    resolve_category_ids,
+)
 from media_service.core.config import settings
 from media_service.core.outbox import (
     EVENT_OBJECT_DELETED,
@@ -23,6 +27,7 @@ from media_service.core.outbox import (
     record_event,
 )
 from media_service.core.quotas import record_object_removed
+from media_service.core.tenancy import user_tenant_id
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectPublic,
@@ -150,7 +155,7 @@ def _scoped_query(
         col(MediaObject.owner_user_id) == owner_id,
         col(MediaObject.visibility) == MediaVisibility.PUBLIC,
     ]
-    user_tenant = _user_tenant_id(current_user)
+    user_tenant = user_tenant_id(current_user)
     if user_tenant is not None:
         visibility_clauses.append(
             and_(
@@ -187,17 +192,6 @@ def _apply_filters(
             col(MediaObject.original_filename).contains(params.q, autoescape=True)
         )
     return statement
-
-
-def _user_tenant_id(current_user: UserModel) -> uuid.UUID | None:
-    """Return the caller's tenant as a UUID, or ``None`` when untenanted.
-
-    ``UserModel`` does not (yet) carry a tenant claim, so this reads it
-    defensively: callers without a tenant get ``None``, which never matches a
-    ``TENANT`` object (see :func:`require_visibility_access`).
-    """
-    raw = getattr(current_user, "tenant_id", None)
-    return uuid.UUID(str(raw)) if raw is not None else None
 
 
 def _fetch_object(
@@ -245,7 +239,7 @@ def require_visibility_access(obj: MediaObject, current_user: UserModel | None) 
     if obj.visibility == MediaVisibility.PUBLIC:
         return
     if obj.visibility == MediaVisibility.TENANT:
-        user_tenant = _user_tenant_id(current_user)
+        user_tenant = user_tenant_id(current_user)
         if user_tenant is not None and obj.tenant_id == user_tenant:
             return
     raise HTTPException(
@@ -440,15 +434,31 @@ class ObjectsController:
 
         A ``visibility`` change relocates the stored bytes to the matching
         bucket so metadata never diverges from where the object actually lives.
+
+        ``category_ids`` replaces the object's whole user-category filing
+        (`U4`): it is a set, not a delta, so re-filing and unfiling are the same
+        operation. Every id is resolved in the caller's scope *before* any
+        relocation runs, so a request that is about to be refused never moves
+        bytes first.
         """
         obj = _load_object(session, current_user, object_id)
         update_data = update.model_dump(exclude_unset=True)
+        # Not a column on MediaObject — the filing is link rows — so it comes
+        # out before ``sqlmodel_update`` sees it.
+        category_ids = update_data.pop("category_ids", None)
+        categories = (
+            resolve_category_ids(session, current_user, category_ids)
+            if category_ids is not None
+            else None
+        )
         old_bucket = _relocate_for_visibility(
             storage, obj, update_data.get("visibility")
         )
         new_bucket = obj.storage_bucket
         object_key = obj.object_key
         obj.sqlmodel_update(update_data)
+        if categories is not None:
+            obj.user_categories = list(categories)
         obj.updated_at = utcnow()
         session.add(obj)
         try:
@@ -474,7 +484,14 @@ class ObjectsController:
                 object_key=obj.object_key,
                 context="visibility-relocation",
             )
-        return MediaObjectPublic.model_validate(obj)
+        return MediaObjectPublic.model_validate(
+            obj,
+            update={
+                "categories": assigned_category_refs(
+                    session, current_user, obj.user_categories
+                )
+            },
+        )
 
     @staticmethod
     def apply_scan_result(
