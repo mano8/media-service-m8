@@ -304,6 +304,34 @@ def test_anonymous_uncategorized_filter_still_sees_only_public_objects(
     assert [item["id"] for item in response.json()["items"]] == [str(public_object.id)]
 
 
+def test_anonymous_listing_never_leaks_category_filing(
+    tier_client, session, public_object
+):
+    """`U4` — the list page's ``categories`` array stays empty for anon (`D2`/`D3`).
+
+    A category has no public form, so an anonymous listing must not surface
+    what a ``PUBLIC`` object is filed into even though the object itself is
+    listable — the per-page projection needs a real principal to scope, and an
+    anonymous caller has none.
+    """
+    category = Category(name="Docs", slug="docs", owner_id=str(OWNER_ID))
+    session.add(category)
+    session.commit()
+    session.refresh(category)
+    session.add(
+        MediaObjectCategoryLink(
+            media_object_id=public_object.id, category_id=category.id
+        )
+    )
+    session.commit()
+
+    response = tier_client.get(f"{V1}/objects", headers=NO_AUTH)
+    assert response.status_code == 200
+    (item,) = response.json()["items"]
+    assert item["id"] == str(public_object.id)
+    assert item["categories"] == []
+
+
 def test_a_broken_token_is_never_silently_downgraded_to_anonymous(tier_client):
     """Presenting garbage credentials fails; it does not fall back to public."""
     response = tier_client.get(

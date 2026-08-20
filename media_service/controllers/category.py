@@ -357,6 +357,53 @@ def assigned_category_refs(
     return category_refs(categories, session.exec(_scoped_query(current_user)).all())
 
 
+def category_refs_by_object(
+    session: Session,
+    current_user: UserModel | None,
+    object_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, list[MediaObjectCategoryRef]]:
+    """Project every object's filing into public refs, one load per page (`U4`).
+
+    The list-page counterpart of :func:`assigned_category_refs`: instead of
+    resolving one object's filing with its own query, it resolves the whole
+    page's filings in exactly two queries total — the link rows for
+    ``object_ids``, then the caller's category scope once, to resolve slug
+    paths — regardless of how many objects are on the page. Never one query
+    per object.
+
+    ``current_user is None`` is the anonymous public-catalogue caller (A16,
+    `D3`): a category has no public form (`D2`), so every object on an
+    anonymous listing gets an empty filing rather than a query that would
+    otherwise need a real principal to scope.
+
+    A link naming a category outside the caller's *current* scope (e.g. a
+    superuser whose scope narrowed after the filing was made) is dropped
+    rather than surfaced unresolved — the same "degrade, don't fail" choice
+    :func:`core.category_tree.resolve_category_paths` makes for a dangling
+    parent.
+    """
+    if current_user is None or not object_ids:
+        return {}
+    links = session.exec(
+        select(MediaObjectCategoryLink)
+        .where(col(MediaObjectCategoryLink.media_object_id).in_(object_ids))
+        .order_by(
+            col(MediaObjectCategoryLink.media_object_id),
+            col(MediaObjectCategoryLink.category_id),
+        )
+    ).all()
+    if not links:
+        return {}
+    scope = session.exec(_scoped_query(current_user)).all()
+    by_id = {row.id: row for row in scope}
+    known_links = [link for link in links if link.category_id in by_id]
+    refs = category_refs([by_id[link.category_id] for link in known_links], scope)
+    result: dict[uuid.UUID, list[MediaObjectCategoryRef]] = {}
+    for link, ref in zip(known_links, refs):
+        result.setdefault(link.media_object_id, []).append(ref)
+    return result
+
+
 class CategoryController:
     """Handle CRUD over the caller's user-defined category records."""
 

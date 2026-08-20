@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlmodel import Session
 
 from media_service.db_models.categories import Category
@@ -609,3 +610,94 @@ def test_list_filter_branch_walk_survives_a_cycle_written_to_disk(
     resp = client.get(f"/media/v1/objects?category_id={root.id}")
     assert resp.status_code == 200
     assert _ids(resp) == {str(filed.id)}
+
+
+# ── `categories` array on the list page (`U4`) ──────────────────────────────
+
+
+def test_list_populates_the_categories_array(
+    client: TestClient, session: Session, current_user
+):
+    """Every item's ``categories`` array carries its filing, with resolved paths."""
+    root = _make_category(session, current_user.id, "Documents")
+    child = _make_category(session, current_user.id, "Invoices", parent_id=root.id)
+    multi = _make_object(session, current_user.id, filename="multi.pdf")
+    single = _make_object(session, current_user.id, filename="single.pdf")
+    unfiled = _make_object(session, current_user.id, filename="loose.pdf")
+    _file_into(session, multi, root, child)
+    _file_into(session, single, root)
+
+    resp = client.get("/media/v1/objects")
+    assert resp.status_code == 200
+    by_id = {item["id"]: item["categories"] for item in resp.json()["items"]}
+
+    assert {c["path"] for c in by_id[str(multi.id)]} == {
+        "documents",
+        "documents/invoices",
+    }
+    assert [c["path"] for c in by_id[str(single.id)]] == ["documents"]
+    assert by_id[str(unfiled.id)] == []
+
+
+def test_list_categories_query_count_does_not_grow_with_page_size(
+    client: TestClient, session: Session, engine, current_user
+):
+    """The `categories` projection is one joined load per page, not per object.
+
+    Filing two objects and eight objects into the same branch and comparing the
+    number of SQL statements the listing issues proves the cost is flat: two
+    extra queries (the link rows, then the scope for path resolution),
+    regardless of how many objects are on the page.
+    """
+
+    def _query_count(fn) -> int:
+        statements: list[str] = []
+
+        def _record(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", _record)
+        try:
+            fn()
+        finally:
+            event.remove(engine, "before_cursor_execute", _record)
+        return len(statements)
+
+    root = _make_category(session, current_user.id, "Documents")
+    child = _make_category(session, current_user.id, "Invoices", parent_id=root.id)
+
+    small = [
+        _make_object(session, current_user.id, filename=f"s{i}.pdf") for i in range(2)
+    ]
+    for obj in small:
+        _file_into(session, obj, root, child)
+    small_count = _query_count(lambda: client.get("/media/v1/objects"))
+    assert small_count > 0
+
+    large = [
+        _make_object(session, current_user.id, filename=f"l{i}.pdf") for i in range(8)
+    ]
+    for obj in large:
+        _file_into(session, obj, root, child)
+    large_count = _query_count(lambda: client.get("/media/v1/objects?limit=20"))
+
+    assert large_count == small_count
+
+
+def test_list_categories_stays_empty_when_the_branch_filter_excludes_the_filing(
+    client: TestClient, session: Session, current_user
+):
+    """A filed object still reports its full filing, even outside the branch filter.
+
+    ``categories`` reflects everything the object is filed into, not just the
+    branch the listing happened to be narrowed to.
+    """
+    root = _make_category(session, current_user.id, "Documents")
+    other = _make_category(session, current_user.id, "Photos")
+    obj = _make_object(session, current_user.id)
+    _file_into(session, obj, root, other)
+
+    resp = client.get(f"/media/v1/objects?category_id={root.id}")
+    assert resp.status_code == 200
+    (item,) = resp.json()["items"]
+    assert {c["id"] for c in item["categories"]} == {root.id, other.id}

@@ -18,6 +18,7 @@ from fastapi_m8 import UserModel
 from media_service.controllers.category import (
     assigned_category_refs,
     branch_category_ids,
+    category_refs_by_object,
     resolve_category_ids,
 )
 from media_service.core.config import settings
@@ -424,8 +425,17 @@ class ObjectsController:
         next_cursor = (
             _encode_cursor(sort_by=params.sort_by, obj=items[-1]) if has_more else None
         )
+        # One joined load for the whole page, not one query per object (`U4`).
+        refs_by_object = category_refs_by_object(
+            session, current_user, [o.id for o in items]
+        )
         return ObjectListResponse(
-            items=[MediaObjectPublic.model_validate(o) for o in items],
+            items=[
+                MediaObjectPublic.model_validate(
+                    o, update={"categories": refs_by_object.get(o.id, [])}
+                )
+                for o in items
+            ],
             next_cursor=next_cursor,
             count=len(items),
         )
