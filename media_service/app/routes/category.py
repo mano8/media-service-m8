@@ -24,6 +24,7 @@ from media_service.db_models.categories import (
     CategoriesPublic,
     CategoryCreate,
     CategoryPublic,
+    CategoryTreePublic,
     CategoryUpdate,
 )
 
@@ -49,6 +50,22 @@ def read_root(
     """Retrieve the caller's category list."""
     return CategoryController.list_categories(
         session=session, current_user=current_user, skip=skip, limit=limit
+    )
+
+
+@router.get(
+    "/tree/",
+    response_model=CategoryTreePublic,
+    responses=BaseController.get_error_responses(),
+)
+def read_tree(
+    *,
+    session: SessionDep,
+    current_user: CurrentReader,
+) -> CategoryTreePublic:
+    """Get the caller's nested category tree, each node carrying object counts."""
+    return CategoryController.get_category_tree(
+        session=session, current_user=current_user
     )
 
 

@@ -29,13 +29,16 @@ from sqlmodel.sql.expression import SelectOfScalar
 from fastapi_m8 import UserModel
 
 from media_service.controllers.objects import _user_tenant_id
+from media_service.core.category_tree import build_category_tree, count_category_nodes
 from media_service.db_models.categories import (
     CategoriesPublic,
     Category,
     CategoryCreate,
     CategoryPublic,
+    CategoryTreePublic,
     CategoryUpdate,
 )
+from media_service.db_models.media_object_categories import MediaObjectCategoryLink
 
 
 def _owner_id(current_user: UserModel) -> uuid.UUID:
@@ -118,6 +121,35 @@ class CategoryController:
             data=[CategoryPublic.model_validate(row) for row in items],
             count=count or 0,
         )
+
+    @staticmethod
+    def get_category_tree(
+        *,
+        session: Session,
+        current_user: UserModel,
+    ) -> CategoryTreePublic:
+        """Return the caller's nested category tree with per-node object counts.
+
+        ``object_count`` is a single grouped query over the in-scope category
+        ids, not one query per node, so the tree endpoint stays O(1) queries
+        regardless of tree size. ``count`` is the total node count at every
+        depth, matching :func:`core.category_tree.count_category_nodes`.
+        """
+        categories = session.exec(_scoped_query(current_user)).all()
+        if not categories:
+            return CategoryTreePublic(data=[], count=0)
+        category_ids = [category.id for category in categories]
+        counts_statement = (
+            select(
+                MediaObjectCategoryLink.category_id,
+                func.count(),
+            )
+            .where(col(MediaObjectCategoryLink.category_id).in_(category_ids))
+            .group_by(col(MediaObjectCategoryLink.category_id))
+        )
+        direct_counts = dict(session.exec(counts_statement).all())
+        roots = build_category_tree(categories, direct_counts)
+        return CategoryTreePublic(data=roots, count=count_category_nodes(roots))
 
     @staticmethod
     def get_category(

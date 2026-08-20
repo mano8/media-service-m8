@@ -45,6 +45,15 @@
     "note": "Get category by id — reader tier + ownership (A16)"
   },
   {
+    "path": "/media/category/tree/",
+    "method": "GET",
+    "tag": "category",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Nested category tree with per-node object counts — reader tier (A16, `D-filter`)"
+  },
+  {
     "path": "/media/dashboard/users/activity/",
     "method": "GET",
     "tag": "dashboard",

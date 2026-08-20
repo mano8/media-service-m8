@@ -16,6 +16,12 @@ from media_service.db_models.categories import (
     CategoryCreate,
     CategoryGenerators,
 )
+from media_service.db_models.media_object_categories import MediaObjectCategoryLink
+from media_service.db_models.media_objects import (
+    MediaCategory,
+    MediaObject,
+    MediaVisibility,
+)
 
 
 # ── slug auto-generation validator ────────────────────────────────────────────
@@ -33,14 +39,51 @@ def test_generate_slug_skips_when_name_missing():
 
 
 def _make_category(
-    session: Session, owner_id: uuid.UUID, name: str = "TestCat"
+    session: Session,
+    owner_id: uuid.UUID,
+    name: str = "TestCat",
+    *,
+    parent_id: int | None = None,
 ) -> Category:
     """Insert a category owned by the given user."""
-    cat = Category(name=name, slug=name.lower().replace(" ", "-"), owner_id=owner_id)
+    cat = Category(
+        name=name,
+        slug=name.lower().replace(" ", "-"),
+        owner_id=owner_id,
+        parent_id=parent_id,
+    )
     session.add(cat)
     session.commit()
     session.refresh(cat)
     return cat
+
+
+def _make_object(session: Session, owner_id: uuid.UUID) -> MediaObject:
+    """Insert a minimal media object, for filing into categories."""
+    oid = uuid.uuid4()
+    obj = MediaObject(
+        id=oid,
+        owner_user_id=owner_id,
+        category=MediaCategory.DOCUMENT,
+        visibility=MediaVisibility.PRIVATE,
+        storage_bucket="private-media",
+        object_key=f"users/{owner_id}/document/{oid}/original/file.pdf",
+        original_filename="file.pdf",
+        mime_type="application/pdf",
+        size_bytes=1024,
+    )
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return obj
+
+
+def _file_into(session: Session, obj: MediaObject, category: Category) -> None:
+    """File a media object into a user category via the M2M link table."""
+    session.add(
+        MediaObjectCategoryLink(media_object_id=obj.id, category_id=category.id)
+    )
+    session.commit()
 
 
 # ── GET /media/category/ ──────────────────────────────────────────────────────
@@ -95,6 +138,112 @@ def test_list_categories_counts_the_scope_not_the_page(
     assert resp.status_code == 200
     body = resp.json()
     assert (len(body["data"]), body["count"]) == (1, 3)
+
+
+# ── GET /media/category/tree/ ─────────────────────────────────────────────────
+
+
+def test_get_tree_empty(client: TestClient):
+    resp = client.get("/media/category/tree/")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert (body["data"], body["count"]) == ([], 0)
+
+
+def test_get_tree_nests_children_and_rolls_up_counts(
+    client: TestClient, session: Session, current_user
+):
+    root = _make_category(session, current_user.id, "Root")
+    child = _make_category(session, current_user.id, "Child", parent_id=root.id)
+    grandchild = _make_category(
+        session, current_user.id, "Grandchild", parent_id=child.id
+    )
+    empty_sibling = _make_category(session, current_user.id, "Empty", parent_id=root.id)
+
+    obj_on_root = _make_object(session, current_user.id)
+    _file_into(session, obj_on_root, root)
+    obj_on_grandchild = _make_object(session, current_user.id)
+    _file_into(session, obj_on_grandchild, grandchild)
+
+    resp = client.get("/media/category/tree/")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 4
+
+    [root_node] = body["data"]
+    assert root_node["id"] == root.id
+    assert (root_node["object_count"], root_node["total_object_count"]) == (1, 2)
+
+    by_id = {node["id"]: node for node in root_node["children"]}
+    assert (by_id[child.id]["object_count"], by_id[child.id]["total_object_count"]) == (
+        0,
+        1,
+    )
+    assert (
+        by_id[empty_sibling.id]["object_count"],
+        by_id[empty_sibling.id]["total_object_count"],
+    ) == (
+        0,
+        0,
+    )
+    [grandchild_node] = by_id[child.id]["children"]
+    assert grandchild_node["id"] == grandchild.id
+    assert (
+        grandchild_node["object_count"],
+        grandchild_node["total_object_count"],
+    ) == (1, 1)
+
+
+def test_get_tree_excludes_another_owner(
+    client: TestClient, session: Session, current_user, superuser
+):
+    _make_category(session, current_user.id, "Mine")
+    _make_category(session, superuser.id, "Theirs")
+    resp = client.get("/media/category/tree/")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [node["name"] for node in body["data"]] == ["Mine"]
+
+
+def test_get_tree_shares_within_the_same_tenant(session: Session):
+    tenant = uuid.uuid4()
+    creator = _tenanted_user(tenant)
+    CategoryController.create_category(
+        session=session, current_user=creator, req=CategoryCreate(name="TeamDocs")
+    )
+    other_member = _tenanted_user(tenant)
+    result = CategoryController.get_category_tree(
+        session=session, current_user=other_member
+    )
+    assert [node.name for node in result.data] == ["TeamDocs"]
+    assert result.count == 1
+
+
+def test_get_tree_excludes_a_different_tenant(session: Session):
+    CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(uuid.uuid4()),
+        req=CategoryCreate(name="TenantA"),
+    )
+    result = CategoryController.get_category_tree(
+        session=session, current_user=_tenanted_user(uuid.uuid4())
+    )
+    assert (result.data, result.count) == ([], 0)
+
+
+def test_get_tree_superuser_sees_across_tenants(
+    session: Session, current_user, superuser
+):
+    _make_category(session, current_user.id, "OwnerCat")
+    CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(uuid.uuid4()),
+        req=CategoryCreate(name="TenantCat"),
+    )
+    result = CategoryController.get_category_tree(
+        session=session, current_user=superuser
+    )
+    assert {node.name for node in result.data} >= {"OwnerCat", "TenantCat"}
 
 
 # ── GET /media/category/get/{id}/ ─────────────────────────────────────────────
