@@ -98,7 +98,11 @@ def create_item(
     current_user: CurrentWriter,
     item_in: CategoryCreate,
 ) -> CategoryPublic:
-    """Create a new category owned by the caller."""
+    """Create a new category, optionally nested under an existing one.
+
+    A ``parent_id`` must name a category in the caller's own scope, and the
+    name must be free among that parent's children.
+    """
     return CategoryController.create_category(
         session=session, current_user=current_user, req=item_in
     )
@@ -116,7 +120,11 @@ def update_item(
     item_id: int,
     item_in: CategoryUpdate,
 ) -> CategoryPublic:
-    """Update an owned category."""
+    """Update an owned category, including reparenting it.
+
+    A reparent may not cross a tenant boundary or close a cycle, and the
+    resulting name must be free among the new siblings.
+    """
     return CategoryController.update_category(
         session=session,
         current_user=current_user,
@@ -137,7 +145,11 @@ def delete_item(
     current_user: CurrentWriter,
     item_id: int,
 ) -> None:
-    """Delete an owned category."""
+    """Delete an owned category that holds no child categories.
+
+    A category with children is refused; reparent or delete them first.
+    Assigned media is unaffected — only the filings are removed.
+    """
     CategoryController.delete_category(
         session=session, current_user=current_user, category_id=item_id
     )

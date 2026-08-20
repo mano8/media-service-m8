@@ -17,6 +17,13 @@ their tenant's shared categories, an untenanted caller falls back to their own
 ``owner_id`` scope. Tenant extraction reuses
 :func:`media_service.controllers.objects._user_tenant_id` rather than
 reinventing it here.
+
+The hierarchy invariants live here too, because the database cannot express
+them: a parent must sit in the same scope as its child, the ``parent_id`` chain
+must stay acyclic, a sibling slug must stay unique (the composite unique
+constraint is defeated by SQL's distinct-NULL rule whenever ``tenant_id`` or
+``parent_id`` is null), and a category with children may not be deleted out
+from under them.
 """
 
 import uuid
@@ -69,6 +76,36 @@ def _scoped_query(current_user: UserModel) -> SelectOfScalar[Category]:
     )
 
 
+def _in_scope(current_user: UserModel, row: Category) -> bool:
+    """Report whether ``row`` falls inside the caller's tenant/owner scope.
+
+    The read side of :func:`_scoped_query`, applied to a row already in hand.
+    Kept separate so the row loader and the parent loader below share one
+    definition of "in scope" instead of drifting apart.
+    """
+    if current_user.is_superuser:
+        return True
+    tenant_id = _user_tenant_id(current_user)
+    if tenant_id is not None:
+        return row.tenant_id == tenant_id
+    return row.tenant_id is None and row.owner_id == _owner_id(current_user)
+
+
+def _scope_key(
+    tenant_id: uuid.UUID | None, owner_id: uuid.UUID
+) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """Return the pair two rows must agree on to live in the same tree.
+
+    A tenanted row is scoped by its tenant alone — categories are shared within
+    a tenant, so two owners there belong to one tree. An untenanted row is
+    scoped by its owner. Comparing the pair is what makes "cross-tenant parent"
+    a structural rule rather than a permission one: a superuser passes every
+    scope check and would otherwise be able to graft one tenant's branch onto
+    another's, leaving a tree that no tenant-scoped read can render.
+    """
+    return (tenant_id, None) if tenant_id is not None else (None, owner_id)
+
+
 def _load_category(
     session: Session, current_user: UserModel, category_id: int
 ) -> Category:
@@ -84,18 +121,111 @@ def _load_category(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Category not found."
         )
-    if current_user.is_superuser:
-        return row
-    tenant_id = _user_tenant_id(current_user)
-    if tenant_id is not None:
-        in_scope = row.tenant_id == tenant_id
-    else:
-        in_scope = row.tenant_id is None and row.owner_id == _owner_id(current_user)
-    if not in_scope:
+    if not _in_scope(current_user, row):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions."
         )
     return row
+
+
+def _load_parent(
+    session: Session,
+    current_user: UserModel,
+    parent_id: int,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_id: uuid.UUID,
+) -> Category:
+    """Fetch the requested parent, refusing a missing or foreign one.
+
+    ``tenant_id``/``owner_id`` are the child's, not the caller's, so the same
+    guard serves a create (the values just stamped on the new row) and a
+    reparent (the values already on the stored row).
+    """
+    parent = session.get(Category, parent_id)
+    if parent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Parent category not found."
+        )
+    if not _in_scope(current_user, parent):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions."
+        )
+    if _scope_key(parent.tenant_id, parent.owner_id) != _scope_key(tenant_id, owner_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Parent category belongs to another tenant.",
+        )
+    return parent
+
+
+def _reject_cycle(session: Session, category_id: int, parent_id: int) -> None:
+    """Refuse a reparent that would make ``category_id`` its own ancestor.
+
+    Walks the stored ``parent_id`` chain upward from the requested parent. The
+    self-parent case is the first iteration, so it needs no separate branch.
+    ``seen`` bounds the walk: a cycle already on disk — a row written before
+    this guard existed, or a direct DB write — must break the loop rather than
+    hang the request, exactly as
+    :func:`core.category_tree.resolve_category_paths` does on the read side.
+    """
+    seen: set[int] = set()
+    ancestor_id: int | None = parent_id
+    while ancestor_id is not None:
+        if ancestor_id == category_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A category cannot be nested under itself or its descendants.",
+            )
+        if ancestor_id in seen:
+            return
+        seen.add(ancestor_id)
+        ancestor = session.get(Category, ancestor_id)
+        if ancestor is None:
+            return
+        ancestor_id = ancestor.parent_id
+
+
+def _reject_duplicate_slug(
+    session: Session,
+    *,
+    slug: str,
+    parent_id: int | None,
+    tenant_id: uuid.UUID | None,
+    owner_id: uuid.UUID,
+    exclude_id: int | None = None,
+) -> None:
+    """Refuse a slug already taken by a sibling under the same parent.
+
+    ``uq_category_tenant_parent_slug`` cannot carry this on its own: SQL treats
+    NULLs as distinct in a unique constraint, so the constraint only bites when
+    ``tenant_id`` *and* ``parent_id`` are both non-null. Every root, and every
+    row of an untenanted owner, escapes it — the case `U3` recorded in the
+    model docstring and handed to this surface. The check is expressed over the
+    same scope key the tree is read through, so a tenant's siblings collide
+    across owners just as they render together.
+    """
+    statement = select(Category).where(col(Category.slug) == slug)
+    if tenant_id is not None:
+        statement = statement.where(col(Category.tenant_id) == tenant_id)
+    else:
+        statement = statement.where(
+            and_(
+                col(Category.tenant_id).is_(None),
+                col(Category.owner_id) == owner_id,
+            )
+        )
+    if parent_id is None:
+        statement = statement.where(col(Category.parent_id).is_(None))
+    else:
+        statement = statement.where(col(Category.parent_id) == parent_id)
+    if exclude_id is not None:
+        statement = statement.where(col(Category.id) != exclude_id)
+    if session.exec(statement.limit(1)).first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A sibling category already uses this name.",
+        )
 
 
 class CategoryController:
@@ -174,14 +304,31 @@ class CategoryController:
 
         ``tenant_id`` is never client-supplied — it is derived server-side from
         the caller so a category cannot be filed into a tenant its owner does
-        not belong to.
+        not belong to. A supplied ``parent_id`` must resolve to a category in
+        the same scope, and the slug must be free among the parent's children
+        (or among the roots, when no parent is given). No cycle is possible
+        here: the row has no id yet, so nothing can point back at it.
         """
+        owner_id = _owner_id(current_user)
+        tenant_id = _user_tenant_id(current_user)
+        if req.parent_id is not None:
+            _load_parent(
+                session,
+                current_user,
+                req.parent_id,
+                tenant_id=tenant_id,
+                owner_id=owner_id,
+            )
+        _reject_duplicate_slug(
+            session,
+            slug=req.slug,
+            parent_id=req.parent_id,
+            tenant_id=tenant_id,
+            owner_id=owner_id,
+        )
         row = Category.model_validate(
             req,
-            update={
-                "owner_id": _owner_id(current_user),
-                "tenant_id": _user_tenant_id(current_user),
-            },
+            update={"owner_id": owner_id, "tenant_id": tenant_id},
         )
         session.add(row)
         session.commit()
@@ -196,9 +343,36 @@ class CategoryController:
         category_id: int,
         req: CategoryUpdate,
     ) -> CategoryPublic:
-        """Patch an owned category from the set fields of ``req``."""
+        """Patch an owned category from the set fields of ``req``.
+
+        A reparent is validated against the *stored* row's scope, so moving a
+        branch can neither cross a tenant boundary nor close a loop. The slug
+        is re-checked whenever the name or the parent moves, since either
+        changes which siblings it has to be unique among.
+        """
         row = _load_category(session, current_user, category_id)
-        row.sqlmodel_update(req.model_dump(exclude_unset=True))
+        changes = req.model_dump(exclude_unset=True)
+        parent_id = changes.get("parent_id", row.parent_id)
+        slug = changes.get("slug", row.slug)
+        if parent_id != row.parent_id and parent_id is not None:
+            _load_parent(
+                session,
+                current_user,
+                parent_id,
+                tenant_id=row.tenant_id,
+                owner_id=row.owner_id,
+            )
+            _reject_cycle(session, row.id, parent_id)
+        if (parent_id, slug) != (row.parent_id, row.slug):
+            _reject_duplicate_slug(
+                session,
+                slug=slug,
+                parent_id=parent_id,
+                tenant_id=row.tenant_id,
+                owner_id=row.owner_id,
+                exclude_id=row.id,
+            )
+        row.sqlmodel_update(changes)
         session.add(row)
         session.commit()
         session.refresh(row)
@@ -211,7 +385,24 @@ class CategoryController:
         current_user: UserModel,
         category_id: int,
     ) -> None:
-        """Delete an owned category."""
+        """Delete an owned category that has no children.
+
+        A category holding children is refused with 409 rather than silently
+        orphaning or cascading them — the caller reparents or deletes the
+        branch first, so a delete can never remove more than the row asked
+        for. Assigned media is the opposite case and is allowed: the
+        ``media_object_category`` rows go with the category and the media
+        objects themselves survive, which is why a filing is a link row and
+        not a column on the object.
+        """
         row = _load_category(session, current_user, category_id)
+        child = session.exec(
+            select(Category).where(col(Category.parent_id) == category_id).limit(1)
+        ).first()
+        if child is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Category has child categories; reparent or delete them first.",
+            )
         session.delete(row)
         session.commit()

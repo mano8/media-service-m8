@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
 from auth_sdk_m8.schemas.user import UserModel
 from media_service.controllers.category import CategoryController
@@ -15,6 +15,7 @@ from media_service.db_models.categories import (
     Category,
     CategoryCreate,
     CategoryGenerators,
+    CategoryUpdate,
 )
 from media_service.db_models.media_object_categories import MediaObjectCategoryLink
 from media_service.db_models.media_objects import (
@@ -358,6 +359,9 @@ def test_a_storage_failure_is_not_masked_as_a_success():
 
 def test_a_commit_failure_on_create_is_not_masked():
     bad_session = MagicMock()
+    # The sibling-slug pre-check runs first; leave it finding nothing so the
+    # commit is what fails.
+    bad_session.exec.return_value.first.return_value = None
     bad_session.commit.side_effect = RuntimeError("DB error")
 
     with pytest.raises(RuntimeError):
@@ -512,3 +516,318 @@ def test_superuser_sees_categories_across_tenants(
     )
     result = CategoryController.list_categories(session=session, current_user=superuser)
     assert {c.name for c in result.data} >= {"TenantA", "TenantB"}
+
+
+# ── Hierarchy guards: parent scope, cycles, sibling slugs, delete ─────────────
+
+
+def test_create_under_a_parent_nests_the_new_category(
+    client: TestClient, session: Session, current_user
+):
+    parent = _make_category(session, current_user.id, "Docs")
+    resp = client.post(
+        "/media/category/add/", json={"name": "Invoices", "parent_id": parent.id}
+    )
+    assert resp.status_code == 201
+    assert resp.json()["parent_id"] == parent.id
+
+
+def test_create_under_a_missing_parent_is_404(client: TestClient):
+    resp = client.post(
+        "/media/category/add/", json={"name": "Orphan", "parent_id": 99999}
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Parent category not found."
+
+
+def test_create_under_another_owners_parent_is_forbidden(
+    client: TestClient, session: Session, superuser
+):
+    parent = _make_category(session, superuser.id, "Theirs")
+    resp = client.post(
+        "/media/category/add/", json={"name": "Mine", "parent_id": parent.id}
+    )
+    assert resp.status_code == 403
+
+
+def test_create_under_another_tenants_parent_is_rejected(session: Session):
+    """The structural guard, reached past every permission check.
+
+    A superuser is in scope everywhere, so only the scope-key comparison stops
+    them grafting a foreign tenant's row onto their own tree.
+    """
+    foreign = CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(uuid.uuid4()),
+        req=CategoryCreate(name="TenantRoot"),
+    )
+    grafter = SimpleNamespace(id=uuid.uuid4(), is_superuser=True, tenant_id=None)
+    with pytest.raises(HTTPException) as exc:
+        CategoryController.create_category(
+            session=session,
+            current_user=grafter,
+            req=CategoryCreate(name="Graft", parent_id=foreign.id),
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "Parent category belongs to another tenant."
+
+
+def test_reparent_across_tenants_is_rejected(session: Session):
+    tenant_a = CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(uuid.uuid4()),
+        req=CategoryCreate(name="TenantA"),
+    )
+    tenant_b = CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(uuid.uuid4()),
+        req=CategoryCreate(name="TenantB"),
+    )
+    grafter = SimpleNamespace(id=uuid.uuid4(), is_superuser=True, tenant_id=None)
+    with pytest.raises(HTTPException) as exc:
+        CategoryController.update_category(
+            session=session,
+            current_user=grafter,
+            category_id=tenant_b.id,
+            req=CategoryUpdate(name="TenantB", parent_id=tenant_a.id),
+        )
+    assert exc.value.status_code == 409
+
+
+def test_reparent_to_another_owners_category_is_forbidden(
+    client: TestClient, session: Session, current_user, superuser
+):
+    mine = _make_category(session, current_user.id, "Mine")
+    theirs = _make_category(session, superuser.id, "Theirs")
+    resp = client.put(
+        f"/media/category/edit/{mine.id}/",
+        json={"name": "Mine", "parent_id": theirs.id},
+    )
+    assert resp.status_code == 403
+
+
+def test_self_parenting_is_rejected(client: TestClient, session: Session, current_user):
+    cat = _make_category(session, current_user.id, "Loop")
+    resp = client.put(
+        f"/media/category/edit/{cat.id}/",
+        json={"name": "Loop", "parent_id": cat.id},
+    )
+    assert resp.status_code == 409
+    assert (
+        resp.json()["detail"]
+        == "A category cannot be nested under itself or its descendants."
+    )
+
+
+def test_deeper_cycle_is_rejected(client: TestClient, session: Session, current_user):
+    """Root -> child -> grandchild; moving the root under the grandchild loops."""
+    root = _make_category(session, current_user.id, "Root")
+    child = _make_category(session, current_user.id, "Child", parent_id=root.id)
+    grandchild = _make_category(
+        session, current_user.id, "Grandchild", parent_id=child.id
+    )
+    resp = client.put(
+        f"/media/category/edit/{root.id}/",
+        json={"name": "Root", "parent_id": grandchild.id},
+    )
+    assert resp.status_code == 409
+
+
+def test_a_preexisting_cycle_on_disk_does_not_hang_the_walk(
+    session: Session, current_user
+):
+    """A loop written straight to the DB is broken, not followed forever.
+
+    The controller cannot create this, but nothing stops a direct write or a
+    row that predates the guard, and a request must not hang on one. The walk
+    from ``mover`` goes first -> second -> first and stops, so the unrelated
+    reparent still succeeds.
+    """
+    first = _make_category(session, current_user.id, "First")
+    second = _make_category(session, current_user.id, "Second", parent_id=first.id)
+    first.parent_id = second.id
+    session.add(first)
+    session.commit()
+
+    mover = _make_category(session, current_user.id, "Mover")
+    out = CategoryController.update_category(
+        session=session,
+        current_user=current_user,
+        category_id=mover.id,
+        req=CategoryUpdate(name="Mover", parent_id=first.id),
+    )
+    assert out.parent_id == first.id
+
+
+def test_a_dangling_parent_reference_ends_the_cycle_walk(
+    session: Session, current_user
+):
+    """An ancestor row that no longer exists ends the walk instead of raising."""
+    orphan = _make_category(session, current_user.id, "Orphan")
+    orphan.parent_id = 99999
+    session.add(orphan)
+    session.commit()
+
+    mover = _make_category(session, current_user.id, "Mover")
+    out = CategoryController.update_category(
+        session=session,
+        current_user=current_user,
+        category_id=mover.id,
+        req=CategoryUpdate(name="Mover", parent_id=orphan.id),
+    )
+    assert out.parent_id == orphan.id
+
+
+def test_reparenting_to_a_root_is_allowed(
+    client: TestClient, session: Session, current_user
+):
+    root = _make_category(session, current_user.id, "Root")
+    child = _make_category(session, current_user.id, "Child", parent_id=root.id)
+    resp = client.put(
+        f"/media/category/edit/{child.id}/",
+        json={"name": "Child", "parent_id": None},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["parent_id"] is None
+
+
+def test_duplicate_root_slug_is_rejected(
+    client: TestClient, session: Session, current_user
+):
+    """U3's carry-in: two untenanted roots are NULL/NULL, which the composite
+    unique constraint cannot separate, so the controller has to."""
+    _make_category(session, current_user.id, "Docs")
+    resp = client.post("/media/category/add/", json={"name": "Docs"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "A sibling category already uses this name."
+
+
+def test_duplicate_sibling_slug_under_a_parent_is_rejected(
+    client: TestClient, session: Session, current_user
+):
+    parent = _make_category(session, current_user.id, "Docs")
+    _make_category(session, current_user.id, "Invoices", parent_id=parent.id)
+    resp = client.post(
+        "/media/category/add/", json={"name": "Invoices", "parent_id": parent.id}
+    )
+    assert resp.status_code == 409
+
+
+def test_the_same_slug_under_a_different_parent_is_allowed(
+    client: TestClient, session: Session, current_user
+):
+    first = _make_category(session, current_user.id, "First")
+    second = _make_category(session, current_user.id, "Second")
+    _make_category(session, current_user.id, "Invoices", parent_id=first.id)
+    resp = client.post(
+        "/media/category/add/", json={"name": "Invoices", "parent_id": second.id}
+    )
+    assert resp.status_code == 201
+
+
+def test_another_owners_root_slug_does_not_collide(
+    client: TestClient, session: Session, superuser
+):
+    _make_category(session, superuser.id, "Docs")
+    resp = client.post("/media/category/add/", json={"name": "Docs"})
+    assert resp.status_code == 201
+
+
+def test_a_tenant_siblings_slug_collides_across_owners(session: Session):
+    """Categories are shared within a tenant, so their uniqueness is too."""
+    tenant = uuid.uuid4()
+    CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(tenant),
+        req=CategoryCreate(name="TeamDocs"),
+    )
+    with pytest.raises(HTTPException) as exc:
+        CategoryController.create_category(
+            session=session,
+            current_user=_tenanted_user(tenant),
+            req=CategoryCreate(name="TeamDocs"),
+        )
+    assert exc.value.status_code == 409
+
+
+def test_renaming_onto_a_siblings_slug_is_rejected(
+    client: TestClient, session: Session, current_user
+):
+    _make_category(session, current_user.id, "Docs")
+    other = _make_category(session, current_user.id, "Assets")
+    resp = client.put(f"/media/category/edit/{other.id}/", json={"name": "Docs"})
+    assert resp.status_code == 409
+
+
+def test_reparenting_onto_a_taken_sibling_slug_is_rejected(
+    client: TestClient, session: Session, current_user
+):
+    parent = _make_category(session, current_user.id, "Docs")
+    _make_category(session, current_user.id, "Invoices", parent_id=parent.id)
+    loose = _make_category(session, current_user.id, "Invoices2")
+    loose.name, loose.slug = "Invoices", "invoices"
+    session.add(loose)
+    session.commit()
+
+    resp = client.put(
+        f"/media/category/edit/{loose.id}/",
+        json={"name": "Invoices", "parent_id": parent.id},
+    )
+    assert resp.status_code == 409
+
+
+def test_renaming_a_category_to_its_own_name_is_allowed(
+    client: TestClient, session: Session, current_user
+):
+    """The row excludes itself from the sibling check, so a no-op rename works."""
+    cat = _make_category(session, current_user.id, "Docs")
+    resp = client.put(f"/media/category/edit/{cat.id}/", json={"name": "Docs"})
+    assert resp.status_code == 200
+    assert resp.json()["slug"] == "docs"
+
+
+def test_delete_with_children_is_rejected(
+    client: TestClient, session: Session, current_user
+):
+    root = _make_category(session, current_user.id, "Root")
+    _make_category(session, current_user.id, "Child", parent_id=root.id)
+    resp = client.delete(f"/media/category/delete/{root.id}/")
+    assert resp.status_code == 409
+    assert (
+        resp.json()["detail"]
+        == "Category has child categories; reparent or delete them first."
+    )
+    assert session.get(Category, root.id) is not None
+
+
+def test_delete_succeeds_once_the_children_are_reparented(
+    client: TestClient, session: Session, current_user
+):
+    root = _make_category(session, current_user.id, "Root")
+    child = _make_category(session, current_user.id, "Child", parent_id=root.id)
+    reparented = client.put(
+        f"/media/category/edit/{child.id}/",
+        json={"name": "Child", "parent_id": None},
+    )
+    assert reparented.status_code == 200
+    assert client.delete(f"/media/category/delete/{root.id}/").status_code == 204
+
+
+def test_delete_with_assigned_media_detaches_the_links_and_keeps_the_media(
+    client: TestClient, session: Session, current_user
+):
+    """Media outlives its filing: the link rows go, the objects stay."""
+    cat = _make_category(session, current_user.id, "Filed")
+    obj = _make_object(session, current_user.id)
+    _file_into(session, obj, cat)
+
+    resp = client.delete(f"/media/category/delete/{cat.id}/")
+    assert resp.status_code == 204
+    assert session.get(Category, cat.id) is None
+    assert session.get(MediaObject, obj.id) is not None
+    remaining = session.exec(
+        select(MediaObjectCategoryLink).where(
+            col(MediaObjectCategoryLink.category_id) == cat.id
+        )
+    ).all()
+    assert remaining == []
