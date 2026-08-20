@@ -1,4 +1,11 @@
-"""Tests for GET /media/v1/objects (listing, filtering, cursor pagination)."""
+"""Tests for GET /media/v1/objects (listing, filtering, cursor pagination).
+
+The last section covers the user-category branch filters (`U4`): ``category_id``
+with ``include_descendants``, and the ``uncategorized`` pseudo-node. They are
+the one group of filters that resolves through the caller's *category* scope
+rather than a column, so they are asserted to narrow the listing and never to
+widen it.
+"""
 
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -6,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
+from media_service.db_models.categories import Category
+from media_service.db_models.media_object_categories import MediaObjectCategoryLink
 from media_service.db_models.media_objects import (
     MediaCategory,
     MediaObject,
@@ -361,3 +370,242 @@ def test_list_rate_limited(client: TestClient, mock_redis):
     mock_redis.incr.return_value = 121
     resp = client.get("/media/v1/objects")
     assert resp.status_code == 429
+
+
+# ── user-category branch filter (`U4`) ────────────────────────────────────────
+
+
+def _make_category(
+    session: Session,
+    owner_id: uuid.UUID,
+    name: str,
+    *,
+    parent_id: int | None = None,
+) -> Category:
+    """Insert a user category owned by the given user."""
+    cat = Category(
+        name=name,
+        slug=name.lower().replace(" ", "-"),
+        owner_id=owner_id,
+        parent_id=parent_id,
+    )
+    session.add(cat)
+    session.commit()
+    session.refresh(cat)
+    return cat
+
+
+def _file_into(session: Session, obj: MediaObject, *categories: Category) -> None:
+    """File ``obj`` into every given user category."""
+    for category in categories:
+        session.add(
+            MediaObjectCategoryLink(media_object_id=obj.id, category_id=category.id)
+        )
+    session.commit()
+
+
+def _ids(resp) -> set[str]:
+    """The object ids a listing response returned."""
+    return {item["id"] for item in resp.json()["items"]}
+
+
+def test_list_filter_category_id_includes_descendants_by_default(
+    client: TestClient, session: Session, current_user
+):
+    """A branch returns its own media *and* every descendant's, in one page."""
+    root = _make_category(session, current_user.id, "Documents")
+    child = _make_category(session, current_user.id, "Invoices", parent_id=root.id)
+    grandchild = _make_category(session, current_user.id, "Y2026", parent_id=child.id)
+    on_root = _make_object(session, current_user.id, filename="root.pdf")
+    on_child = _make_object(session, current_user.id, filename="child.pdf")
+    on_grandchild = _make_object(session, current_user.id, filename="deep.pdf")
+    unfiled = _make_object(session, current_user.id, filename="loose.pdf")
+    _file_into(session, on_root, root)
+    _file_into(session, on_child, child)
+    _file_into(session, on_grandchild, grandchild)
+
+    resp = client.get(f"/media/v1/objects?category_id={root.id}")
+    assert resp.status_code == 200
+    assert _ids(resp) == {str(on_root.id), str(on_child.id), str(on_grandchild.id)}
+    assert str(unfiled.id) not in _ids(resp)
+    assert resp.json()["count"] == 3
+
+
+def test_list_filter_category_id_without_descendants_is_direct_only(
+    client: TestClient, session: Session, current_user
+):
+    root = _make_category(session, current_user.id, "Documents")
+    child = _make_category(session, current_user.id, "Invoices", parent_id=root.id)
+    on_root = _make_object(session, current_user.id, filename="root.pdf")
+    on_child = _make_object(session, current_user.id, filename="child.pdf")
+    _file_into(session, on_root, root)
+    _file_into(session, on_child, child)
+
+    resp = client.get(
+        f"/media/v1/objects?category_id={root.id}&include_descendants=false"
+    )
+    assert _ids(resp) == {str(on_root.id)}
+
+
+def test_list_filter_category_id_returns_a_multi_filed_object_once(
+    client: TestClient, session: Session, current_user
+):
+    """An object filed into two categories of one branch is not duplicated.
+
+    This is what the correlated ``EXISTS`` buys over a join: a join would emit
+    the row once per matching link and break both ``count`` and the cursor.
+    """
+    root = _make_category(session, current_user.id, "Documents")
+    child = _make_category(session, current_user.id, "Invoices", parent_id=root.id)
+    obj = _make_object(session, current_user.id)
+    _file_into(session, obj, root, child)
+
+    resp = client.get(f"/media/v1/objects?category_id={root.id}")
+    assert resp.json()["count"] == 1
+    assert _ids(resp) == {str(obj.id)}
+
+
+def test_list_filter_uncategorized_returns_only_unfiled_media(
+    client: TestClient, session: Session, current_user
+):
+    category = _make_category(session, current_user.id, "Documents")
+    filed = _make_object(session, current_user.id, filename="filed.pdf")
+    unfiled = _make_object(session, current_user.id, filename="loose.pdf")
+    _file_into(session, filed, category)
+
+    resp = client.get("/media/v1/objects?uncategorized=true")
+    assert _ids(resp) == {str(unfiled.id)}
+
+
+def test_list_filter_uncategorized_false_is_the_unfiltered_library(
+    client: TestClient, session: Session, current_user
+):
+    """The default is off: it narrows nothing, so both rows still come back."""
+    category = _make_category(session, current_user.id, "Documents")
+    filed = _make_object(session, current_user.id, filename="filed.pdf")
+    unfiled = _make_object(session, current_user.id, filename="loose.pdf")
+    _file_into(session, filed, category)
+
+    resp = client.get("/media/v1/objects?uncategorized=false")
+    assert _ids(resp) == {str(filed.id), str(unfiled.id)}
+
+
+def test_list_filter_uncategorized_with_category_id_is_422(client: TestClient):
+    """Their intersection is empty by construction, so it is a bad request."""
+    resp = client.get("/media/v1/objects?uncategorized=true&category_id=1")
+    assert resp.status_code == 422
+
+
+def test_list_filter_category_id_zero_is_rejected(client: TestClient):
+    """No reserved ``category_id=0`` sentinel — ``uncategorized`` owns that case."""
+    assert client.get("/media/v1/objects?category_id=0").status_code == 422
+
+
+def test_list_filter_category_id_unknown_is_404(client: TestClient):
+    """A typo is a refusal, not a plausible empty page."""
+    resp = client.get("/media/v1/objects?category_id=999")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Category not found."
+
+
+def test_list_filter_another_owners_category_is_forbidden(
+    client: TestClient, session: Session, superuser
+):
+    foreign = _make_category(session, superuser.id, "Theirs")
+    resp = client.get(f"/media/v1/objects?category_id={foreign.id}")
+    assert resp.status_code == 403
+
+
+def test_list_filter_branch_narrows_but_never_widens(
+    client: TestClient, session: Session, current_user, superuser
+):
+    """The filter is a ``where`` on the scoped query, so it cannot reach out.
+
+    Another owner's object filed into a category the caller *can* see stays
+    invisible: the visibility scoping runs first and the branch clause only
+    ever subtracts from it.
+    """
+    category = _make_category(session, current_user.id, "Documents")
+    mine = _make_object(session, current_user.id, filename="mine.pdf")
+    theirs = _make_object(session, superuser.id, filename="theirs.pdf")
+    _file_into(session, mine, category)
+    _file_into(session, theirs, category)
+
+    resp = client.get(f"/media/v1/objects?category_id={category.id}")
+    assert _ids(resp) == {str(mine.id)}
+
+
+def test_list_filter_branch_composes_with_the_fixed_category_enum(
+    client: TestClient, session: Session, current_user
+):
+    """The two filters are different axes and compose — `U4`'s locked decision."""
+    category = _make_category(session, current_user.id, "Documents")
+    doc = _make_object(
+        session, current_user.id, category=MediaCategory.DOCUMENT, filename="a.pdf"
+    )
+    receipt = _make_object(
+        session, current_user.id, category=MediaCategory.RECEIPT, filename="b.pdf"
+    )
+    _file_into(session, doc, category)
+    _file_into(session, receipt, category)
+
+    resp = client.get(f"/media/v1/objects?category_id={category.id}&category=receipt")
+    assert _ids(resp) == {str(receipt.id)}
+
+
+def test_list_filter_branch_paginates(
+    client: TestClient, session: Session, current_user
+):
+    """The branch filter rides the existing keyset cursor, not a second path."""
+    category = _make_category(session, current_user.id, "Documents")
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        _file_into(
+            session, _make_object(session, current_user.id, filename=name), category
+        )
+
+    first = client.get(f"/media/v1/objects?category_id={category.id}&limit=2").json()
+    assert [i["original_filename"] for i in first["items"]] == ["a.pdf", "b.pdf"]
+    assert first["next_cursor"] is not None
+    cursor = first["next_cursor"]
+    second = client.get(
+        f"/media/v1/objects?category_id={category.id}&limit=2&cursor={cursor}"
+    ).json()
+    assert [i["original_filename"] for i in second["items"]] == ["c.pdf"]
+    assert second["next_cursor"] is None
+
+
+def test_list_filter_superuser_branch_spans_owners(
+    superuser_client: TestClient, session: Session, current_user, superuser
+):
+    """A superuser's category scope is every row, and the branch follows it."""
+    root = _make_category(session, current_user.id, "Documents")
+    child = _make_category(session, superuser.id, "Theirs", parent_id=root.id)
+    mine = _make_object(session, current_user.id, filename="mine.pdf")
+    theirs = _make_object(session, superuser.id, filename="theirs.pdf")
+    _file_into(session, mine, root)
+    _file_into(session, theirs, child)
+
+    resp = superuser_client.get(f"/media/v1/objects?category_id={root.id}")
+    assert _ids(resp) == {str(mine.id), str(theirs.id)}
+
+
+def test_list_filter_branch_walk_survives_a_cycle_written_to_disk(
+    client: TestClient, session: Session, current_user
+):
+    """A loop no CRUD path can create must not hang the listing.
+
+    ``controllers.category`` rejects cycles on write, so this one is written
+    straight to the database — the same degenerate case
+    ``resolve_category_paths`` is pinned against on the path side.
+    """
+    root = _make_category(session, current_user.id, "Documents")
+    child = _make_category(session, current_user.id, "Invoices", parent_id=root.id)
+    root.parent_id = child.id
+    session.add(root)
+    session.commit()
+    filed = _make_object(session, current_user.id, filename="deep.pdf")
+    _file_into(session, filed, child)
+
+    resp = client.get(f"/media/v1/objects?category_id={root.id}")
+    assert resp.status_code == 200
+    assert _ids(resp) == {str(filed.id)}

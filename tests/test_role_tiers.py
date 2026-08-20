@@ -38,6 +38,7 @@ from media_service.core.deps import (
 )
 from media_service.core.rate_limit import get_redis_client
 from media_service.db_models.categories import Category
+from media_service.db_models.media_object_categories import MediaObjectCategoryLink
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectStatus,
@@ -245,6 +246,62 @@ def test_anonymous_is_not_told_a_private_object_exists(
     assert response.status_code == 404
     unknown = tier_client.get(f"{V1}/objects/{uuid.uuid4()}{suffix}", headers=NO_AUTH)
     assert unknown.status_code == response.status_code
+
+
+def test_anonymous_branch_filter_cannot_widen_the_public_catalogue(
+    tier_client, session, public_object, private_object
+):
+    """`U4` — ``category_id`` narrows the anonymous listing; it never widens it.
+
+    The category surface sits behind the reader floor, so an anonymous caller
+    has no category scope: the branch resolves to the empty set and the page is
+    empty. Critically it is *empty*, not the private row — filing a private
+    object into a category must not turn a public filter into a way to read it.
+    Empty rather than 404/403, because a refusal would depend on whether a
+    category the caller can never see happens to exist, which is the existence
+    oracle this surface keeps out (see ``require_visibility_access``).
+    """
+    category = Category(name="Docs", slug="docs", owner_id=str(OWNER_ID))
+    session.add(category)
+    session.commit()
+    session.refresh(category)
+    for obj in (public_object, private_object):
+        session.add(
+            MediaObjectCategoryLink(media_object_id=obj.id, category_id=category.id)
+        )
+    session.commit()
+
+    filtered = tier_client.get(
+        f"{V1}/objects", params={"category_id": category.id}, headers=NO_AUTH
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["items"] == []
+
+    unknown = tier_client.get(
+        f"{V1}/objects", params={"category_id": 999}, headers=NO_AUTH
+    )
+    assert unknown.status_code == filtered.status_code
+    assert unknown.json() == filtered.json()
+
+    unfiltered = tier_client.get(f"{V1}/objects", headers=NO_AUTH)
+    assert [item["id"] for item in unfiltered.json()["items"]] == [
+        str(public_object.id)
+    ]
+
+
+def test_anonymous_uncategorized_filter_still_sees_only_public_objects(
+    tier_client, session, public_object, private_object
+):
+    """The unfiled filter needs no category scope, so it does reach rows.
+
+    It is still applied after the public scoping: an unfiled *private* object
+    stays out, which is the property that matters.
+    """
+    response = tier_client.get(
+        f"{V1}/objects", params={"uncategorized": "true"}, headers=NO_AUTH
+    )
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [str(public_object.id)]
 
 
 def test_a_broken_token_is_never_silently_downgraded_to_anonymous(tier_client):

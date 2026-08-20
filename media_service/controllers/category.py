@@ -44,6 +44,7 @@ from fastapi_m8 import UserModel
 from media_service.core.category_tree import (
     build_category_tree,
     category_refs,
+    collect_branch_ids,
     count_category_nodes,
 )
 from media_service.core.tenancy import user_tenant_id
@@ -302,6 +303,43 @@ def categories_in_scope(
     ).all()
     by_id = {row.id: row for row in rows}
     return [by_id[category_id] for category_id in wanted if category_id in by_id]
+
+
+def branch_category_ids(
+    session: Session,
+    current_user: UserModel | None,
+    category_id: int,
+    *,
+    include_descendants: bool,
+) -> list[int]:
+    """Resolve a branch filter to the category ids it is allowed to match.
+
+    The read-side trust boundary for the objects list's ``category_id`` filter
+    (`U4`), and the counterpart of :func:`resolve_category_ids` on the write
+    side. It answers only *which categories* the branch covers; narrowing the
+    listing is the objects controller's job, and it applies the result as an
+    extra ``where`` on an already-scoped query, so a branch can subtract rows
+    from what a caller may see but never add one.
+
+    An authenticated caller naming an id outside their scope gets the same
+    404/403 pair ``GET /category/get/{id}`` answers — a filter that silently
+    returned an empty page would hide a typo behind a plausible result.
+
+    ``current_user is None`` is the anonymous caller on the public read surface
+    (A16, `D3`): the category surface sits behind the reader floor, so an
+    anonymous caller has no category scope at all and every branch resolves to
+    the empty set — an empty page, not a refusal. Refusing would make the
+    outcome depend on whether a row the caller can never see happens to exist,
+    which is precisely the existence oracle
+    :func:`media_service.controllers.objects.require_visibility_access`
+    keeps off this surface.
+    """
+    if current_user is None:
+        return []
+    row = _load_category(session, current_user, category_id)
+    if not include_descendants:
+        return [row.id]
+    return collect_branch_ids(session.exec(_scoped_query(current_user)).all(), row.id)
 
 
 def assigned_category_refs(

@@ -64,6 +64,38 @@ def count_category_nodes(nodes: Sequence[CategoryNode]) -> int:
     return sum(1 + count_category_nodes(node.children) for node in nodes)
 
 
+def collect_branch_ids(categories: Iterable[Category], root_id: int) -> list[int]:
+    """Return ``root_id`` plus every descendant id reachable within ``categories``.
+
+    The write-side counterpart of :func:`resolve_category_paths`: that walks the
+    ``parent_id`` chain upward, this walks it downward. ``categories`` is the
+    row set the caller is already scoped to, so a branch can never reach out of
+    that scope — which is what lets the objects list apply the result as a plain
+    narrowing ``where`` (`U4`).
+
+    ``root_id`` is always included, even when it has no children and even when
+    it is not itself present in ``categories``; a caller that needs the id
+    checked has already loaded the row. A cycle written straight to the
+    database is broken rather than looped over, on the same reasoning as
+    :func:`resolve_category_paths`.
+    """
+    children: dict[int, list[int]] = {}
+    for category in categories:
+        if category.parent_id is not None:
+            children.setdefault(category.parent_id, []).append(category.id)
+    collected: list[int] = []
+    seen: set[int] = set()
+    pending = [root_id]
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        collected.append(current)
+        pending.extend(children.get(current, ()))
+    return collected
+
+
 def resolve_category_paths(categories: Iterable[Category]) -> dict[int, str]:
     """Map each category id to its slash-joined slug path from the tree root.
 

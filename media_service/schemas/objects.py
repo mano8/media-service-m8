@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Literal
 import uuid
 
+from pydantic import model_validator
 from sqlmodel import Field, SQLModel
 
 from media_service.db_models.categories import MAX_CATEGORY_ASSIGNMENTS
@@ -47,7 +48,13 @@ class DownloadUrlResponse(SQLModel):
 
 
 class ObjectListParams(SQLModel):
-    """Resolved query parameters for listing media objects."""
+    """Resolved query parameters for listing media objects.
+
+    ``category`` (the fixed ``MediaCategory`` enum, which drives policy) and
+    ``category_id`` (a user category, which drives organization) are two
+    different filters on purpose and compose freely — the enum stays, and user
+    categories are the layer on top of it (`U4`).
+    """
 
     category: MediaCategory | None = None
     visibility: MediaVisibility | None = None
@@ -62,6 +69,39 @@ class ObjectListParams(SQLModel):
     cursor: str | None = None
     owner_user_id: uuid.UUID | None = None
     include_deleted: bool = False
+    # ``ge=1`` is not decoration: it forecloses the reserved-sentinel design
+    # this plan considered and rejected for the unfiled case ("`category_id=0`
+    # means uncategorized"), so ``uncategorized`` below stays the only way to
+    # express it and a client cannot bind to a sentinel that never existed.
+    category_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="Narrow to media filed into this user category",
+    )
+    include_descendants: bool = Field(
+        default=True,
+        description="Include media filed into the category's descendants",
+    )
+    uncategorized: bool = Field(
+        default=False,
+        description="Narrow to media filed into no user category at all",
+    )
+
+    @model_validator(mode="after")
+    def _reject_conflicting_category_filters(self) -> "ObjectListParams":
+        """Refuse a branch filter and the unfiled filter in one request.
+
+        Their intersection is empty by construction — an object filed into a
+        branch is by definition filed — so answering an empty page would report
+        "no matches" for what is really a malformed request. 422 at the trust
+        boundary instead (`SEC-VALIDATE-UNTRUSTED-INPUT`).
+        """
+        if self.uncategorized and self.category_id is not None:
+            raise ValueError(
+                "uncategorized cannot be combined with category_id; "
+                "an unfiled object is in no category branch."
+            )
+        return self
 
 
 class ObjectListResponse(SQLModel):

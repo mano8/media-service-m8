@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, false, func, or_
 from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
@@ -17,6 +17,7 @@ from fastapi_m8 import UserModel
 
 from media_service.controllers.category import (
     assigned_category_refs,
+    branch_category_ids,
     resolve_category_ids,
 )
 from media_service.core.config import settings
@@ -28,6 +29,7 @@ from media_service.core.outbox import (
 )
 from media_service.core.quotas import record_object_removed
 from media_service.core.tenancy import user_tenant_id
+from media_service.db_models.media_object_categories import MediaObjectCategoryLink
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectPublic,
@@ -194,6 +196,54 @@ def _apply_filters(
     return statement
 
 
+def _apply_category_filter(
+    session: Session,
+    current_user: UserModel | None,
+    statement: SelectOfScalar[MediaObject],
+    params: ObjectListParams,
+) -> SelectOfScalar[MediaObject]:
+    """Narrow the listing to a user-category branch, or to unfiled media.
+
+    Applied **after** ``_scoped_query`` and only ever as an additional
+    ``where`` over a correlated ``EXISTS`` on the link table (`U4`): every
+    clause here can subtract rows from what the caller was already entitled to
+    see and none can add one, so the branch filter is structurally incapable of
+    widening visibility — an anonymous caller passing ``category_id`` still
+    sees at most the public catalogue.
+
+    It is separate from :func:`_apply_filters` because it is the one filter
+    that needs a session and a principal: which categories a branch covers is a
+    scoped question, answered by
+    :func:`media_service.controllers.category.branch_category_ids`, not a
+    column comparison.
+
+    ``EXISTS`` rather than a join: an object filed into several categories of
+    the same branch must appear once, and a join would return it once per
+    matching link row, breaking both ``count`` and the keyset cursor.
+    """
+    filed = select(MediaObjectCategoryLink).where(
+        col(MediaObjectCategoryLink.media_object_id) == col(MediaObject.id)
+    )
+    if params.uncategorized:
+        return statement.where(~filed.exists())
+    if params.category_id is None:
+        return statement
+    branch_ids = branch_category_ids(
+        session,
+        current_user,
+        params.category_id,
+        include_descendants=params.include_descendants,
+    )
+    if not branch_ids:
+        # Only the anonymous caller reaches this: an authenticated one either
+        # resolves the branch or is refused 404/403 above. Say "no rows"
+        # explicitly rather than leaning on an empty ``IN ()``.
+        return statement.where(false())
+    return statement.where(
+        filed.where(col(MediaObjectCategoryLink.category_id).in_(branch_ids)).exists()
+    )
+
+
 def _fetch_object(
     session: Session,
     object_id: uuid.UUID,
@@ -348,9 +398,12 @@ class ObjectsController:
     ) -> ObjectListResponse:
         """Return a filtered, cursor-paginated page of media objects.
 
-        ``current_user is None`` lists the public catalogue (A16).
+        ``current_user is None`` lists the public catalogue (A16). The
+        user-category filters are applied last, after the visibility scoping
+        they may only narrow — see :func:`_apply_category_filter`.
         """
         statement = _apply_filters(_scoped_query(current_user, params), params)
+        statement = _apply_category_filter(session, current_user, statement, params)
         sort_col = _sort_column(params.sort_by)
         id_col = col(MediaObject.id)
         descending = params.order == "desc"
