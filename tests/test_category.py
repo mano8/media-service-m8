@@ -1,6 +1,7 @@
 """Tests for app/routes/category.py and controllers/category.py."""
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -237,3 +238,128 @@ def test_controller_refusals_are_typed_http_exceptions():
             session=foreign_session, current_user=_ERR_USER, category_id=1
         )
     assert foreign.value.status_code == 403
+
+
+# ── Tenant scoping (`D4`) ──────────────────────────────────────────────────────
+# UserModel does not (yet) carry a tenant claim (`D1`/`D4`), so these exercise
+# the controller directly with a ``SimpleNamespace`` principal, mirroring
+# ``tests/test_presets.py``'s ``_tenanted_user`` pattern.
+
+
+def _tenanted_user(tenant_id: uuid.UUID, user_id: uuid.UUID | None = None):
+    return SimpleNamespace(
+        id=user_id or uuid.uuid4(), is_superuser=False, tenant_id=tenant_id
+    )
+
+
+def test_create_category_stamps_the_callers_tenant(session: Session):
+    tenant = uuid.uuid4()
+    user = _tenanted_user(tenant)
+    out = CategoryController.create_category(
+        session=session, current_user=user, req=CategoryCreate(name="Shared")
+    )
+    row = session.get(Category, out.id)
+    assert row is not None
+    assert row.tenant_id == tenant
+
+
+def test_list_categories_shares_within_the_same_tenant(session: Session):
+    """Two different owners in the same tenant both see the shared category."""
+    tenant = uuid.uuid4()
+    creator = _tenanted_user(tenant)
+    CategoryController.create_category(
+        session=session, current_user=creator, req=CategoryCreate(name="TeamDocs")
+    )
+    other_member = _tenanted_user(tenant)
+    result = CategoryController.list_categories(
+        session=session, current_user=other_member
+    )
+    assert [c.name for c in result.data] == ["TeamDocs"]
+
+
+def test_list_categories_excludes_a_different_tenant(session: Session):
+    tenant_a = uuid.uuid4()
+    tenant_b = uuid.uuid4()
+    CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(tenant_a),
+        req=CategoryCreate(name="TenantA"),
+    )
+    result = CategoryController.list_categories(
+        session=session, current_user=_tenanted_user(tenant_b)
+    )
+    assert result.data == []
+
+
+def test_list_categories_untenanted_owner_excludes_tenant_rows(
+    session: Session, current_user
+):
+    """An untenanted caller never sees a row filed under someone's tenant, even
+    from the same ``owner_id`` — the fallback scope is restricted to
+    untenanted rows (`_scoped_query`)."""
+    owner_id = uuid.UUID(str(current_user.id))
+    CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(uuid.uuid4(), user_id=owner_id),
+        req=CategoryCreate(name="TenantOwned"),
+    )
+    result = CategoryController.list_categories(
+        session=session, current_user=current_user
+    )
+    assert result.data == []
+
+
+def test_get_category_within_same_tenant_is_allowed(session: Session):
+    tenant = uuid.uuid4()
+    creator = _tenanted_user(tenant)
+    created = CategoryController.create_category(
+        session=session, current_user=creator, req=CategoryCreate(name="Shared")
+    )
+    other_member = _tenanted_user(tenant)
+    fetched = CategoryController.get_category(
+        session=session, current_user=other_member, category_id=created.id
+    )
+    assert fetched.id == created.id
+
+
+def test_get_category_across_tenants_is_forbidden(session: Session):
+    creator = _tenanted_user(uuid.uuid4())
+    created = CategoryController.create_category(
+        session=session, current_user=creator, req=CategoryCreate(name="Theirs")
+    )
+    outsider = _tenanted_user(uuid.uuid4())
+    with pytest.raises(HTTPException) as exc:
+        CategoryController.get_category(
+            session=session, current_user=outsider, category_id=created.id
+        )
+    assert exc.value.status_code == 403
+
+
+def test_get_category_superuser_bypasses_tenant_scope(session: Session, superuser):
+    """A superuser reads any tenant's category without a scope check."""
+    created = CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(uuid.uuid4()),
+        req=CategoryCreate(name="ForeignTenant"),
+    )
+    fetched = CategoryController.get_category(
+        session=session, current_user=superuser, category_id=created.id
+    )
+    assert fetched.id == created.id
+
+
+def test_superuser_sees_categories_across_tenants(
+    session: Session, current_user, superuser
+):
+    CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(uuid.uuid4()),
+        req=CategoryCreate(name="TenantA"),
+    )
+    CategoryController.create_category(
+        session=session,
+        current_user=_tenanted_user(uuid.uuid4()),
+        req=CategoryCreate(name="TenantB"),
+    )
+    result = CategoryController.list_categories(session=session, current_user=superuser)
+    assert {c.name for c in result.data} >= {"TenantA", "TenantB"}

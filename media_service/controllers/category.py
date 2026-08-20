@@ -11,17 +11,24 @@ failed commit behind a ``200 {"success": false}``.
 A category is an owned record with no public form, so nothing in this module
 takes an optional principal: the reader/writer floors on the router (A16, `D2`)
 guarantee a real caller.
+
+Every query is additionally scoped by tenant (`D4`): a tenanted caller sees
+their tenant's shared categories, an untenanted caller falls back to their own
+``owner_id`` scope. Tenant extraction reuses
+:func:`media_service.controllers.objects._user_tenant_id` rather than
+reinventing it here.
 """
 
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from fastapi_m8 import UserModel
 
+from media_service.controllers.objects import _user_tenant_id
 from media_service.db_models.categories import (
     CategoriesPublic,
     Category,
@@ -37,33 +44,51 @@ def _owner_id(current_user: UserModel) -> uuid.UUID:
 
 
 def _scoped_query(current_user: UserModel) -> SelectOfScalar[Category]:
-    """Build the base query, narrowed to the caller's own rows.
+    """Build the base query, narrowed to the caller's tenant/owner scope.
 
-    A superuser sees every tenant's categories; everyone else sees only what
-    they own. Tenant scoping proper is the next `U4` step and lands on top of
-    this helper, so the narrowing stays in one place.
+    A superuser sees every tenant's categories. A tenanted caller sees the
+    categories shared within their tenant (`D4`, locked 2026-07-04: "Tenant-
+    scoped: categories are shared within a tenant"). An untenanted caller
+    falls back to their own ``owner_id`` scope, restricted to untenanted rows
+    so a solo user never sees a stray tenant-owned row.
     """
     statement = select(Category)
     if current_user.is_superuser:
         return statement
-    return statement.where(col(Category.owner_id) == _owner_id(current_user))
+    tenant_id = _user_tenant_id(current_user)
+    if tenant_id is not None:
+        return statement.where(col(Category.tenant_id) == tenant_id)
+    return statement.where(
+        and_(
+            col(Category.owner_id) == _owner_id(current_user),
+            col(Category.tenant_id).is_(None),
+        )
+    )
 
 
 def _load_category(
     session: Session, current_user: UserModel, category_id: int
 ) -> Category:
-    """Fetch a category, enforcing ownership for non-superusers.
+    """Fetch a category, enforcing tenant/ownership scope for non-superusers.
 
-    Raises 404 for a missing row and 403 when a non-owner is not a superuser.
-    The two are deliberately distinct: the caller is already authenticated past
-    the reader floor, so a category id is not an existence oracle here.
+    Raises 404 for a missing row and 403 when a non-superuser caller is
+    outside the row's tenant/owner scope. The two are deliberately distinct:
+    the caller is already authenticated past the reader floor, so a category
+    id is not an existence oracle here.
     """
     row = session.get(Category, category_id)
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Category not found."
         )
-    if not current_user.is_superuser and row.owner_id != _owner_id(current_user):
+    if current_user.is_superuser:
+        return row
+    tenant_id = _user_tenant_id(current_user)
+    if tenant_id is not None:
+        in_scope = row.tenant_id == tenant_id
+    else:
+        in_scope = row.tenant_id is None and row.owner_id == _owner_id(current_user)
+    if not in_scope:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions."
         )
@@ -113,8 +138,19 @@ class CategoryController:
         current_user: UserModel,
         req: CategoryCreate,
     ) -> CategoryPublic:
-        """Create a category owned by the caller."""
-        row = Category.model_validate(req, update={"owner_id": _owner_id(current_user)})
+        """Create a category owned by the caller, stamped with their tenant.
+
+        ``tenant_id`` is never client-supplied — it is derived server-side from
+        the caller so a category cannot be filed into a tenant its owner does
+        not belong to.
+        """
+        row = Category.model_validate(
+            req,
+            update={
+                "owner_id": _owner_id(current_user),
+                "tenant_id": _user_tenant_id(current_user),
+            },
+        )
         session.add(row)
         session.commit()
         session.refresh(row)
