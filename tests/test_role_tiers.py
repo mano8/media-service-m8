@@ -166,6 +166,7 @@ def mock_storage() -> MagicMock:
     ("method", "path"),
     [
         ("GET", f"{PREFIX}/category/"),
+        ("GET", f"{PREFIX}/category/tree/"),
         ("POST", f"{PREFIX}/category/add/"),
         ("GET", f"{PREFIX}/dashboard/users/activity/"),
         ("POST", f"{V1}/uploads/initiate"),
