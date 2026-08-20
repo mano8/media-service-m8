@@ -347,8 +347,8 @@ def test_writer_creates_a_category(tier_client):
     response = tier_client.post(
         f"{PREFIX}/category/add/", headers=_auth("writer"), json={"name": "Fresh"}
     )
-    assert response.status_code == 200
-    assert response.json()["success"] is True
+    assert response.status_code == 201
+    assert response.json()["name"] == "Fresh"
 
 
 def test_writer_patches_an_owned_object(tier_client, private_object):
@@ -373,7 +373,7 @@ def test_admin_role_also_reaches_the_writer_surface(tier_client):
     response = tier_client.post(
         f"{PREFIX}/category/add/", headers=_auth("admin"), json={"name": "ByAdmin"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
 
 
 # ── 6. ADMIN / superuser ──────────────────────────────────────────────────────

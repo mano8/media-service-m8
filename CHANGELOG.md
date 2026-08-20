@@ -13,6 +13,31 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **`routes/category.py` is now a thin router over a new
+  `controllers/category.py`** (`U4`, drift finding `D5`). Category was the last
+  domain still carrying its CRUD inline on the legacy
+  `ResponseModelBase`/`BaseController`/broad-`except` pattern; the logic now
+  matches `controllers/objects.py` — module-level scoping/loading helpers, a
+  controller class of static methods, and typed `HTTPException` for every
+  refusal. The router keeps its reader floor and its `CurrentWriter` mutations
+  unchanged (A16), and no route path or method moved.
+- **The category CRUD responses are typed schemas, not the `{success, ...}`
+  envelope.** This is a breaking change to the served category surface, so it is
+  listed here rather than folded into an additive note:
+  - `GET /category/get/{item_id}/` returns `CategoryPublic`; a missing category
+    is a `404` instead of a `200` carrying `success: false`.
+  - `POST /category/add/` returns `CategoryPublic` with `201`, not `200`.
+  - `PUT /category/edit/{item_id}/` returns `CategoryPublic`.
+  - `DELETE /category/delete/{item_id}/` returns `204` with no body, matching
+    `DELETE /v1/presets/{preset_id}`.
+  - `GET /category/` is unchanged — it already returned `CategoriesPublic`.
+- **A category read or commit failure is no longer swallowed.** The broad
+  `except Exception` / `BaseController.handle_exception` pair answered `200` with
+  a false `success` flag (or a `500` JSONResponse) for any error, hiding a failed
+  commit from the caller. Errors now propagate to the app's error handling.
+
 ## [2.0.0] — 2026-08-16 · role-tier enforcement + `fastapi-m8` 4.4.0 alignment
 
 **Major bump.** The reader/writer role tiers wired below (`A16`) change who may
