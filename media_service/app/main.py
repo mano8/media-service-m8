@@ -10,6 +10,7 @@ from media_service.app.routes import (
     objects,
     presets,
     shares,
+    transfer,
     uploads,
     variants,
 )
@@ -30,5 +31,6 @@ api_router.include_router(shares.router, prefix="/v1")
 api_router.include_router(variants.read_router, prefix="/v1")
 api_router.include_router(variants.router, prefix="/v1")
 api_router.include_router(presets.router, prefix="/v1")
+api_router.include_router(transfer.router, prefix="/v1")
 api_router.include_router(internal.router, prefix="/v1")
 api_router.include_router(admin.router, prefix="/v1")

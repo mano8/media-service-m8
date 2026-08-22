@@ -173,6 +173,7 @@ def mock_storage() -> MagicMock:
         ("GET", f"{V1}/presets"),
         ("POST", f"{V1}/presets"),
         ("GET", f"{V1}/admin/storage/stats"),
+        ("POST", f"{V1}/export"),
     ],
 )
 def test_non_public_routes_reject_an_anonymous_caller(tier_client, method, path):
@@ -358,6 +359,7 @@ def test_user_tier_reads_public_objects(tier_client, public_object, private_obje
         ("POST", f"{PREFIX}/category/add/", "writer"),
         ("POST", f"{V1}/uploads/initiate", "writer"),
         ("GET", f"{PREFIX}/dashboard/users/activity/", "writer"),
+        ("POST", f"{V1}/export", "writer"),
     ],
 )
 def test_user_tier_is_denied_every_owned_route(tier_client, method, path, tier):
@@ -407,6 +409,7 @@ def test_reader_reads_an_owned_variant_job(tier_client, session, private_object)
         ("DELETE", f"{PREFIX}/category/delete/1/", None),
         ("POST", f"{V1}/presets", {"name": "p", "spec": {"width": 10}}),
         ("GET", f"{PREFIX}/dashboard/users/activity/", None),
+        ("POST", f"{V1}/export", {"format": "manifest"}),
     ],
 )
 def test_reader_is_denied_every_mutation(tier_client, method, path, body):
@@ -531,6 +534,7 @@ def test_the_router_floors_are_mounted_not_just_annotated():
         objects,
         presets,
         shares,
+        transfer,
         uploads,
         variants,
     )
@@ -545,6 +549,7 @@ def test_the_router_floors_are_mounted_not_just_annotated():
     assert _mounted(uploads.router) == {require_writer}
     assert _mounted(objects.router) == {require_writer}
     assert _mounted(variants.router) == {require_writer}
+    assert _mounted(transfer.router) == {require_writer}
     # The two read routers carry no floor by design: they admit anonymous
     # callers on PUBLIC records, so no dependency admits every route on them.
     assert _mounted(objects.read_router) == set()

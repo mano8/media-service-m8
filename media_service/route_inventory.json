@@ -198,6 +198,15 @@
     "note": "List expired upload sessions still in INITIATED state — requires superuser"
   },
   {
+    "path": "/media/v1/export",
+    "method": "POST",
+    "tag": "transfer",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Export the caller's scoped media as a manifest (streamed JSON, no bytes) or archive (501, not yet assembled) — writer tier (U9)"
+  },
+  {
     "path": "/media/v1/internal/objects/{object_id}/scan-result",
     "method": "POST",
     "tag": "internal",
