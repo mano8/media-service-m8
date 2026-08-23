@@ -3,14 +3,12 @@
 A ``manifest`` export is synchronous — it streams metadata and never touches
 bytes. An ``archive`` export has to read every object's bytes out of storage
 and zip them, which does not belong on the request path, so it becomes a row
-here plus an ARQ job that the service-owned maintenance worker assembles.
+here plus an ARQ job that ``media-worker-m8`` assembles.
 
-The row is deliberately *not* a copy of the export: it stores the resolved
-``filters`` and a snapshot of the authorizing principal's scope
-(``owner_user_id``/``tenant_id``/``is_superuser``) — the three attributes the
-object-listing scope helpers read — so the assembler re-runs the exact same
-scoped query the request path already proved resolvable, instead of carrying a
-materialised (and potentially multi-megabyte) object list in a column.
+The row is deliberately *not* a copy of the export. The service resolves the
+authorized collection into the SDK payload at enqueue time; this row retains
+the filters and scope snapshot as durable audit/status context while the DB-free
+worker receives only the approved storage references.
 """
 
 from datetime import datetime

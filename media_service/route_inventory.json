@@ -225,6 +225,15 @@
     "note": "Import a collection from an exported manifest or archive (multipart) — writer tier (U9); rate-limited"
   },
   {
+    "path": "/media/v1/internal/export-jobs/{job_id}",
+    "method": "PATCH",
+    "tag": "internal",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "Apply delegated archive progress/result from media-worker — internal only; requires MEDIA_INTERNAL_SERVICE_TOKEN bearer"
+  },
+  {
     "path": "/media/v1/internal/objects/{object_id}/scan-result",
     "method": "POST",
     "tag": "internal",

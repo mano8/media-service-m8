@@ -38,11 +38,11 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
 
 from media_service.controllers.export_archive import (
-    ExportPrincipal,
     FILES_PREFIX,
     MANIFEST_ENTRY,
-    write_archive,
+    archive_entry_name,
 )
+from media_service.controllers.transfer import TransferController
 from media_service.controllers.transfer_import import (
     ImportController,
     _best_effort_remove,
@@ -63,7 +63,6 @@ from media_service.db_models.media_objects import (
 )
 from media_service.db_models.storage_usage import StorageUsage
 from media_service.db_models.upload_sessions import UploadSession
-from media_service.schemas.objects import ObjectListParams
 
 IMPORT_URL = "/media/v1/import"
 BUCKET = "private-media"
@@ -641,16 +640,14 @@ def test_archive_import_round_trips_a_real_exported_archive(
     session.commit()
     mock_storage.blobs[(source.storage_bucket, source.object_key)] = TEXT
 
-    buffer = io.BytesIO()
-    write_archive(
-        session=session,
-        storage=mock_storage,
-        principal=ExportPrincipal(
-            id=uuid.UUID(str(current_user.id)), is_superuser=False, tenant_id=None
-        ),
-        filters=ObjectListParams(),
-        fh=buffer,
+    manifest = json.loads(
+        "".join(
+            TransferController.export_manifest(
+                session=session, current_user=current_user, filters=None
+            )
+        )
     )
+    buffer = io.BytesIO(_zip_bytes(manifest, {archive_entry_name(source): TEXT}))
 
     # Simulate importing into a clean collection: the ids are free again.
     # Deleting the object takes its link rows with it (the M2M is a secondary

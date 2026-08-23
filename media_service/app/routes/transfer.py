@@ -99,7 +99,8 @@ async def export_media(
 
     ``manifest`` streams JSON — metadata only, no bytes — and is answered
     inline. ``archive`` has to read every object out of storage, so it is
-    accepted (202) as a job and assembled by the worker.
+    accepted (202) as a job and delegated to media-worker through the shared
+    SDK payload.
 
     The controller work is synchronous and touches the database, so it is run
     in the threadpool rather than on the event loop this ``async`` handler
@@ -107,14 +108,14 @@ async def export_media(
     handler.
     """
     if body.format == "archive":
-        job = await run_in_threadpool(
+        started = await run_in_threadpool(
             TransferController.start_archive_export,
             session=session,
             current_user=current_user,
             filters=body.filters,
         )
         try:
-            await enqueue_export_archive(arq_pool, job.id)
+            await enqueue_export_archive(arq_pool, started.payload)
         except Exception as exc:
             # The row is committed but nothing will ever claim it. Fail it here
             # so it does not hold the caller's one in-flight export slot for a
@@ -122,14 +123,15 @@ async def export_media(
             await run_in_threadpool(
                 TransferController.fail_unqueued_export,
                 session=session,
-                job_id=job.id,
+                job_id=started.job.id,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Export could not be queued; try again shortly.",
             ) from exc
         return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED, content=jsonable_encoder(job)
+            status_code=status.HTTP_202_ACCEPTED,
+            content=jsonable_encoder(started.job),
         )
     stream = await run_in_threadpool(
         TransferController.export_manifest,

@@ -7,10 +7,9 @@ only in what leaves the service:
     Synchronous. Streams metadata and never touches bytes.
 ``archive``
     Asynchronous. Creates an
-    :class:`~media_service.db_models.export_jobs.ExportJob` that the
-    service-owned maintenance worker assembles into a zip
-    (:mod:`media_service.controllers.export_archive`), collected afterwards
-    from ``GET /media/v1/export/{job_id}`` as a presigned download.
+    :class:`~media_service.db_models.export_jobs.ExportJob` plus the immutable
+    SDK payload that ``media-worker-m8`` assembles into a zip, collected
+    afterwards from ``GET /media/v1/export/{job_id}`` as a presigned download.
 
 Both reuse the same scoping and filter helpers as the objects list
 (``_scoped_query``, ``_apply_filters``, ``_apply_category_filter`` from
@@ -28,13 +27,15 @@ tree — runs **before** the response starts streaming
 normal 404/403, not as a corrupted body after a 200 has already gone out; only
 the JSON *serialization* of already-fetched rows happens lazily, in
 :func:`stream_manifest`, which never runs a query and so can never raise an
-``HTTPException``. The archive path resolves the very same filter eagerly for
-the same reason: an export that would be refused must be refused at request
-time, not by a worker nobody is watching.
+``HTTPException``. The archive path resolves the very same filter and storage
+references eagerly for the same reason: an export that would be refused must
+be refused at request time, not by a worker nobody is watching.
 """
 
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import timedelta
 
 from fastapi import HTTPException, status
 from sqlalchemy import func
@@ -42,11 +43,13 @@ from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from fastapi_m8 import UserModel
+from media_sdk_m8 import ExportArchiveEntry, ExportArchiveJobPayload
 
 from media_service.controllers.category import (
     CategoryController,
     category_refs_by_object,
 )
+from media_service.controllers.export_archive import archive_entry_name
 from media_service.controllers.objects import (
     _apply_category_filter,
     _apply_filters,
@@ -68,8 +71,14 @@ from media_service.db_models.media_objects import (
     utcnow,
 )
 from media_service.schemas.objects import ObjectListParams
-from media_service.schemas.transfer import ExportJobPublic, ManifestObjectEntry
+from media_service.schemas.transfer import (
+    ExportJobPublic,
+    ExportJobUpdate,
+    ManifestObjectEntry,
+)
+from media_service.storage.buckets import StorageClass, bucket_for_storage_class
 from media_service.storage.client import ObjectStorage
+from media_service.storage.keys import build_export_archive_key
 from media_service.storage.presign import create_download_url
 
 
@@ -301,6 +310,51 @@ def _archive_is_expired(job: ExportJob) -> bool:
     return job.expires_at is not None and _as_aware(job.expires_at) <= utcnow()
 
 
+@dataclass(frozen=True)
+class StartedArchiveExport:
+    """The public queued job and immutable worker payload created together."""
+
+    job: ExportJobPublic
+    payload: ExportArchiveJobPayload
+
+
+def _archive_payload(
+    *,
+    session: Session,
+    current_user: UserModel,
+    filters: ObjectListParams,
+    job: ExportJob,
+) -> ExportArchiveJobPayload:
+    """Resolve the authorized collection into the SDK-owned worker contract."""
+    statement = with_bytes_only(
+        export_statement(session, current_user, filters)
+    ).order_by(col(MediaObject.id))
+    entries = [
+        ExportArchiveEntry(
+            object_id=obj.id,
+            source_bucket=obj.storage_bucket,
+            source_object_key=obj.object_key,
+            archive_path=archive_entry_name(obj),
+            size_bytes=obj.size_bytes,
+        )
+        for obj in session.exec(statement).all()
+    ]
+    manifest_json = "".join(build_manifest_stream(session, current_user, filters))
+    return ExportArchiveJobPayload(
+        job_id=job.id,
+        manifest_json=manifest_json,
+        objects=entries,
+        target_bucket=bucket_for_storage_class(StorageClass.TEMP),
+        target_object_key=build_export_archive_key(
+            owner_user_id=job.owner_user_id,
+            job_id=job.id,
+            tenant_id=job.tenant_id,
+        ),
+        stream_chunk_size=settings.MEDIA_EXPORT_STREAM_CHUNK_SIZE,
+        presigned_expire_seconds=settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS,
+    )
+
+
 class TransferController:
     """Handle export/import of a caller's media collection."""
 
@@ -325,15 +379,15 @@ class TransferController:
         session: Session,
         current_user: UserModel,
         filters: ObjectListParams | None,
-    ) -> ExportJobPublic:
+    ) -> StartedArchiveExport:
         """Create the job that assembles an ``archive`` export off-request.
 
         Resolves the filter against the caller's scope first (so a foreign
         ``category_id`` is the same 404/403 the manifest answers and never
         becomes a queued job), then bounds the work: one unfinished export per
         caller (409) and the configured object/byte ceilings (422). Only the
-        scope the request was authorized under is recorded on the row — the
-        assembler re-runs this same query; it does not decide who may see what.
+        authorized query is projected into the SDK payload; the assembler gets
+        no principal or database access with which to widen it.
         """
         params = _resolved_filters(filters)
         owner_id = uuid.UUID(str(current_user.id))
@@ -349,6 +403,7 @@ class TransferController:
         matched, total_bytes = _export_totals(session, statement)
         _assert_within_export_ceilings(matched, total_bytes)
         job = ExportJob(
+            id=uuid.uuid4(),
             owner_user_id=owner_id,
             tenant_id=user_tenant_id(current_user),
             is_superuser=bool(current_user.is_superuser),
@@ -356,10 +411,18 @@ class TransferController:
             object_count=matched,
             total_size_bytes=total_bytes,
         )
+        payload = _archive_payload(
+            session=session,
+            current_user=current_user,
+            filters=params,
+            job=job,
+        )
         session.add(job)
         session.commit()
         session.refresh(job)
-        return ExportJobPublic.model_validate(job)
+        return StartedArchiveExport(
+            job=ExportJobPublic.model_validate(job), payload=payload
+        )
 
     @staticmethod
     def fail_unqueued_export(*, session: Session, job_id: uuid.UUID) -> None:
@@ -378,6 +441,69 @@ class TransferController:
         job.updated_at = utcnow()
         session.add(job)
         session.commit()
+
+    @staticmethod
+    def update_export_job(
+        *, session: Session, job_id: uuid.UUID, body: ExportJobUpdate
+    ) -> ExportJobPublic:
+        """Apply the authenticated worker callback to one export job."""
+        job = session.get(ExportJob, job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Export job not found."
+            )
+
+        if body.status == ExportJobStatus.PROCESSING:
+            if job.status == ExportJobStatus.QUEUED:
+                job.status = ExportJobStatus.PROCESSING
+            elif job.status != ExportJobStatus.PROCESSING:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Export job is already terminal.",
+                )
+        elif body.status == ExportJobStatus.FAILED:
+            if job.status in ACTIVE_EXPORT_STATUSES:
+                job.status = ExportJobStatus.FAILED
+                job.error = body.error
+            elif job.status != ExportJobStatus.FAILED:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Export job is already terminal.",
+                )
+        else:
+            expected_bucket = bucket_for_storage_class(StorageClass.TEMP)
+            expected_key = build_export_archive_key(
+                owner_user_id=job.owner_user_id,
+                job_id=job.id,
+                tenant_id=job.tenant_id,
+            )
+            if (
+                body.storage_bucket != expected_bucket
+                or body.object_key != expected_key
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Export result location does not match the commissioned job.",
+                )
+            if job.status in ACTIVE_EXPORT_STATUSES:
+                job.status = ExportJobStatus.COMPLETED
+                job.storage_bucket = body.storage_bucket
+                job.object_key = body.object_key
+                job.size_bytes = body.size_bytes
+                job.expires_at = utcnow() + timedelta(
+                    seconds=settings.MEDIA_EXPORT_ARCHIVE_TTL_SECONDS
+                )
+            elif job.status != ExportJobStatus.COMPLETED:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Export job is already terminal.",
+                )
+
+        job.updated_at = utcnow()
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        return ExportJobPublic.model_validate(job)
 
     @staticmethod
     def get_export_job(

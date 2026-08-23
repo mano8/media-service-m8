@@ -63,14 +63,15 @@ All notable changes to `media-service-m8` are documented here.
 
 - **Archive export runs off the request path** (`U9`). `POST /media/v1/export`
   with `format: "archive"` no longer answers `501`: it resolves and bounds the
-  request, records an `export_job` row and returns `202` with the job, which the
-  **service-owned maintenance worker** assembles into a zip
+  request, records an `export_job` row and returns `202` with the job, which
+  **`media-worker-m8`** assembles into a zip
   (`manifest.json` — byte-identical to what the `manifest` format streams — plus
-  one entry per object, under `files/{object_id}/{filename}`). The job contract
-  stays inside this service: assembly needs the database and storage, which the
-  DB-free `media-worker-m8` does not have, so no new `media-sdk-m8` payload was
-  required. (The SDK floor did move afterwards, for the unrelated streaming-put
-  primitive below.)
+  one entry per object, under `files/{object_id}/{filename}`). The service owns
+  authorization and database selection: it materializes only the approved
+  storage references into `media-sdk-m8`'s immutable
+  `ExportArchiveJobPayload`. The DB-free worker makes no scope decision and
+  reports lifecycle/location through the token-guarded
+  `/v1/internal/export-jobs/{job_id}` callback.
   - `GET /media/v1/export/{job_id}` reports progress and, once the archive is
     assembled and still inside its window, mints a **presigned download** per
     read (never stored). A lapsed archive is a `410`, not a `completed` job
@@ -86,10 +87,10 @@ All notable changes to `media-service-m8` are documented here.
     with one unfinished export per caller (`409`). A job whose enqueue never
     reaches the broker is failed immediately (`503`) rather than parked as
     `queued` forever.
-  - The worker replays the filter the request was authorized under, through the
-    same scoped query the objects list uses, against the scope snapshot on the
-    job row — it makes no authorization decision of its own, and a foreign
-    `category_id` is refused at request time, before any job exists.
+  - The service resolves the filter through the same scoped query the objects
+    list uses before enqueueing. A foreign `category_id` is refused before any
+    job exists, and the worker receives no principal or database access it could
+    use to widen the result.
   - The orphan reconciler no longer treats a live export archive as reclaimable
     storage: an assembled archive inside its download window is excluded from
     the sweep (a lapsed one is deliberately not).

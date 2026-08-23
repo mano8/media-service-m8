@@ -21,6 +21,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
+from pydantic import model_validator
 from sqlmodel import Field, SQLModel
 
 from media_service.db_models.categories import (
@@ -114,6 +115,41 @@ class ExportJobPublic(SQLModel):
     created_at: datetime
     updated_at: datetime
     download_url: str | None = None
+
+
+class ExportJobUpdate(SQLModel):
+    """Authenticated lifecycle callback posted by ``media-worker-m8``.
+
+    A completed callback carries the worker-minted URL as proof that the final
+    object can be signed, but the service deliberately does not persist it:
+    user polling mints a fresh short-lived URL under the existing download rule.
+    """
+
+    status: Literal[
+        ExportJobStatus.PROCESSING,
+        ExportJobStatus.COMPLETED,
+        ExportJobStatus.FAILED,
+    ]
+    storage_bucket: str | None = Field(default=None, min_length=1, max_length=63)
+    object_key: str | None = Field(default=None, min_length=1, max_length=1024)
+    size_bytes: int | None = Field(default=None, ge=0)
+    download_url: str | None = Field(default=None, min_length=1, max_length=4096)
+    error: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _require_status_fields(self) -> "ExportJobUpdate":
+        if self.status == ExportJobStatus.COMPLETED:
+            required = (
+                self.storage_bucket,
+                self.object_key,
+                self.size_bytes,
+                self.download_url,
+            )
+            if any(value is None for value in required):
+                raise ValueError("completed export callbacks require the full result")
+        elif self.status == ExportJobStatus.FAILED and self.error is None:
+            raise ValueError("failed export callbacks require an error")
+        return self
 
 
 # ── Import (`U9`) ────────────────────────────────────────────────────────────

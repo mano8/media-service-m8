@@ -72,14 +72,10 @@ def test_worker_settings_wiring():
         mw.expire_stale_uploads,
         mw.reconcile_orphans,
         mw.deliver_outbox,
-        mw.build_export_archive,
     ]
-    # One scheduler, four crons (single replica prevents double-fire). The
-    # fifth function, archive assembly (`U9`), is enqueued by the web process
-    # and therefore has no cron entry.
+    # One scheduler, four crons (single replica prevents double-fire).
     assert len(mw.WorkerSettings.cron_jobs) == 4
-    # The producer and the worker must agree on the queue, or enqueued jobs are
-    # popped by media-worker-m8 and dropped as "function not found".
+    # DB-coupled maintenance stays isolated from media-worker's default queue.
     assert mw.WorkerSettings.queue_name == MAINTENANCE_QUEUE
 
 

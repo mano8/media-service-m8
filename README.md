@@ -222,6 +222,7 @@ rejected at create/update time (**422**).
 | POST | `/v1/internal/objects/{id}/scan-result` | Apply an antivirus verdict (CLEAN → `READY`, else `QUARANTINED`) |
 | POST | `/v1/internal/objects/{id}/variants` | Register a worker-written variant (idempotent) |
 | PATCH | `/v1/internal/variant-jobs/{jid}` | Advance a variant job's status/progress |
+| PATCH | `/v1/internal/export-jobs/{jid}` | Apply delegated archive progress/result |
 
 Every internal route requires `Authorization: Bearer <MEDIA_INTERNAL_SERVICE_TOKEN>`,
 compared in constant time (`secrets.compare_digest`); anything missing or
@@ -451,12 +452,16 @@ commented set of settings.
 Media-owned state (rate limits, queues, locks, caches) uses the `MEDIA_REDIS_*`
 settings and the `media:*` key namespace — **separate** from the auth Redis. Rate
 limiting fails open if the media Redis is unavailable. The same Redis backs the
-ARQ job queue (`scan_object`, `generate_variants`) consumed by `media-worker-m8`.
+ARQ job queue (`scan_object`, `generate_variants`, `build_export_archive`)
+consumed by `media-worker-m8`.
 
 ## Worker integration
 
 Media-service is the **producer** for background work run by `media-worker-m8`,
-sharing storage + job contracts via `media-sdk-m8`. Two settings wire it up:
+sharing storage + job contracts via `media-sdk-m8`. For archive exports the
+service resolves the caller's authorized manifest and storage references into
+`ExportArchiveJobPayload`; the DB-free worker streams the ZIP and reports its
+result through `/v1/internal/export-jobs/{job_id}`. Two settings wire it up:
 
 - `MEDIA_INTERNAL_SERVICE_TOKEN` — shared bearer token the worker presents on the
   `/v1/internal/*` callbacks (set the **same** value here and on the worker).
