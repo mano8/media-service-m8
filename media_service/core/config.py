@@ -47,7 +47,7 @@ class Settings(ConsumerServiceSettings):
     # plugin. Overridable from the environment for non-default deployments.
     SERVICE_VERSION: str = __version__
     CONTRACT_NAME: str = "media-service-m8"
-    CONTRACT_VERSION: str = "1.0"
+    CONTRACT_VERSION: str = "1.1"
     CONTRACT_RANGE: str = ">=1.0.0 <2.0.0"
 
     secret_fields = ConsumerServiceSettings.secret_fields + [

@@ -23,8 +23,8 @@ def test_meta_route_exposes_service_contract() -> None:
     # hard-coded copy has to be hand-edited on every release and silently
     # asserts nothing about the service once it drifts (the A30 stale-literal
     # shape). The contract block stays literal on purpose — it is the published
-    # HTTP contract, which must *not* move when the package version does, so a
-    # change there should fail this test.
+    # HTTP contract, which moves independently of the package version when the
+    # served HTTP surface changes, so a change there should fail this test.
     resp = client.get("/media/meta")
     assert resp.status_code == 200
     assert resp.json() == {
@@ -33,7 +33,7 @@ def test_meta_route_exposes_service_contract() -> None:
         "api_version": "v1",
         "contract": {
             "name": "media-service-m8",
-            "version": "1.0",
+            "version": "1.1",
             "range": ">=1.0.0 <2.0.0",
         },
     }
