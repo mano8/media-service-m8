@@ -45,6 +45,7 @@ from media_service.db_models.media_objects import (
     MediaVisibility,
     ScanStatus,
 )
+from media_service.db_models.export_jobs import ExportJob, ExportJobStatus
 from media_service.db_models.media_variants import MediaVariant
 from media_service.db_models.variant_jobs import VariantJob, VariantJobStatus
 from media_service.storage.client import ObjectStorage
@@ -54,6 +55,10 @@ V1 = f"{PREFIX}/v1"
 
 OWNER_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 STRANGER_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
+# Fixed id for the export-status route's tier cases: the tier is decided before
+# the row is ever looked up, so the job need not exist for a 401/403 to prove
+# the floor is mounted.
+EXPORT_JOB_ID = uuid.UUID("33333333-3333-4333-8333-333333333333")
 
 
 # ── token minting ─────────────────────────────────────────────────────────────
@@ -174,6 +179,7 @@ def mock_storage() -> MagicMock:
         ("POST", f"{V1}/presets"),
         ("GET", f"{V1}/admin/storage/stats"),
         ("POST", f"{V1}/export"),
+        ("GET", f"{V1}/export/{EXPORT_JOB_ID}"),
     ],
 )
 def test_non_public_routes_reject_an_anonymous_caller(tier_client, method, path):
@@ -360,6 +366,7 @@ def test_user_tier_reads_public_objects(tier_client, public_object, private_obje
         ("POST", f"{V1}/uploads/initiate", "writer"),
         ("GET", f"{PREFIX}/dashboard/users/activity/", "writer"),
         ("POST", f"{V1}/export", "writer"),
+        ("GET", f"{V1}/export/{EXPORT_JOB_ID}", "reader"),
     ],
 )
 def test_user_tier_is_denied_every_owned_route(tier_client, method, path, tier):
@@ -399,6 +406,18 @@ def test_reader_reads_an_owned_variant_job(tier_client, session, private_object)
         headers=_auth("reader"),
     )
     assert response.status_code == 200
+
+
+def test_reader_reads_an_owned_export_job(tier_client, session):
+    """Export *status* is an owned read (`U9`), unlike starting an export."""
+    job = ExportJob(owner_user_id=OWNER_ID, status=ExportJobStatus.QUEUED)
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    response = tier_client.get(f"{V1}/export/{job.id}", headers=_auth("reader"))
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert response.json()["download_url"] is None
 
 
 @pytest.mark.parametrize(
@@ -550,8 +569,11 @@ def test_the_router_floors_are_mounted_not_just_annotated():
     assert _mounted(objects.router) == {require_writer}
     assert _mounted(variants.router) == {require_writer}
     assert _mounted(transfer.router) == {require_writer}
-    # The two read routers carry no floor by design: they admit anonymous
-    # callers on PUBLIC records, so no dependency admits every route on them.
+    assert _mounted(transfer.read_router) == {require_reader}
+    # ``transfer.read_router`` is the one read router with a mounted floor: it
+    # serves an owned read only (`U9` export status). The three below carry no
+    # floor by design — they admit anonymous callers on PUBLIC records, so no
+    # dependency admits every route on them.
     assert _mounted(objects.read_router) == set()
     assert _mounted(variants.read_router) == set()
     assert _mounted(shares.public_router) == set()

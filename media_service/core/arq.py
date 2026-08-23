@@ -1,11 +1,13 @@
 """ARQ connection pool for enqueuing background worker jobs.
 
 media-service is the *producer*: it enqueues ``scan_object`` and
-``generate_variants`` jobs that media-worker-m8 consumes. The Redis connection
-reuses the media-owned ``MEDIA_REDIS_*`` settings via
+``generate_variants`` jobs that media-worker-m8 consumes, and
+``build_export_archive`` jobs that its own maintenance worker consumes. The
+Redis connection reuses the media-owned ``MEDIA_REDIS_*`` settings via
 :func:`get_media_redis_config`, so queues share the single media Redis.
 """
 
+import uuid
 from typing import Annotated
 
 from arq import create_pool
@@ -19,6 +21,17 @@ from media_service.core.media_redis import get_media_redis_config
 #: ARQ task names registered by media-worker-m8's ``WorkerSettings``.
 SCAN_TASK = "scan_object"
 VARIANTS_TASK = "generate_variants"
+
+#: Dedicated queue consumed by the *service-owned* maintenance worker
+#: (:mod:`media_service.maintenance_worker`). ARQ defaults every pool to
+#: ``arq:queue``, which media-worker-m8 drains — enqueueing a service-owned
+#: task there would have media-worker pop a function it does not register and
+#: drop it as "function not found", so the queue name is stated here once and
+#: read by both the producer below and the worker's ``WorkerSettings``.
+MAINTENANCE_QUEUE = "arq:maintenance"
+
+#: ARQ task name registered by the service-owned maintenance worker (`U9`).
+EXPORT_ARCHIVE_TASK = "build_export_archive"
 
 
 def get_arq_redis_settings() -> RedisSettings:
@@ -48,3 +61,19 @@ async def enqueue_scan(pool: ArqRedis, payload: ScanJobPayload) -> None:
 async def enqueue_variants(pool: ArqRedis, payload: VariantJobPayload) -> None:
     """Enqueue an image-variant job, pinning the ARQ job id to the VariantJob id."""
     await pool.enqueue_job(VARIANTS_TASK, payload, _job_id=str(payload.job_id))
+
+
+async def enqueue_export_archive(pool: ArqRedis, job_id: uuid.UUID) -> None:
+    """Enqueue archive assembly for an export job on the maintenance queue.
+
+    Pins the ARQ job id to the ``ExportJob`` id so a retried enqueue of the
+    same job cannot fan out into two assemblies of the same archive, and
+    targets :data:`MAINTENANCE_QUEUE` because the consumer is the service-owned
+    worker (it needs the DB and storage), not the DB-free media-worker-m8.
+    """
+    await pool.enqueue_job(
+        EXPORT_ARCHIVE_TASK,
+        job_id,
+        _job_id=str(job_id),
+        _queue_name=MAINTENANCE_QUEUE,
+    )

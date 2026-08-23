@@ -1,9 +1,12 @@
 """Pydantic schemas for the export/import (transfer) surface (`U9`).
 
-Only the ``manifest`` shape is real today. ``archive`` is accepted on the
-request (the format choice is locked 2026-07-04) but is not yet assembled — the
-async job that builds it is the next `U9` step — so the controller answers 501
-for it rather than silently downgrading to a manifest.
+Both locked export formats (2026-07-04) are real. ``manifest`` is answered
+synchronously as a streamed JSON body — metadata only, no bytes.  ``archive``
+cannot be: it has to read every object out of storage and zip it, so the
+request creates an :class:`~media_service.db_models.export_jobs.ExportJob`
+(202 + :class:`ExportJobPublic`) and the assembled zip is collected later from
+``GET /media/v1/export/{job_id}``, which hands back a presigned download once
+the job completes.
 """
 
 import uuid
@@ -13,6 +16,7 @@ from typing import Literal
 from sqlmodel import Field, SQLModel
 
 from media_service.db_models.categories import CategoryNode
+from media_service.db_models.export_jobs import ExportJobStatus
 from media_service.db_models.media_objects import (
     MediaCategory,
     MediaObjectStatus,
@@ -74,3 +78,28 @@ class ExportManifest(SQLModel):
 
     category_tree: list[CategoryNode]
     objects: list[ManifestObjectEntry]
+
+
+class ExportJobPublic(SQLModel):
+    """Public view of an ``archive`` export job.
+
+    Returned by ``POST /media/v1/export`` (202, ``queued``) and by
+    ``GET /media/v1/export/{job_id}``. ``download_url`` is a short-lived
+    presigned GET, minted per status read rather than stored, and is therefore
+    populated only while the job is ``completed`` and unexpired — the same rule
+    the object download surface applies, so an export URL never outlives the
+    signature that makes it work. The storage bucket and key the archive lives
+    at are deliberately not exposed: a caller gets the signed URL, not the
+    location.
+    """
+
+    id: uuid.UUID
+    status: ExportJobStatus
+    object_count: int
+    total_size_bytes: int
+    size_bytes: int | None = None
+    expires_at: datetime | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    download_url: str | None = None

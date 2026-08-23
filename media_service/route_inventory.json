@@ -204,7 +204,16 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Export the caller's scoped media as a manifest (streamed JSON, no bytes) or archive (501, not yet assembled) — writer tier (U9)"
+    "note": "Export the caller's scoped media as a manifest (streamed JSON, no bytes) or as an archive job (202, assembled by the maintenance worker) — writer tier (U9)"
+  },
+  {
+    "path": "/media/v1/export/{job_id}",
+    "method": "GET",
+    "tag": "transfer",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Archive export status, with a presigned download once assembled — reader tier + ownership (U9)"
   },
   {
     "path": "/media/v1/internal/objects/{object_id}/scan-result",

@@ -1,6 +1,8 @@
 """media_service fastapi app db models"""
 
 from .categories import Category as Category
+from .export_jobs import ExportJob as ExportJob
+from .export_jobs import ExportJobStatus as ExportJobStatus
 from .image_presets import ImagePreset as ImagePreset
 from .media_object_categories import (
     MediaObjectCategoryLink as MediaObjectCategoryLink,

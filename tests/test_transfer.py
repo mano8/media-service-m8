@@ -1,8 +1,9 @@
 """``POST /media/v1/export`` — manifest export (`U9`).
 
-Only the ``manifest`` format is real here. ``archive`` is a valid, locked
-request shape whose assembly has not landed (501 today — see the next `U9`
-step), so it gets its own single test rather than a full round-trip.
+The ``manifest`` half of the export surface: answered inline, metadata only, no
+bytes. The ``archive`` half — the job the request creates, the zip the worker
+assembles, and the status route that hands back the download — lives in
+``tests/test_export_archive.py``, so each file follows one format end to end.
 
 The manifest is scoped through the exact same helpers the objects list uses
 (`_scoped_query`/`_apply_filters`/`_apply_category_filter`), so the tenant/
@@ -38,7 +39,6 @@ from media_service.db_models.media_objects import (
     ScanStatus,
 )
 from media_service.schemas.objects import ObjectListParams
-from media_service.schemas.transfer import ExportRequest
 
 EXPORT_URL = "/media/v1/export"
 
@@ -235,11 +235,6 @@ def test_manifest_export_cannot_be_widened_by_a_foreign_category_id(
     assert resp.status_code in (403, 404)
 
 
-def test_archive_format_is_not_yet_implemented(client: TestClient):
-    resp = client.post(EXPORT_URL, json={"format": "archive"})
-    assert resp.status_code == 501
-
-
 def test_export_rejects_an_unknown_format(client: TestClient):
     resp = client.post(EXPORT_URL, json={"format": "csv"})
     assert resp.status_code == 422
@@ -280,23 +275,9 @@ def test_export_of_a_foreign_category_id_is_refused_not_silently_empty(
         session, uuid.UUID(str(owner_b.id)), "NotYours", tenant_id=tenant_b
     )
     with pytest.raises(HTTPException) as exc:
-        TransferController.export(
+        TransferController.export_manifest(
             session=session,
             current_user=owner_a,
-            body=ExportRequest(
-                format="manifest",
-                filters=ObjectListParams(category_id=theirs.id),
-            ),
+            filters=ObjectListParams(category_id=theirs.id),
         )
     assert exc.value.status_code == 403
-
-
-def test_export_archive_raises_before_any_streaming(session: Session, current_user):
-    """The 501 fires from ``export()`` itself, not lazily inside the generator."""
-    with pytest.raises(HTTPException) as exc:
-        TransferController.export(
-            session=session,
-            current_user=current_user,
-            body=ExportRequest(format="archive"),
-        )
-    assert exc.value.status_code == 501

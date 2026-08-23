@@ -110,6 +110,21 @@ class Settings(ConsumerServiceSettings):
     # fan out into unbounded concurrent full-object reads.
     MEDIA_SHA256_VERIFY_MAX_CONCURRENCY: int = Field(default=4, ge=1)
 
+    # ── Archive export (`U9`) ────────────────────────────────────────────────
+    # Not secrets — literal defaults bounding the asynchronous archive export.
+    # A single request can otherwise ask the worker to stream an unbounded
+    # collection out of storage and zip it; both ceilings are checked on the
+    # request path, before a job row exists, so an oversized export is refused
+    # rather than queued and failed later.
+    MEDIA_EXPORT_MAX_OBJECTS: int = Field(default=5_000, ge=1)
+    MEDIA_EXPORT_MAX_TOTAL_BYTES: int = Field(default=5_368_709_120, ge=1)
+    # How long an assembled archive stays downloadable. After this the job
+    # answers 410 and its bytes become reclaimable by the orphan reconciler.
+    MEDIA_EXPORT_ARCHIVE_TTL_SECONDS: int = Field(default=86_400, ge=1)
+    # Chunk size (bytes) used when streaming an object out of storage into the
+    # zip — the archive is never assembled in memory (default 1 MiB).
+    MEDIA_EXPORT_STREAM_CHUNK_SIZE: int = Field(default=1_048_576, ge=1)
+
     # ── Storage quotas ───────────────────────────────────────────────────────
     # Default ceilings applied to every owner/tenant scope without an explicit
     # admin override. ``None`` means unlimited (no enforcement).

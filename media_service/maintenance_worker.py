@@ -5,17 +5,23 @@ This is a *second run-mode of the same media-service image*: launched as
 process. It owns the DB-coupled housekeeping jobs (hard-purge, stale-upload
 expiry, orphan reconciliation) that must run on a schedule with direct DB +
 storage access — work that does **not** belong in the DB-free, enqueue-driven
-media-worker-m8 image.
+media-worker-m8 image. It also owns the one *enqueued* (non-cron) job of the
+same shape: archive-export assembly (`U9`), which needs the database to resolve
+the export and storage to stream the bytes it zips.
 
 The FastAPI app stays sync; only this module is async (arq is async by nature).
 Each cron opens a short-lived ``engine.session()`` and calls straight into the
 sync :class:`MaintenanceController`. Housekeeping is serial and infrequent, so
 briefly blocking the event loop in the sync controller is acceptable;
-``asyncio.to_thread`` is the noted escape hatch if that ever changes.
+``asyncio.to_thread`` is the noted escape hatch if that ever changes — and
+archive assembly, which streams a whole collection through a zip, is exactly
+the case that takes it.
 
 Deployed ``replicas: 1`` so arq's cron fires exactly once per schedule.
 """
 
+import asyncio
+import uuid
 from datetime import timedelta
 from typing import Any
 
@@ -23,9 +29,10 @@ import httpx
 from arq import cron
 from arq.connections import RedisSettings
 
+from media_service.controllers.export_archive import ExportArchiveController
 from media_service.controllers.maintenance import MaintenanceController
 from media_service.controllers.outbox import OutboxDeliveryController
-from media_service.core.arq import get_arq_redis_settings
+from media_service.core.arq import MAINTENANCE_QUEUE, get_arq_redis_settings
 from media_service.core.config import settings
 from media_service.core.deps import engine
 from media_service.core.ssrf import WebhookPolicy, build_url_guard
@@ -111,6 +118,26 @@ async def deliver_outbox(ctx: dict[str, Any]) -> int:
     return report.delivered
 
 
+async def build_export_archive(ctx: dict[str, Any], job_id: uuid.UUID) -> int:
+    """Enqueued job body: assemble a queued archive export (`U9`).
+
+    Unlike the crons above this is driven by a request — the web process
+    enqueues it from ``POST /media/v1/export`` — and it is the one job here
+    whose duration scales with the caller's collection rather than with a fixed
+    batch limit, so it runs in a worker thread instead of on the event loop.
+    Returns the number of files the archive carried (``0`` when the job was
+    already claimed, or failed); the row, not this value, is the contract.
+    """
+
+    def _run() -> int:
+        with engine.session() as session:
+            return ExportArchiveController.build(
+                session=session, storage=ctx["storage"], job_id=job_id
+            )
+
+    return await asyncio.to_thread(_run)
+
+
 class WorkerSettings:
     """ARQ ``WorkerSettings`` consumed by the ``arq`` CLI (single scheduler)."""
 
@@ -122,15 +149,18 @@ class WorkerSettings:
     # them as "function not found", silently breaking the upload scan pipeline,
     # while media-worker pops the maintenance crons. Keep the maintenance crons on
     # their own queue; media-worker + the web producer stay on the default queue.
-    queue_name: str = "arq:maintenance"
+    queue_name: str = MAINTENANCE_QUEUE
     on_startup = startup
     on_shutdown = shutdown
-    # Exposed as functions too so an operator can enqueue them on demand.
+    # The crons are exposed as functions too, so an operator can enqueue them
+    # on demand; ``build_export_archive`` is *only* ever enqueued (by the web
+    # process) and therefore has no cron entry.
     functions = [
         hard_purge_expired,
         expire_stale_uploads,
         reconcile_orphans,
         deliver_outbox,
+        build_export_archive,
     ]
     cron_jobs = [
         cron(hard_purge_expired, hour=settings.MEDIA_PURGE_CRON_HOUR, minute=0),

@@ -7,10 +7,12 @@ from unittest.mock import MagicMock
 from sqlmodel import Session
 
 from media_service.controllers.maintenance import MaintenanceController
+from media_service.db_models.export_jobs import ExportJob, ExportJobStatus
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectStatus,
     MediaVisibility,
+    utcnow,
 )
 from media_service.db_models.upload_sessions import UploadSession, UploadSessionStatus
 
@@ -265,6 +267,48 @@ def test_reconcile_excludes_rows_within_grace_window(
 
     assert report.db_orphan_count == 0
     mock_storage.stat_object.assert_not_called()
+
+
+def test_reconcile_never_reclaims_a_live_export_archive(
+    session: Session, mock_storage: MagicMock
+):
+    """An assembled export has no MediaObject row, but it is not an orphan (`U9`)."""
+    live = ExportJob(
+        owner_user_id=uuid.uuid4(),
+        status=ExportJobStatus.COMPLETED,
+        storage_bucket="private-media",
+        object_key="users/x/exports/live.zip",
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    lapsed = ExportJob(
+        owner_user_id=uuid.uuid4(),
+        status=ExportJobStatus.COMPLETED,
+        storage_bucket="private-media",
+        object_key="users/x/exports/lapsed.zip",
+        expires_at=utcnow() - timedelta(hours=1),
+    )
+    session.add(live)
+    session.add(lapsed)
+    session.commit()
+    mock_storage.list_object_keys.return_value = [
+        live.object_key,
+        lapsed.object_key,
+    ]
+
+    report = MaintenanceController.reconcile_orphans(
+        session=session,
+        storage=mock_storage,
+        buckets=["private-media"],
+        grace=timedelta(0),
+        limit=1000,
+        repair=True,
+    )
+
+    # The collectable archive survives; the lapsed one is meant to be reclaimed.
+    assert [o.object_key for o in report.storage_orphans] == [lapsed.object_key]
+    mock_storage.remove_object.assert_called_once_with(
+        bucket="private-media", object_key=lapsed.object_key
+    )
 
 
 def test_reconcile_repair_deletes_storage_orphans_up_to_limit(

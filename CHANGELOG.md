@@ -15,6 +15,44 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Added
 
+- **Archive export runs off the request path** (`U9`). `POST /media/v1/export`
+  with `format: "archive"` no longer answers `501`: it resolves and bounds the
+  request, records an `export_job` row and returns `202` with the job, which the
+  **service-owned maintenance worker** assembles into a zip
+  (`manifest.json` — byte-identical to what the `manifest` format streams — plus
+  one entry per object, under `files/{object_id}/{filename}`). The job contract
+  stays inside this service: assembly needs the database and storage, which the
+  DB-free `media-worker-m8` does not have, so no new `media-sdk-m8` payload and
+  no floor bump were required.
+  - `GET /media/v1/export/{job_id}` reports progress and, once the archive is
+    assembled and still inside its window, mints a **presigned download** per
+    read (never stored). A lapsed archive is a `410`, not a `completed` job
+    pointing at reclaimed bytes. Reader tier + ownership: a foreign job is a
+    `403`, an unknown one a `404`.
+  - **The download scan gate is not bypassable by asking for an archive.** Only
+    objects that are `READY`, `CLEAN` and not soft-deleted contribute bytes; the
+    rest still appear in `manifest.json` with their real `scan_status`, so an
+    import can see exactly why the bytes are missing.
+  - **Bounded work.** The archive is written to a temporary file and streamed
+    into storage — never assembled in memory — and the request is refused up
+    front (`422`) above `MEDIA_EXPORT_MAX_OBJECTS` / `MEDIA_EXPORT_MAX_TOTAL_BYTES`,
+    with one unfinished export per caller (`409`). A job whose enqueue never
+    reaches the broker is failed immediately (`503`) rather than parked as
+    `queued` forever.
+  - The worker replays the filter the request was authorized under, through the
+    same scoped query the objects list uses, against the scope snapshot on the
+    job row — it makes no authorization decision of its own, and a foreign
+    `category_id` is refused at request time, before any job exists.
+  - The orphan reconciler no longer treats a live export archive as reclaimable
+    storage: an assembled archive inside its download window is excluded from
+    the sweep (a lapsed one is deliberately not).
+- **`export_job`** — new table carrying an archive export's status, the filters
+  and scope it was authorized under, the assembled archive's location, size and
+  expiry, and its failure reason.
+- **`MEDIA_EXPORT_MAX_OBJECTS`, `MEDIA_EXPORT_MAX_TOTAL_BYTES`,
+  `MEDIA_EXPORT_ARCHIVE_TTL_SECONDS`, `MEDIA_EXPORT_STREAM_CHUNK_SIZE`** — new
+  settings bounding archive export size, lifetime and streaming granularity.
+
 - **Media can be filed into several user categories at upload or later**
   (`U4`). `category_ids: list[int]` is accepted on `POST /v1/uploads/initiate`,
   on `POST /v1/uploads/{session_id}/complete` and on
