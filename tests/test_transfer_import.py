@@ -391,6 +391,29 @@ def test_manifest_import_relinking_the_same_categories_changes_nothing(
     assert _paths(session, obj.id) == {"docs"}
 
 
+def test_manifest_import_links_an_existing_object_past_a_full_quota(
+    client: TestClient, session: Session, current_user
+):
+    """A manifest never creates bytes, so it is not held to the byte/object quota.
+
+    `U9`'s explicit-enforcement checkbox only bites where new bytes are
+    written — the archive path, which re-drives the pipeline's own quota
+    check. A manifest row only re-files a row this collection already owns;
+    exhausting the owner's quota here must not turn a metadata-only re-filing
+    into a refusal a real upload would earn.
+    """
+    usage = StorageUsage(owner_user_id=current_user.id, quota_bytes=1, quota_objects=0)
+    session.add(usage)
+    obj = _make_object(session, current_user.id)
+    session.commit()
+
+    entry = _entry(object_id=obj.id, category_paths=["docs"])
+    report = _post_manifest(client, _manifest([entry], [_node("Docs")])).json()
+
+    assert report["objects"][0]["status"] == "linked"
+    assert _paths(session, obj.id) == {"docs"}
+
+
 @pytest.mark.parametrize(
     ("status", "deleted"),
     [
