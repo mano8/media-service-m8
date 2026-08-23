@@ -58,7 +58,7 @@ Auto-mounted by `fastapi-m8` (≥ 3.3.0) `create_app` — the standard m8 triad:
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.0`, service-version range `>=1.0.0 <2.0.0`. |
+| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@mano8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.1`, service-version range `>=1.0.0 <2.0.0`. |
 | GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
 | GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / MinIO). |
 
@@ -114,7 +114,8 @@ authenticated user, their own objects plus anything `PUBLIC` and same-tenant
 see [Access control](#access-control--visibility). Rate limiting follows the
 caller: per-user **and** per-IP once identified, per-IP only while anonymous.
 Supported query parameters:
-`category`, `visibility`, `status`, `mime_prefix` (e.g. `image/`),
+the fixed-policy `category`, user-category `category_id`, `include_descendants`,
+`uncategorized`, `visibility`, `status`, `mime_prefix` (e.g. `image/`),
 `created_from`/`created_to`, `q` (filename contains), `sort_by`
 (`original_filename`|`category`|`status`|`size_bytes`|`created_at`), `order`
 (`asc`|`desc`), and `limit` (1–100).
@@ -304,12 +305,26 @@ endpoints (and the optional `?tenant_id=`) are superuser-only.
 
 ### Category & Dashboard
 
-`/{prefix}/category` (CRUD) and `/{prefix}/dashboard` (user-activity stats) are
-inherited consumer-template routers retained for ecosystem parity. A category
-carries no visibility column, so it has no public form: reads are **reader**
-tier, the three mutations are **writer**. Both `/dashboard` routes are **writer**
-tier — an operational activity view sits above plain read access, matching the
-decision `prompt-engine-m8` records for its identical pair.
+`/{prefix}/category` supplies a tenant-scoped, nested **user-category** tree;
+it is an organizational layer and does not replace the fixed `MediaCategory`
+enum that drives media policy. An object may be filed in multiple user
+categories. `GET /category/tree/` gives reader-tier callers the complete tree
+with direct and subtree object counts. CRUD reads are **reader** tier and
+mutations are **writer** tier; foreign, invalid-parent, cyclic, duplicate-sibling
+and non-empty-delete requests are refused rather than widening a caller's view.
+
+`/{prefix}/dashboard` remains a writer-tier user-activity view. Both routers are
+retained for ecosystem parity.
+
+### Collection export & import
+
+Writer-tier callers can export their authorized collection through
+`POST /v1/export` as a streamed manifest or an asynchronous archive job, then
+restore it through `POST /v1/import`. The import recreates the category tree
+before filings, scopes every record to the importing caller and re-runs archived
+bytes through the normal upload and scan pipeline. Archive downloads only contain
+objects whose bytes are currently safe to serve; manifest rows report any missing
+bytes explicitly.
 
 > **Note:** media variants (`db_models/media_variants.py`, `schemas/variants.py`,
 > `app/routes/variants.py`) are **reserved stubs** — the model exists but no

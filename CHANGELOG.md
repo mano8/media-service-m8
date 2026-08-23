@@ -13,6 +13,14 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Contract `media-service-m8@1.1`** (`U12`). The additive media UX surface is
+  now advertised through `/media/meta`: hierarchical user categories, multi-file
+  category assignments and filters, plus collection export/import. The existing
+  contract range remains `>=1.0.0 <2.0.0`, so clients using the 1.0 contract
+  continue to be served.
+
 ### Added
 
 - **A collection can be imported back** (`U9`). `POST /media/v1/import` accepts
