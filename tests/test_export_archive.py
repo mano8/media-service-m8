@@ -344,6 +344,46 @@ def test_archive_export_cannot_be_widened_by_a_foreign_category_id(
     assert session.exec(select(ExportJob)).all() == []
 
 
+def test_archive_export_cannot_be_widened_by_a_foreign_owner_user_id(
+    client: TestClient, session: Session, current_user
+):
+    """Request, job row and assembled zip — the owner filter widens none of them.
+
+    ``owner_user_id`` is honoured only on ``_scoped_query``'s superuser branch,
+    so a non-superuser naming a stranger exports their *own* collection. This
+    follows it the whole way, because the archive path is where a smuggled
+    scope would do real damage: the filters travel to a worker that runs with
+    no token of its own.
+    """
+    stranger_id = uuid.uuid4()
+    mine = _make_object(session, current_user.id, filename="mine.pdf")
+    theirs = _make_object(session, stranger_id, filename="theirs.pdf")
+
+    resp = client.post(
+        EXPORT_URL,
+        json={"format": "archive", "filters": {"owner_user_id": str(stranger_id)}},
+    )
+
+    assert resp.status_code == 202
+    assert resp.json()["object_count"] == 1
+    job = session.get(ExportJob, uuid.UUID(resp.json()["id"]))
+    # The snapshot records who asked, not who the filter named.
+    assert (job.owner_user_id, job.is_superuser) == (
+        uuid.UUID(str(current_user.id)),
+        False,
+    )
+
+    storage = _storage_for(mine, theirs)
+    embedded = ExportArchiveController.build(
+        session=session, storage=storage, job_id=job.id
+    )
+
+    assert embedded == 1
+    names = storage.archive.namelist()
+    assert f"files/{mine.id}/mine.pdf" in names
+    assert not [n for n in names if str(theirs.id) in n]
+
+
 def test_an_export_that_cannot_be_queued_is_failed_not_left_queued(
     client: TestClient, session: Session, fake_arq_pool
 ):
@@ -473,6 +513,33 @@ def test_assembly_never_widens_past_the_recorded_tenant(session: Session):
     mine = _make_object(session, owner, filename="mine.pdf", tenant_id=tenant)
     theirs = _make_object(session, stranger, filename="theirs.pdf")
     job = _queued_job(session, owner, tenant_id=tenant)
+    storage = _storage_for(mine, theirs)
+
+    embedded = ExportArchiveController.build(
+        session=session, storage=storage, job_id=job.id
+    )
+
+    assert embedded == 1
+    names = storage.archive.namelist()
+    assert f"files/{mine.id}/mine.pdf" in names
+    assert not [n for n in names if str(theirs.id) in n]
+
+
+def test_assembly_ignores_a_foreign_owner_filter_in_the_recorded_filters(
+    session: Session,
+):
+    """The filters blob is replayed input, never an authorization input.
+
+    The scope comes from the job's own three snapshot columns; ``filters`` only
+    narrows within it. A row carrying a stranger's ``owner_user_id`` — however
+    it got there — therefore assembles the recorded owner's collection, not the
+    stranger's.
+    """
+    owner = uuid.uuid4()
+    stranger = uuid.uuid4()
+    mine = _make_object(session, owner, filename="mine.pdf")
+    theirs = _make_object(session, stranger, filename="theirs.pdf")
+    job = _queued_job(session, owner, filters={"owner_user_id": str(stranger)})
     storage = _storage_for(mine, theirs)
 
     embedded = ExportArchiveController.build(

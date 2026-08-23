@@ -26,6 +26,7 @@ from media_service.controllers.transfer import (
     TransferController,
     _category_tree_json,
     _manifest_objects,
+    export_statement,
     stream_manifest,
 )
 from media_service.controllers.category import category_refs_by_object
@@ -78,11 +79,13 @@ def _make_object(
     filename: str = "file.pdf",
     visibility: MediaVisibility = MediaVisibility.PRIVATE,
     deleted: bool = False,
+    tenant_id: uuid.UUID | None = None,
 ) -> MediaObject:
     oid = uuid.uuid4()
     obj = MediaObject(
         id=oid,
         owner_user_id=owner_id,
+        tenant_id=tenant_id,
         category=MediaCategory.DOCUMENT,
         visibility=visibility,
         storage_bucket="private-media",
@@ -235,6 +238,81 @@ def test_manifest_export_cannot_be_widened_by_a_foreign_category_id(
     assert resp.status_code in (403, 404)
 
 
+def test_manifest_export_ignores_a_foreign_owner_user_id_filter(
+    client: TestClient, session: Session, current_user
+):
+    """``owner_user_id`` is a superuser-only narrowing, never a way to widen.
+
+    ``_scoped_query`` reads the field only on the superuser branch, so a
+    non-superuser naming somebody else's id gets their *own* collection back —
+    not the stranger's, and not an empty page that would look safe for the
+    wrong reason (the filter being honoured against an empty result).
+    """
+    stranger_id = uuid.uuid4()
+    _make_object(session, current_user.id, filename="mine.pdf")
+    _make_object(session, stranger_id, filename="theirs.pdf")
+
+    resp = client.post(
+        EXPORT_URL,
+        json={"format": "manifest", "filters": {"owner_user_id": str(stranger_id)}},
+    )
+
+    assert resp.status_code == 200
+    assert {o["filename"] for o in resp.json()["objects"]} == {"mine.pdf"}
+
+
+def test_manifest_export_owner_filter_cannot_reach_a_strangers_private_media(
+    client: TestClient, session: Session, current_user
+):
+    """The stranger's own filing is no help either: the branch is theirs too."""
+    stranger_id = uuid.uuid4()
+    theirs = _make_object(session, stranger_id, filename="theirs.pdf")
+    their_category = _make_category(session, stranger_id, "TheirDocs")
+    _file(session, theirs, their_category)
+
+    by_owner = client.post(
+        EXPORT_URL,
+        json={"format": "manifest", "filters": {"owner_user_id": str(stranger_id)}},
+    )
+    by_both = client.post(
+        EXPORT_URL,
+        json={
+            "format": "manifest",
+            "filters": {
+                "owner_user_id": str(stranger_id),
+                "category_id": their_category.id,
+            },
+        },
+    )
+
+    assert by_owner.status_code == 200
+    assert by_owner.json()["objects"] == []
+    # Pairing the two foreign filters does not soften the category refusal.
+    assert by_both.status_code in (403, 404)
+
+
+def test_a_superuser_may_target_the_owner_the_filter_names(
+    superuser_client: TestClient, session: Session
+):
+    """The tier the field exists for still gets it — so the test above bites.
+
+    Without this, ``owner_user_id`` could be deleted from ``ObjectListParams``
+    and every isolation assertion here would still pass against a field that
+    does nothing.
+    """
+    owner_a, owner_b = uuid.uuid4(), uuid.uuid4()
+    _make_object(session, owner_a, filename="a.pdf")
+    _make_object(session, owner_b, filename="b.pdf")
+
+    resp = superuser_client.post(
+        EXPORT_URL,
+        json={"format": "manifest", "filters": {"owner_user_id": str(owner_a)}},
+    )
+
+    assert resp.status_code == 200
+    assert {o["filename"] for o in resp.json()["objects"]} == {"a.pdf"}
+
+
 def test_export_rejects_an_unknown_format(client: TestClient):
     resp = client.post(EXPORT_URL, json={"format": "csv"})
     assert resp.status_code == 422
@@ -281,3 +359,46 @@ def test_export_of_a_foreign_category_id_is_refused_not_silently_empty(
             filters=ObjectListParams(category_id=theirs.id),
         )
     assert exc.value.status_code == 403
+
+
+def test_the_export_statement_ignores_a_foreign_owner_user_id_across_tenants(
+    session: Session,
+):
+    """The tenant case the checkbox names, at the shared scoping chokepoint.
+
+    ``export_statement`` is the one query the manifest streams from, the
+    archive request counts for its ceilings, and the worker replays — so
+    proving isolation here proves it for all three, and it is the only level
+    that can carry a tenanted principal (`D1`/`D4`: ``UserModel`` has no tenant
+    claim, so the HTTP fixtures cannot express one).
+
+    Tenant B's collection includes a ``TENANT``-visibility row: the one a
+    cross-tenant caller would most plausibly reach, since it *is* readable —
+    but only from inside tenant B. Naming tenant B's owner does not move the
+    caller into tenant B.
+    """
+    tenant_a, tenant_b = uuid.uuid4(), uuid.uuid4()
+    owner_a = _tenanted_user(tenant_a)
+    owner_b = _tenanted_user(tenant_b)
+    mine = _make_object(
+        session, uuid.UUID(str(owner_a.id)), filename="a.pdf", tenant_id=tenant_a
+    )
+    _make_object(
+        session,
+        uuid.UUID(str(owner_b.id)),
+        filename="b-private.pdf",
+        tenant_id=tenant_b,
+    )
+    _make_object(
+        session,
+        uuid.UUID(str(owner_b.id)),
+        filename="b-tenant.pdf",
+        visibility=MediaVisibility.TENANT,
+        tenant_id=tenant_b,
+    )
+
+    statement = export_statement(
+        session, owner_a, ObjectListParams(owner_user_id=uuid.UUID(str(owner_b.id)))
+    )
+
+    assert [obj.id for obj in session.exec(statement).all()] == [mine.id]
