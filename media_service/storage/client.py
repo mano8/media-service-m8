@@ -7,7 +7,6 @@ single media-service-specific responsibility: building an
 tests can keep importing ``ObjectStorage`` from here.
 """
 
-from typing import IO, Any
 from urllib.parse import urlparse
 
 from media_sdk_m8 import ObjectStorage, ObjectStorageConfig, get_minio_client
@@ -19,7 +18,6 @@ __all__ = [
     "ObjectStorageConfig",
     "get_minio_client",
     "get_storage_config",
-    "put_object_stream",
 ]
 
 
@@ -41,34 +39,4 @@ def get_storage_config() -> ObjectStorageConfig:
         presigned_expire_seconds=settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS,
         public_endpoint=public_endpoint,
         public_secure=public_secure,
-    )
-
-
-def put_object_stream(
-    storage: ObjectStorage,
-    *,
-    bucket: str,
-    object_key: str,
-    data: IO[bytes],
-    length: int,
-    content_type: str,
-) -> Any:
-    """Write a file-like object to storage without buffering it in memory.
-
-    The shared SDK wrapper's ``put_object`` takes ``bytes``, which is right for
-    a generated image variant but wrong for an assembled archive export
-    (`U9`): the whole zip would have to be resident in RAM to write it. The
-    equivalent streaming put belongs in ``media-sdk-m8`` next to the rest of
-    ``ObjectStorage``, but adding it there means publishing a new SDK version
-    and raising both services' floors — a cross-repository step this one does
-    not own — so the single call that needs it lives at this boundary module,
-    which already exists to keep media-service-specific storage concerns in one
-    place. Nothing else in the service reaches past ``ObjectStorage``.
-    """
-    return storage.client.put_object(
-        bucket,
-        object_key,
-        data,
-        length=length,
-        content_type=content_type,
     )

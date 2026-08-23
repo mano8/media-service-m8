@@ -14,10 +14,12 @@ three parts only make sense against each other:
   download, once, while the archive is still live.
 
 Storage is a hand-written double rather than the shared ``mock_storage``
-fixture: the streaming put reaches the underlying MinIO client
-(``storage.client.put_object``), which ``MagicMock(spec=ObjectStorage)`` does
-not expose because it is an instance attribute. The double also lets the
-assembled zip be opened and asserted against as a real archive.
+fixture, because these tests assert on the bytes: the double captures whatever
+the streaming put writes so the assembled zip can be opened and asserted
+against as a real archive, which a ``MagicMock(spec=ObjectStorage)`` cannot do.
+Its ``put_object_stream`` mirrors the SDK's — delegating to the underlying
+MinIO client, reading the handle from its current position — so the assembly's
+declared length and its no-buffering contract are exercised here too.
 """
 
 import io
@@ -59,7 +61,7 @@ BUCKET = "private-media"
 
 
 class _FakeMinioClient:
-    """The underlying client the streaming put reaches through."""
+    """The underlying client ``ObjectStorage.put_object_stream`` delegates to."""
 
     def __init__(self, storage: "_FakeStorage") -> None:
         self._storage = storage
@@ -88,6 +90,9 @@ class _FakeStorage:
         self.uploads: list[tuple[str, str, bytes, str]] = []
         self.removed: list[tuple[str, str]] = []
         self.client = _FakeMinioClient(self)
+
+    def put_object_stream(self, *, bucket, object_key, data, length, content_type):
+        self.client.put_object(bucket, object_key, data, length, content_type)
 
     def stream_object(self, *, bucket, object_key, chunk_size=1024):
         if self.fail_stream_for is not None and self.fail_stream_for in object_key:

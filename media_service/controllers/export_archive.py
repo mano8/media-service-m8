@@ -11,7 +11,7 @@ archive path costs no new cross-service job contract.
 Three properties this module exists to hold:
 
 * **Bounded memory.** The zip is written to a temporary *file* and streamed
-  into storage from there (:func:`media_service.storage.client.put_object_stream`);
+  into storage from there (``ObjectStorage.put_object_stream``);
   neither the archive nor any single object is ever resident in memory. Object
   bytes move through in ``MEDIA_EXPORT_STREAM_CHUNK_SIZE`` chunks.
 * **No widened scope.** The worker holds no token, so it makes no
@@ -48,7 +48,7 @@ from media_service.db_models.export_jobs import ExportJob, ExportJobStatus
 from media_service.db_models.media_objects import MediaObject, utcnow
 from media_service.schemas.objects import ObjectListParams
 from media_service.storage.buckets import StorageClass, bucket_for_storage_class
-from media_service.storage.client import ObjectStorage, put_object_stream
+from media_service.storage.client import ObjectStorage
 from media_service.storage.keys import _safe_filename, build_export_archive_key
 
 _logger = logging.getLogger(__name__)
@@ -260,8 +260,7 @@ class ExportArchiveController:
                 )
                 size_bytes = fh.tell()
                 fh.seek(0)
-                put_object_stream(
-                    storage,
+                storage.put_object_stream(
                     bucket=bucket,
                     object_key=object_key,
                     data=fh,
