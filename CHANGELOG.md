@@ -154,13 +154,17 @@ All notable changes to `media-service-m8` are documented here.
   and `controllers/export_archive.py` calls the SDK method. Behavior is
   unchanged — the same handle, length and content type reach the same client
   call.
-  - **Not yet reflected in `media_service/requirements_prod.lock`.** The lock is
-    hash-pinned against published PyPI artifacts, so it can only be regenerated
-    (`pip-compile --generate-hashes`) once `media-sdk-m8` `0.7.0` is published.
-    Until then the hash-locked release image would install `0.6.0`, which lacks
-    `put_object_stream`; **publish the SDK and regenerate the lock before
-    building a release image from this branch.** `requirements_base.txt`,
-    `constraints.txt` and `constraints-all.txt` already carry the new floor.
+  - **Reflected in `media_service/requirements_prod.lock` after publication.**
+    The lock was regenerated with `pip-compile --generate-hashes` on Linux
+    against the published `media-sdk-m8` `0.7.0` artifacts. The release image
+    now installs the same SDK floor declared by `requirements_base.txt`,
+    `constraints.txt` and `constraints-all.txt`; no second SDK release or
+    version bump is required for this work. The locked-graph audit also required
+    the two narrowly scoped transitive fixes available at regeneration time:
+    `cryptography` `49.0.0` → `50.0.0` and `pyasn1` `0.6.3` → `0.6.4`; no other
+    dependency version moved. Regeneration also normalizes the lock's legacy
+    CRLF bytes to the repository's declared `eol=lf`; the large raw line count
+    is line-ending normalization, not additional dependency churn.
 
 - **Tenant extraction has one definition, `core/tenancy.py`.** It existed twice
   (`controllers/objects.py`, `core/presets.py`) and `controllers/category.py`
