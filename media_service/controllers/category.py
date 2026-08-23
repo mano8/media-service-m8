@@ -198,6 +198,49 @@ def _reject_cycle(session: Session, category_id: int, parent_id: int) -> None:
         ancestor_id = ancestor.parent_id
 
 
+def _sibling_with_slug(
+    session: Session,
+    *,
+    slug: str,
+    parent_id: int | None,
+    tenant_id: uuid.UUID | None,
+    owner_id: uuid.UUID,
+    exclude_id: int | None = None,
+) -> Category | None:
+    """Return the sibling already holding ``slug`` under ``parent_id``, if any.
+
+    Expressed over the *write* scope — the tenant a row would be stamped with,
+    falling back to its owner — not over a caller's read scope. That difference
+    matters for a superuser, whose read scope spans every tenant: resolving a
+    slug through it would let one tenant's row answer for another's. The write
+    scope is the same pair :func:`_scope_key` compares, so "which sibling holds
+    this slug" and "may this row be a child of that parent" agree by
+    construction.
+
+    The lookup both :func:`_reject_duplicate_slug` (refuse a collision) and
+    :func:`ensure_category_path` (reuse it) are built on, so a create and an
+    idempotent import can never disagree about what counts as the same
+    sibling.
+    """
+    statement = select(Category).where(col(Category.slug) == slug)
+    if tenant_id is not None:
+        statement = statement.where(col(Category.tenant_id) == tenant_id)
+    else:
+        statement = statement.where(
+            and_(
+                col(Category.tenant_id).is_(None),
+                col(Category.owner_id) == owner_id,
+            )
+        )
+    if parent_id is None:
+        statement = statement.where(col(Category.parent_id).is_(None))
+    else:
+        statement = statement.where(col(Category.parent_id) == parent_id)
+    if exclude_id is not None:
+        statement = statement.where(col(Category.id) != exclude_id)
+    return session.exec(statement.limit(1)).first()
+
+
 def _reject_duplicate_slug(
     session: Session,
     *,
@@ -217,27 +260,73 @@ def _reject_duplicate_slug(
     same scope key the tree is read through, so a tenant's siblings collide
     across owners just as they render together.
     """
-    statement = select(Category).where(col(Category.slug) == slug)
-    if tenant_id is not None:
-        statement = statement.where(col(Category.tenant_id) == tenant_id)
-    else:
-        statement = statement.where(
-            and_(
-                col(Category.tenant_id).is_(None),
-                col(Category.owner_id) == owner_id,
-            )
+    if (
+        _sibling_with_slug(
+            session,
+            slug=slug,
+            parent_id=parent_id,
+            tenant_id=tenant_id,
+            owner_id=owner_id,
+            exclude_id=exclude_id,
         )
-    if parent_id is None:
-        statement = statement.where(col(Category.parent_id).is_(None))
-    else:
-        statement = statement.where(col(Category.parent_id) == parent_id)
-    if exclude_id is not None:
-        statement = statement.where(col(Category.id) != exclude_id)
-    if session.exec(statement.limit(1)).first() is not None:
+        is not None
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A sibling category already uses this name.",
         )
+
+
+def ensure_category_path(
+    session: Session,
+    current_user: UserModel,
+    segments: Sequence[tuple[str, str]],
+) -> tuple[Category, int]:
+    """Resolve — creating as needed — the category at ``segments``; count creates.
+
+    ``segments`` is the root-down chain of ``(name, slug)`` pairs a slug path
+    names. Each level is looked up among the siblings already holding that slug
+    under the resolved parent and reused when present, so importing the same
+    manifest twice recreates nothing the first import already made: the
+    identity of a category here is *(write scope, parent, slug)* — exactly the
+    tuple :func:`_sibling_with_slug` matches and the create surface refuses a
+    duplicate of — never the row id a foreign manifest happens to carry.
+
+    Rows are stamped with the caller's own tenant/owner, so an import can only
+    ever grow the importer's own tree; the ``name`` of a reused row is left
+    alone, because the local tree is the authority for what its categories are
+    called and an import must not rename a category out from under whoever
+    else shares the tenant.
+    """
+    owner_id = _owner_id(current_user)
+    tenant_id = user_tenant_id(current_user)
+    parent: Category | None = None
+    created = 0
+    for name, slug in segments:
+        parent_id = parent.id if parent is not None else None
+        row = _sibling_with_slug(
+            session,
+            slug=slug,
+            parent_id=parent_id,
+            tenant_id=tenant_id,
+            owner_id=owner_id,
+        )
+        if row is None:
+            row = Category(
+                name=name,
+                slug=slug,
+                parent_id=parent_id,
+                owner_id=owner_id,
+                tenant_id=tenant_id,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            created += 1
+        parent = row
+    if parent is None:  # pragma: no cover - callers never pass an empty path
+        raise ValueError("ensure_category_path requires at least one segment.")
+    return parent, created
 
 
 def _unique_ids(category_ids: Sequence[int]) -> list[int]:

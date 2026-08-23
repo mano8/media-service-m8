@@ -2,7 +2,8 @@
 
 import logging
 import uuid
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from fastapi import HTTPException, status
 from sqlmodel import Session
@@ -142,6 +143,111 @@ def _reject_upload(
     )
 
 
+@dataclass(frozen=True)
+class StagedUpload:
+    """Every server-side decision an upload needs before its bytes exist.
+
+    Split out of :meth:`UploadsController.initiate_upload` so the collection
+    import (`U9`) can re-drive a file through the *same* pipeline without also
+    minting a presigned URL: the import already holds the bytes, and a signed
+    form nobody will ever POST to is the one part of initiate that does not
+    apply to it. Everything that decides *whether* the upload may happen —
+    the declared-MIME allowlist, the quota pre-check, resolving the user
+    categories against the caller's scope — stays here and therefore runs
+    identically for both callers.
+    """
+
+    media_id: uuid.UUID
+    owner_id: uuid.UUID
+    tenant_id: uuid.UUID | None
+    bucket: str
+    object_key: str
+    category_ids: list[int]
+
+
+def stage_upload(
+    *,
+    session: Session,
+    current_user: UserModel,
+    req: UploadInitiateRequest,
+    media_id: uuid.UUID | None = None,
+) -> StagedUpload:
+    """Validate an upload request and derive where its bytes will live.
+
+    Writes nothing: a refusal here leaves no session row and no stored bytes.
+    ``media_id`` is normally minted fresh; the import path passes the source
+    row's id so that re-importing the same collection is idempotent rather
+    than duplicating it.
+    """
+    if not is_allowed_declared_mime(req.mime_type):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported content type: {req.mime_type}",
+        )
+    media_id = media_id or uuid.uuid4()
+    owner_id = uuid.UUID(str(current_user.id))
+    # Tenancy is taken from the authenticated principal's signed claim, never
+    # from the client request body (which is ignored). Untenanted callers
+    # yield None and behave exactly as before. This is what activates TENANT
+    # visibility and per-tenant quota scoping end to end.
+    tenant_id = current_user.tenant_id
+    # Refuse before issuing a presigned URL if the declared upload would push
+    # this owner past their byte or object-count quota (scoped per tenant).
+    check_quota(
+        session,
+        owner_user_id=owner_id,
+        tenant_id=tenant_id,
+        additional_bytes=req.expected_size_bytes,
+    )
+    # Same reason as the quota refusal above: resolve the declared user
+    # categories before a presigned URL exists, so an unknown or foreign id
+    # is a refusal the caller can act on rather than a session carrying a
+    # filing its owner was never entitled to.
+    categories = resolve_category_ids(session, current_user, req.category_ids)
+    object_key = build_object_key(
+        owner_user_id=owner_id,
+        media_id=media_id,
+        category=req.category,
+        filename=req.original_filename,
+        tenant_id=tenant_id,
+    )
+    return StagedUpload(
+        media_id=media_id,
+        owner_id=owner_id,
+        tenant_id=tenant_id,
+        bucket=bucket_for_visibility(req.visibility),
+        object_key=object_key,
+        category_ids=[category.id for category in categories],
+    )
+
+
+def record_upload_session(
+    *,
+    session: Session,
+    staged: StagedUpload,
+    req: UploadInitiateRequest,
+    expires_at: datetime,
+) -> UploadSession:
+    """Persist the session a completion will later be validated against."""
+    upload_session = UploadSession(
+        id=staged.media_id,
+        owner_user_id=staged.owner_id,
+        tenant_id=staged.tenant_id,
+        category=req.category,
+        visibility=req.visibility,
+        storage_bucket=staged.bucket,
+        object_key=staged.object_key,
+        original_filename=req.original_filename,
+        expected_mime_type=req.mime_type,
+        expected_size_bytes=req.expected_size_bytes,
+        expires_at=expires_at,
+        category_ids=list(staged.category_ids),
+    )
+    session.add(upload_session)
+    session.commit()
+    return upload_session
+
+
 class UploadsController:
     """Handle presigned upload lifecycle: initiate, complete, abort."""
 
@@ -154,39 +260,7 @@ class UploadsController:
         storage: ObjectStorage,
     ) -> UploadInitiateResponse:
         """Create an UploadSession and return a presigned PUT URL."""
-        if not is_allowed_declared_mime(req.mime_type):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Unsupported content type: {req.mime_type}",
-            )
-        media_id = uuid.uuid4()
-        owner_id = uuid.UUID(str(current_user.id))
-        # Tenancy is taken from the authenticated principal's signed claim, never
-        # from the client request body (which is ignored). Untenanted callers
-        # yield None and behave exactly as before. This is what activates TENANT
-        # visibility and per-tenant quota scoping end to end.
-        tenant_id = current_user.tenant_id
-        # Refuse before issuing a presigned URL if the declared upload would push
-        # this owner past their byte or object-count quota (scoped per tenant).
-        check_quota(
-            session,
-            owner_user_id=owner_id,
-            tenant_id=tenant_id,
-            additional_bytes=req.expected_size_bytes,
-        )
-        # Same reason as the quota refusal above: resolve the declared user
-        # categories before a presigned URL exists, so an unknown or foreign id
-        # is a refusal the caller can act on rather than a session carrying a
-        # filing its owner was never entitled to.
-        categories = resolve_category_ids(session, current_user, req.category_ids)
-        object_key = build_object_key(
-            owner_user_id=owner_id,
-            media_id=media_id,
-            category=req.category,
-            filename=req.original_filename,
-            tenant_id=tenant_id,
-        )
-        bucket = bucket_for_visibility(req.visibility)
+        staged = stage_upload(session=session, current_user=current_user, req=req)
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
         # Sign the POST policy for the lower of the declared size and the
         # category cap, never the full category maximum: a caller that declares
@@ -197,32 +271,21 @@ class UploadsController:
         )
         upload_url, upload_fields = create_upload_url(
             storage=storage,
-            bucket=bucket,
-            object_key=object_key,
+            bucket=staged.bucket,
+            object_key=staged.object_key,
             content_type=req.mime_type,
             max_size_bytes=signed_max_bytes,
             expires_seconds=expires,
         )
         expires_at = utcnow() + timedelta(seconds=expires)
-        upload_session = UploadSession(
-            id=media_id,
-            owner_user_id=owner_id,
-            tenant_id=tenant_id,
-            category=req.category,
-            visibility=req.visibility,
-            storage_bucket=bucket,
-            object_key=object_key,
-            original_filename=req.original_filename,
-            expected_mime_type=req.mime_type,
-            expected_size_bytes=req.expected_size_bytes,
-            expires_at=expires_at,
-            category_ids=[category.id for category in categories],
+        # Recorded only after the URL exists, so a presign failure leaves no
+        # INITIATED session behind — the ordering initiate has always had.
+        record_upload_session(
+            session=session, staged=staged, req=req, expires_at=expires_at
         )
-        session.add(upload_session)
-        session.commit()
         inc_upload_initiated(str(req.category), str(req.visibility))
         return UploadInitiateResponse(
-            session_id=media_id,
+            session_id=staged.media_id,
             upload_url=upload_url,
             upload_fields=upload_fields,
             expires_at=expires_at,

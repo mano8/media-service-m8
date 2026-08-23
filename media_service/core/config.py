@@ -125,6 +125,23 @@ class Settings(ConsumerServiceSettings):
     # zip — the archive is never assembled in memory (default 1 MiB).
     MEDIA_EXPORT_STREAM_CHUNK_SIZE: int = Field(default=1_048_576, ge=1)
 
+    # ── Collection import (`U9`) ─────────────────────────────────────────────
+    # Not secrets — literal defaults bounding what one `POST /v1/import` may
+    # ask the service to do. The uploaded document is attacker-controlled, so
+    # every dimension it could grow without bound is capped at the trust
+    # boundary before any of it is parsed into models or written to the
+    # database (`SEC-VALIDATE-UNTRUSTED-INPUT`).
+    MEDIA_IMPORT_MAX_MANIFEST_BYTES: int = Field(default=16_777_216, ge=1)
+    MEDIA_IMPORT_MAX_ARCHIVE_BYTES: int = Field(default=5_368_709_120, ge=1)
+    MEDIA_IMPORT_MAX_OBJECTS: int = Field(default=5_000, ge=1)
+    MEDIA_IMPORT_MAX_TOTAL_BYTES: int = Field(default=5_368_709_120, ge=1)
+    MEDIA_IMPORT_MAX_CATEGORIES: int = Field(default=1_000, ge=1)
+    # Soft cap on how deep a recreated category tree may nest. Bounds both the
+    # recursive schema parsing of the uploaded tree and the per-node work the
+    # path walk does; the category surface itself is an adjacency list and has
+    # no structural depth limit of its own.
+    MEDIA_IMPORT_MAX_CATEGORY_DEPTH: int = Field(default=10, ge=1)
+
     # ── Storage quotas ───────────────────────────────────────────────────────
     # Default ceilings applied to every owner/tenant scope without an explicit
     # admin override. ``None`` means unlimited (no enforcement).

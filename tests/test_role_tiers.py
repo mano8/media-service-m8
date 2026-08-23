@@ -180,6 +180,7 @@ def mock_storage() -> MagicMock:
         ("GET", f"{V1}/admin/storage/stats"),
         ("POST", f"{V1}/export"),
         ("GET", f"{V1}/export/{EXPORT_JOB_ID}"),
+        ("POST", f"{V1}/import"),
     ],
 )
 def test_non_public_routes_reject_an_anonymous_caller(tier_client, method, path):
@@ -367,6 +368,7 @@ def test_user_tier_reads_public_objects(tier_client, public_object, private_obje
         ("GET", f"{PREFIX}/dashboard/users/activity/", "writer"),
         ("POST", f"{V1}/export", "writer"),
         ("GET", f"{V1}/export/{EXPORT_JOB_ID}", "reader"),
+        ("POST", f"{V1}/import", "writer"),
     ],
 )
 def test_user_tier_is_denied_every_owned_route(tier_client, method, path, tier):
@@ -429,6 +431,7 @@ def test_reader_reads_an_owned_export_job(tier_client, session):
         ("POST", f"{V1}/presets", {"name": "p", "spec": {"width": 10}}),
         ("GET", f"{PREFIX}/dashboard/users/activity/", None),
         ("POST", f"{V1}/export", {"format": "manifest"}),
+        ("POST", f"{V1}/import", None),
     ],
 )
 def test_reader_is_denied_every_mutation(tier_client, method, path, body):
@@ -569,6 +572,7 @@ def test_the_router_floors_are_mounted_not_just_annotated():
     assert _mounted(objects.router) == {require_writer}
     assert _mounted(variants.router) == {require_writer}
     assert _mounted(transfer.router) == {require_writer}
+    assert _mounted(transfer.import_router) == {require_writer}
     assert _mounted(transfer.read_router) == {require_reader}
     # ``transfer.read_router`` is the one read router with a mounted floor: it
     # serves an owned read only (`U9` export status). The three below carry no

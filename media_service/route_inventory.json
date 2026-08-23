@@ -216,6 +216,15 @@
     "note": "Archive export status, with a presigned download once assembled — reader tier + ownership (U9)"
   },
   {
+    "path": "/media/v1/import",
+    "method": "POST",
+    "tag": "transfer",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Import a collection from an exported manifest or archive (multipart) — writer tier (U9); rate-limited"
+  },
+  {
     "path": "/media/v1/internal/objects/{object_id}/scan-result",
     "method": "POST",
     "tag": "internal",
