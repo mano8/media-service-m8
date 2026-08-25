@@ -347,7 +347,7 @@ services:
       - scan_net
 
   media_service:
-    image: tepochtli/media-service-m8:1.0.0
+    image: tepochtli/media-service-m8:2.0.0
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -393,7 +393,7 @@ services:
   # this command override bypasses docker_start.sh. Outbound-only: no Traefik
   # label, no exposed port.
   media_service_worker:
-    image: tepochtli/media-service-m8:1.0.0
+    image: tepochtli/media-service-m8:2.0.0
     command: ["arq", "media_service.maintenance_worker.WorkerSettings"]
     security_opt:
       - no-new-privileges:true
