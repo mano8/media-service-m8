@@ -15,6 +15,32 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Changed
 
+- **Base image digest bumped** for both `media_service/Dockerfile` stages,
+  `python:3.14-slim@sha256:c845af93…` → `@sha256:83ff1d24…`. The pinned digest
+  was built 2026-05-19 and carried `util-linux` `2.41-5`, which Debian has since
+  fixed in `2.41.5-0+deb13u1`; Trivy reported the resulting `CVE-2026-53612`,
+  `-53613`, `-53614` and `-53615` 36 times — the same four CVEs across the nine
+  binary packages built from that one source (`bsdutils`, `libblkid1`,
+  `liblastlog2-2`, `libmount1`, `libsmartcols1`, `libuuid1`, `login`, `mount`,
+  `util-linux`) — and the `trivy-image` gate blocks the PR on HIGH findings.
+  Nothing was added to a `.trivyignore`: the fix existed upstream, so the pin
+  moved to collect it. Same digest and same reasoning as `media-worker-m8`.
+- **`pip` removed from the runtime image stage** (and `setuptools`/`wheel` with
+  it, where a base ever carries them). The entrypoint is
+  `media_service/scripts/docker_start.sh` — alembic, then uvicorn — and the
+  image is built from a hash-locked set that never installs at run time, so the
+  installer tooling is pure attack surface and is what `media-worker-m8` removed
+  for the same reason. Verified against the built image: `python:3.14-slim` at
+  this digest ships `pip` only (`setuptools` and `wheel` are already absent, and
+  the uninstall reports them skipped), and nothing in `requirements_prod.lock`
+  reinstalls them — so this layer removes `pip` today and stands as a guard if a
+  future base bump reintroduces the rest, rather than that bump quietly adding a
+  `setuptools` CVE to the image. Ordered after `COPY --from=builder` so the
+  builder tree cannot reintroduce them, with `pip` uninstalling itself last.
+  Two build-time checks follow: an import of the declared runtime dependency
+  graph, which fails the build if anything needed `pkg_resources` at import
+  time, and an `alembic`/`uvicorn`/`gunicorn` `--version` check, which fails it
+  if an entrypoint console script no longer resolves.
 - **Category depth is now consistent across CRUD and transfer.** The existing
   `MEDIA_IMPORT_MAX_CATEGORY_DEPTH` ceiling (10 by default) also guards category
   creation and branch reparenting, so an interactively-created tree cannot become
