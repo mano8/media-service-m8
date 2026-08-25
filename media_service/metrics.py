@@ -4,7 +4,7 @@ from typing import Optional
 
 from prometheus_client import Counter
 
-from auth_sdk_m8.observability.metrics import REGISTRY
+from fastapi_m8 import REGISTRY
 
 _uploads_initiated: Optional[Counter] = None
 _uploads_completed: Optional[Counter] = None

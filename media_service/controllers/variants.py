@@ -5,7 +5,7 @@ import uuid
 from fastapi import HTTPException, status
 from sqlmodel import Session, col, select
 
-from auth_sdk_m8.schemas.user import UserModel
+from fastapi_m8 import UserModel
 
 from media_sdk_m8 import VariantJobPayload
 
@@ -124,10 +124,14 @@ class VariantsController:
     def list_variants(
         *,
         session: Session,
-        current_user: UserModel,
+        current_user: UserModel | None,
         object_id: uuid.UUID,
     ) -> VariantListResponse:
-        """List the generated variants for an object the caller may read."""
+        """List the generated variants for an object the caller may read.
+
+        Follows the source object's visibility, anonymous callers included
+        (A16): the variants of a ``PUBLIC`` object are as public as the object.
+        """
         _load_object_for_read(session, current_user, object_id)
         rows = list(
             session.exec(

@@ -1,4 +1,10 @@
 <!-- markdownlint-disable MD024 -->
+<!-- A34, 2026-08-15: kept file-wide rather than narrowed to siblings_only via
+     .markdownlint.yaml because `## [1.0.0]` has three genuine same-release
+     duplicate subheadings (### Changed x2, ### Security x2) predating this
+     step; merging them is a content decision, recorded as unstarted follow-on
+     work, not done in this pass. See .markdownlint.yaml for the fleet-baseline
+     siblings_only rule this file intentionally overrides. -->
 # Changelog
 
 All notable changes to `media-service-m8` are documented here.
@@ -6,6 +12,237 @@ All notable changes to `media-service-m8` are documented here.
 ---
 
 ## [Unreleased]
+
+### Changed
+
+- **Base image digest bumped** for both `media_service/Dockerfile` stages,
+  `python:3.14-slim@sha256:c845af93…` → `@sha256:83ff1d24…`. The pinned digest
+  was built 2026-05-19 and carried `util-linux` `2.41-5`, which Debian has since
+  fixed in `2.41.5-0+deb13u1`; Trivy reported the resulting `CVE-2026-53612`,
+  `-53613`, `-53614` and `-53615` 36 times — the same four CVEs across the nine
+  binary packages built from that one source (`bsdutils`, `libblkid1`,
+  `liblastlog2-2`, `libmount1`, `libsmartcols1`, `libuuid1`, `login`, `mount`,
+  `util-linux`) — and the `trivy-image` gate blocks the PR on HIGH findings.
+  Nothing was added to a `.trivyignore`: the fix existed upstream, so the pin
+  moved to collect it. Same digest and same reasoning as `media-worker-m8`.
+- **`pip` removed from the runtime image stage** (and `setuptools`/`wheel` with
+  it, where a base ever carries them). The entrypoint is
+  `media_service/scripts/docker_start.sh` — alembic, then uvicorn — and the
+  image is built from a hash-locked set that never installs at run time, so the
+  installer tooling is pure attack surface and is what `media-worker-m8` removed
+  for the same reason. Verified against the built image: `python:3.14-slim` at
+  this digest ships `pip` only (`setuptools` and `wheel` are already absent, and
+  the uninstall reports them skipped), and nothing in `requirements_prod.lock`
+  reinstalls them — so this layer removes `pip` today and stands as a guard if a
+  future base bump reintroduces the rest, rather than that bump quietly adding a
+  `setuptools` CVE to the image. Ordered after `COPY --from=builder` so the
+  builder tree cannot reintroduce them, with `pip` uninstalling itself last.
+  Two build-time checks follow: an import of the declared runtime dependency
+  graph, which fails the build if anything needed `pkg_resources` at import
+  time, and an `alembic`/`uvicorn`/`gunicorn` `--version` check, which fails it
+  if an entrypoint console script no longer resolves.
+- **Category depth is now consistent across CRUD and transfer.** The existing
+  `MEDIA_IMPORT_MAX_CATEGORY_DEPTH` ceiling (10 by default) also guards category
+  creation and branch reparenting, so an interactively-created tree cannot become
+  impossible to export and re-import.
+- **Contract `media-service-m8@1.1`** (`U12`). The additive media UX surface is
+  now advertised through `/media/meta`: hierarchical user categories, multi-file
+  category assignments and filters, plus collection export/import. The existing
+  contract range remains `>=1.0.0 <2.0.0`, so clients using the 1.0 contract
+  continue to be served.
+
+### Added
+
+- **A collection can be imported back** (`U9`). `POST /media/v1/import` accepts
+  the document `POST /media/v1/export` hands out — the streamed manifest, or the
+  assembled zip — as `multipart/form-data` (`format` + `file`), on the writer
+  floor and rate-limited to 5/min. It answers `200` with a **per-row report**
+  (`created` / `linked` / `skipped` / `failed`, plus a reason) even when some
+  rows were refused: one bad object must not cost the caller the rest of the
+  collection. A refusal of the whole *document* is still a normal 4xx.
+  - **The category tree is recreated first, idempotently.** Every path the
+    document names — in `category_tree`, and any a media row is filed into — is
+    resolved against the importing scope by *(tenant/owner, parent, slug)* and
+    reused when it already exists. A reused category is never renamed, and
+    rows are always stamped with the importer's own tenant/owner, so an import
+    can only grow the importer's own tree.
+  - **Imported verdicts are never trusted.** The inbound entry shape has no
+    `status`/`scan_status` fields at all, so there is nothing to believe:
+    archived bytes are re-driven through the **normal upload pipeline** — the
+    same allowlist and quota checks, the same size / magic-byte / SHA-256 /
+    content-type enforcement — and land `UPLOADED` + `PENDING` with a fresh
+    scan queued. Only the presigned-URL step is skipped, because the server
+    already holds the bytes. Pipeline refusals reach the caller as `U1`'s
+    reject tokens (`size_exceeded`, `mime_mismatch`, `sha256_mismatch`,
+    `quota_bytes_exceeded`, `quota_objects_exceeded`) rather than a second
+    vocabulary.
+  - **A manifest restores the tree and the filings, never hollow records.** It
+    carries no bytes, so a row with no local counterpart is reported
+    `skipped`/`missing_bytes` instead of creating an object whose storage key
+    points at nothing; a row this collection already holds is re-filed into the
+    recreated categories. Filing is additive — a manifest is a partial view and
+    must not unfile what it never saw.
+  - **Import converges.** The source id the export carries is reused as the
+    imported object's id, so running the same import twice creates no
+    categories and no duplicate media; the second pass links what the first
+    created. An id held by another owner, or by a deleted or rejected record,
+    is refused (`id_conflict`) rather than overwritten.
+  - **Bounded by construction.** The upload is streamed to a temporary file
+    under a byte ceiling and never read whole; the manifest is JSON-decoded,
+    then walked *iteratively* for object count, category count and tree depth,
+    before any recursive model validation runs; an archive is bounded by file
+    count and by declared uncompressed total, and each entry's read is capped
+    at its declared size.
+- **`MEDIA_IMPORT_MAX_MANIFEST_BYTES`, `MEDIA_IMPORT_MAX_ARCHIVE_BYTES`,
+  `MEDIA_IMPORT_MAX_OBJECTS`, `MEDIA_IMPORT_MAX_TOTAL_BYTES`,
+  `MEDIA_IMPORT_MAX_CATEGORIES`, `MEDIA_IMPORT_MAX_CATEGORY_DEPTH`** — new
+  settings bounding what a single import may ask for, documented in all five
+  compose env examples.
+
+- **Archive export runs off the request path** (`U9`). `POST /media/v1/export`
+  with `format: "archive"` no longer answers `501`: it resolves and bounds the
+  request, records an `export_job` row and returns `202` with the job, which
+  **`media-worker-m8`** assembles into a zip
+  (`manifest.json` — byte-identical to what the `manifest` format streams — plus
+  one entry per object, under `files/{object_id}/{filename}`). The service owns
+  authorization and database selection: it materializes only the approved
+  storage references into `media-sdk-m8`'s immutable
+  `ExportArchiveJobPayload`. The DB-free worker makes no scope decision and
+  reports lifecycle/location through the token-guarded
+  `/v1/internal/export-jobs/{job_id}` callback.
+  - `GET /media/v1/export/{job_id}` reports progress and, once the archive is
+    assembled and still inside its window, mints a **presigned download** per
+    read (never stored). A lapsed archive is a `410`, not a `completed` job
+    pointing at reclaimed bytes. Reader tier + ownership: a foreign job is a
+    `403`, an unknown one a `404`.
+  - **The download scan gate is not bypassable by asking for an archive.** Only
+    objects that are `READY`, `CLEAN` and not soft-deleted contribute bytes; the
+    rest still appear in `manifest.json` with their real `scan_status`, so an
+    import can see exactly why the bytes are missing.
+  - **Bounded work.** The archive is written to a temporary file and streamed
+    into storage — never assembled in memory — and the request is refused up
+    front (`422`) above `MEDIA_EXPORT_MAX_OBJECTS` / `MEDIA_EXPORT_MAX_TOTAL_BYTES`,
+    with one unfinished export per caller (`409`). A job whose enqueue never
+    reaches the broker is failed immediately (`503`) rather than parked as
+    `queued` forever.
+  - The service resolves the filter through the same scoped query the objects
+    list uses before enqueueing. A foreign `category_id` is refused before any
+    job exists, and the worker receives no principal or database access it could
+    use to widen the result.
+  - The orphan reconciler no longer treats a live export archive as reclaimable
+    storage: an assembled archive inside its download window is excluded from
+    the sweep (a lapsed one is deliberately not).
+- **`export_job`** — new table carrying an archive export's status, the filters
+  and scope it was authorized under, the assembled archive's location, size and
+  expiry, and its failure reason.
+- **`MEDIA_EXPORT_MAX_OBJECTS`, `MEDIA_EXPORT_MAX_TOTAL_BYTES`,
+  `MEDIA_EXPORT_ARCHIVE_TTL_SECONDS`, `MEDIA_EXPORT_STREAM_CHUNK_SIZE`** — new
+  settings bounding archive export size, lifetime and streaming granularity.
+
+- **Media can be filed into several user categories at upload or later**
+  (`U4`). `category_ids: list[int]` is accepted on `POST /v1/uploads/initiate`,
+  on `POST /v1/uploads/{session_id}/complete` and on
+  `PATCH /v1/objects/{object_id}`, capped at 50 ids per request. Every id is
+  resolved in the caller's tenant/owner scope before anything else happens, so
+  an unknown id is a `404` and another tenant's is a `403` — the same pair
+  `GET /category/get/{id}` answers — and a refusal at initiate issues no
+  presigned URL, while one at PATCH moves no bytes.
+  - On the object PATCH the field has **set semantics**: it replaces the whole
+    filing, `[]` unfiles the object, and omitting the field leaves the filing
+    untouched. Same rule on `complete`, where omitting it keeps whatever
+    `initiate` declared.
+  - The ids declared at `initiate` are stored on the upload session — the link
+    rows cannot exist before the media object does — and replayed at
+    completion. That replay is deliberately lenient: the bytes are already in
+    storage and the upload cannot be re-run, so a category deleted in between
+    is dropped from the filing rather than failing the completion.
+  - Both write paths now return the object's `categories` (id, name, resolved
+    slug path) instead of an empty array. The list surface still returns it
+    empty; populating it per page without an N+1 is the next `U4` step.
+- **`upload_session.category_ids`** — new nullable `JSON` column carrying the
+  filing declared at initiate. Null reads as "no filing declared", so sessions
+  created before the column complete unfiled. Per `D6` no revision is
+  hand-written: a fresh stack folds the column into the baseline
+  `docker_start.sh` autogenerates, and an already-baselined stack needs a
+  discrete autogenerated follow-on.
+
+### Changed
+
+- `UploadsController.initiate_upload` is now composed from two reusable
+  pieces, `stage_upload` (the declared-MIME allowlist, the quota pre-check,
+  resolving the caller's user categories, and deriving the object key) and
+  `record_upload_session`. Behaviour and ordering are unchanged — the presigned
+  URL is still minted before the session row exists — but the import path can
+  now re-drive a file through the same checks without minting a URL nobody
+  would POST to.
+- `media_service.controllers.category` gained `ensure_category_path`, the
+  find-or-create counterpart of the create surface's duplicate-slug refusal.
+  Both are now expressed over one `_sibling_with_slug` lookup, so a create and
+  an idempotent import cannot disagree about what counts as the same sibling.
+
+- **`media-sdk-m8` floor raised `>=0.6.0,<0.7.0` → `>=0.7.0,<0.8.0`** (`U9`).
+  The archive export streams its assembled zip into storage from a temporary
+  file, which `ObjectStorage.put_object` cannot do — it takes `bytes`, so the
+  whole archive would have to be resident in memory. That step landed the
+  streaming put as a private `storage/client.put_object_stream` helper and
+  recorded the placement as a deferred finding: a reusable storage primitive
+  belongs in the platform layer beside the rest of `ObjectStorage`, not at a
+  service's storage boundary (`ARCH-LAYER-DIRECTION`). `media-sdk-m8` `0.7.0`
+  carries it as `ObjectStorage.put_object_stream`, the private helper is gone,
+  and `controllers/export_archive.py` calls the SDK method. Behavior is
+  unchanged — the same handle, length and content type reach the same client
+  call.
+  - **Reflected in `media_service/requirements_prod.lock` after publication.**
+    The lock was regenerated with `pip-compile --generate-hashes` on Linux
+    against the published `media-sdk-m8` `0.7.0` artifacts. The release image
+    now installs the same SDK floor declared by `requirements_base.txt`,
+    `constraints.txt` and `constraints-all.txt`; no second SDK release or
+    version bump is required for this work. The locked-graph audit also required
+    the two narrowly scoped transitive fixes available at regeneration time:
+    `cryptography` `49.0.0` → `50.0.0` and `pyasn1` `0.6.3` → `0.6.4`; no other
+    dependency version moved. Regeneration also normalizes the lock's legacy
+    CRLF bytes to the repository's declared `eol=lf`; the large raw line count
+    is line-ending normalization, not additional dependency churn.
+
+- **Tenant extraction has one definition, `core/tenancy.py`.** It existed twice
+  (`controllers/objects.py`, `core/presets.py`) and `controllers/category.py`
+  imported the objects copy, which pinned the category controller to the
+  objects controller. The assignment work above needs that dependency the other
+  way round — the objects controller resolves category ids on PATCH — so the
+  helper moved to a module neither controller has to import. Behavior is
+  unchanged.
+
+- **`routes/category.py` is now a thin router over a new
+  `controllers/category.py`** (`U4`, drift finding `D5`). Category was the last
+  domain still carrying its CRUD inline on the legacy
+  `ResponseModelBase`/`BaseController`/broad-`except` pattern; the logic now
+  matches `controllers/objects.py` — module-level scoping/loading helpers, a
+  controller class of static methods, and typed `HTTPException` for every
+  refusal. The router keeps its reader floor and its `CurrentWriter` mutations
+  unchanged (A16), and no route path or method moved.
+- **The category CRUD responses are typed schemas, not the `{success, ...}`
+  envelope.** This is a breaking change to the served category surface, so it is
+  listed here rather than folded into an additive note:
+  - `GET /category/get/{item_id}/` returns `CategoryPublic`; a missing category
+    is a `404` instead of a `200` carrying `success: false`.
+  - `POST /category/add/` returns `CategoryPublic` with `201`, not `200`.
+  - `PUT /category/edit/{item_id}/` returns `CategoryPublic`.
+  - `DELETE /category/delete/{item_id}/` returns `204` with no body, matching
+    `DELETE /v1/presets/{preset_id}`.
+  - `GET /category/` is unchanged — it already returned `CategoriesPublic`.
+- **A category read or commit failure is no longer swallowed.** The broad
+  `except Exception` / `BaseController.handle_exception` pair answered `200` with
+  a false `success` flag (or a `500` JSONResponse) for any error, hiding a failed
+  commit from the caller. Errors now propagate to the app's error handling.
+
+## [2.0.0] — 2026-08-16 · role-tier enforcement + `fastapi-m8` 4.4.0 alignment
+
+**Major bump.** The reader/writer role tiers wired below (`A16`) change who may
+call this service's routes: a token that was merely authenticated no longer
+suffices, and `PUBLIC` objects became readable with no token at all. That is a
+breaking change to the authorization contract, so this releases as `2.0.0`
+rather than `1.1.0`. Everything previously listed under `[Unreleased]` ships
+here.
 
 ### Security
 
@@ -19,6 +256,30 @@ All notable changes to `media-service-m8` are documented here.
 - `PresetSpec._enforce_cost_bounds` split its per-ceiling checks into helper
   methods (behavior unchanged) to keep each path under the complexity limit.
 - `.codacy.yml` excludes `AGENTS.md` from analysis (not repo source code).
+- **`fastapi-m8` floor raised `>=4.3.0,<5.0.0` → `>=4.4.0,<5.0.0`** now that
+  `4.4.0` is published, and `constraints.txt` / `constraints-all.txt` /
+  `requirements_prod.lock` regenerated against it. `auth-sdk-m8` moves
+  `3.1.2` → `3.1.3` in those generated files **transitively only** — it stays
+  undeclared in `requirements_base.txt`, per the operator ruling that a
+  consumer depends on `fastapi-m8` and never on `auth-sdk-m8` directly. The
+  two had to move together: `fastapi-m8 4.4.0` requires
+  `auth-sdk-m8>=3.1.3`, so pinning `4.4.0` against the old `3.1.2` pin is a
+  hard `ResolutionImpossible`.
+- `requirements_prod.lock` no longer carries `colorama` — a Windows-only
+  transitive of `click` (`platform_system == "Windows"`) that entered the lock
+  in `7f7c225` when it was regenerated on a Windows host. The production image
+  is `python:3.14-slim` (Linux), so the entry was never installable there;
+  this lock was regenerated on Linux to match CI.
+- **CI test matrix floor raised to Python 3.12 (3.11 dropped)**, matching the
+  fleet's accepted 3.12–3.14 range (`A32` follow-up). The Codecov and Codacy
+  coverage uploads were conditioned on the 3.11 leg, so both moved to 3.12 with
+  it — dropping the leg alone would have silently stopped every coverage upload.
+- **`media-sdk-m8` floor raised `>=0.5.1` → `>=0.6.0,<0.7.0`.** The upper bound
+  is new: under the SDK's 0.x SemVer a minor bump is breaking (`0.6.0` itself
+  raises its Python floor to 3.12), so an unbounded floor would keep pulling
+  breaking minors. `constraints.txt`, `constraints-all.txt` and
+  `requirements_prod.lock` regenerated on Linux against the published `0.6.0`;
+  no other pin moved.
 
 ---
 
@@ -748,7 +1009,12 @@ the producer↔consumer job contracts.
 
 ---
 
-## [0.0.3] — 2026-06-13 · Phase 15a · access control — visibility & tenant enforcement
+## [0.0.3] — 2026-06-13 · Phase 15a + 13 · access control (visibility & tenant enforcement) + storage quotas & accounting
+
+> **`A32` note (2026-08-15):** this heading previously appeared twice under
+> `[0.0.3]` (Phase 15a and Phase 13 as separate entries). Only one `v0.0.3` tag
+> was ever cut — both phases shipped in the same release — so the two entries
+> are merged here rather than left as duplicate headings.
 
 ### Added
 
@@ -767,32 +1033,6 @@ the producer↔consumer job contracts.
 - **`tests/test_access_control.py`** — full visibility matrix over the helper,
   the `GET`/`download-url` routes, and list scoping (incl. tenant isolation);
   plus a tenant-stamping upload test.
-
-### Changed
-
-- **`GET /v1/objects/{id}` and `…/download-url`** now enforce `visibility`
-  instead of bare ownership: previously every non-owner was refused, so `PUBLIC`
-  and same-tenant `TENANT` objects were unreachable by users entitled to them.
-- **`GET /v1/objects` (listing)** — a non-superuser now sees their own objects
-  **plus** anything `PUBLIC` and same-tenant `TENANT` objects, mirroring
-  `require_visibility_access` so the list never surfaces a row the caller could
-  not also fetch by id. `PRIVATE`/`SENSITIVE` objects of other owners stay
-  hidden. Owner-scoping and superuser scoping are unchanged.
-- **Requirements** — `fastapi-m8` floor bumped `>=1.5.0` → `>=1.6.0`, which
-  pins `auth-sdk-m8>=1.3.0` (the release that carries the `tenant_id` claim on
-  `UserModel`). No new direct dependency.
-
-> No schema change (`MediaObject.tenant_id` already existed). Tenant matching is
-> now live wherever the auth layer issues a `tenant_id` claim; objects created
-> by untenanted callers stay `tenant_id IS NULL` and `TENANT` behaves as
-> owner/superuser-only for them.
-
----
-
-## [0.0.3] — 2026-06-13 · Phase 13 · storage quotas & accounting
-
-### Added
-
 - **`db_models/storage_usage.py`** — `StorageUsage` table tracking
   `total_bytes` / `object_count` and optional `quota_bytes` / `quota_objects`
   overrides per `(owner_user_id, tenant_id)` scope, unique on the scope pair.
@@ -816,14 +1056,35 @@ the producer↔consumer job contracts.
 
 ### Changed
 
+- **`GET /v1/objects/{id}` and `…/download-url`** now enforce `visibility`
+  instead of bare ownership: previously every non-owner was refused, so `PUBLIC`
+  and same-tenant `TENANT` objects were unreachable by users entitled to them.
+- **`GET /v1/objects` (listing)** — a non-superuser now sees their own objects
+  **plus** anything `PUBLIC` and same-tenant `TENANT` objects, mirroring
+  `require_visibility_access` so the list never surfaces a row the caller could
+  not also fetch by id. `PRIVATE`/`SENSITIVE` objects of other owners stay
+  hidden. Owner-scoping and superuser scoping are unchanged.
+- **Requirements** — `fastapi-m8` floor bumped `>=1.5.0` → `>=1.6.0`, which
+  pins `auth-sdk-m8>=1.3.0` (the release that carries the `tenant_id` claim on
+  `UserModel`). No new direct dependency.
 - **`complete_upload`** credits, and **`delete_object`** debits, the owner's
   `StorageUsage` totals in the same transaction as the state change, so usage
   never diverges from the object set.
 
+> No schema change (`MediaObject.tenant_id` already existed). Tenant matching is
+> now live wherever the auth layer issues a `tenant_id` claim; objects created
+> by untenanted callers stay `tenant_id IS NULL` and `TENANT` behaves as
+> owner/superuser-only for them.
+
 ---
 
-## [0.0.2] — 2026-06-12 · SD · auth event-stream consumer + platform alignment
+## [0.0.2] — 2026-06-12 · SD + Phase 11 · auth event-stream consumer + platform alignment + upload validation & integrity hardening
 
+> **`A32` note (2026-08-15):** this heading previously appeared twice under
+> `[0.0.2]` (the "SD" auth event-stream entry and the Phase 11 upload-validation
+> entry, separately). Only one `v0.0.2` tag was ever cut, so the two are merged
+> here rather than left as duplicate headings.
+>
 > Tracks **`fastapi-m8 1.5.0`** / **`auth-sdk-m8 1.2.1`** / **`fa-auth-m8`** latest.
 
 ### Added
@@ -837,39 +1098,6 @@ the producer↔consumer job contracts.
   authoritative and stream loss is non-fatal. The client starts only when
   `INTROSPECTION_URL` is configured. New tunables `EVENT_STREAM_CONNECT_TIMEOUT`
   / `EVENT_STREAM_READ_TIMEOUT` (inherited from `ConsumerServiceSettings`).
-
-### Changed
-
-- **`requirements_base.txt`** — `fastapi-m8` pin `>=1.4.0` → `>=1.5.0`, picking up
-  the tiered response-header model (`auth-sdk-m8 1.2.1`). No service code change:
-  `create_app` wires `add_security_headers_middleware` and the two new knobs
-  (`HSTS_ENABLED`, `CONTENT_SECURITY_POLICY_ENABLED`) are inherited from
-  `CommonSettings`.
-- **Response security headers — tiered model.** HSTS and CSP, previously inferred
-  from the production gate, are now **express opt-in** (both default off) and are
-  **never emitted when `ENVIRONMENT=local`** even when enabled. Documented in
-  README and every `.example_env` / `*.env.example`.
-- **Env examples** (`media_service/.example_env`,
-  `docker_compose/hardened_media_m8/{media,auth}.env.example`) — added the
-  three-tier **Response security headers** block and the **Auth event stream**
-  (SSE bridge) settings; corrected the stale "event bus not wired into any
-  service yet" note now that the SSE consumer is live. `auth.env.example` gains
-  the fa-auth publisher-side stream knobs (`EVENT_STREAM_ENABLED`,
-  `EVENT_STREAM_BUFFER_SIZE`, `EVENT_STREAM_HEARTBEAT_SECONDS`,
-  `EVENT_STREAM_MAX_QUEUE`).
-- **Compose stack** (`docker_compose/hardened_media_m8`) — image bumps
-  (PostgreSQL 18, Redis 8.8, Traefik v3.7.5, Prometheus 26.04); Traefik hardened
-  to mirror `fa-auth-m8`: TLS 1.2 floor + strong ciphers, pinned `172.16.0.0/16`
-  subnet with gateway-trust allowlists, dashboard on the loopback `traefik`
-  entrypoint (`api.insecure=false`), encoded-character path hardening, and a
-  longer DB `start_period` for slow first-boot init.
-
----
-
-## [0.0.2] — 2026-06-12 · Phase 11 · upload validation & integrity hardening
-
-### Added
-
 - **`core/validation.py`** — pure content-validation helpers:
   - `sniff_mime(head)` — magic-byte MIME detection via `filetype`.
   - `mime_consistent(declared, sniffed)` — tolerant same-major check for
@@ -902,7 +1130,29 @@ the producer↔consumer job contracts.
 
 ### Changed
 
-- `requirements_base.txt` — added `filetype>=1.2.0`.
+- **`requirements_base.txt`** — `fastapi-m8` pin `>=1.4.0` → `>=1.5.0`, picking up
+  the tiered response-header model (`auth-sdk-m8 1.2.1`). No service code change:
+  `create_app` wires `add_security_headers_middleware` and the two new knobs
+  (`HSTS_ENABLED`, `CONTENT_SECURITY_POLICY_ENABLED`) are inherited from
+  `CommonSettings`. Also added `filetype>=1.2.0`.
+- **Response security headers — tiered model.** HSTS and CSP, previously inferred
+  from the production gate, are now **express opt-in** (both default off) and are
+  **never emitted when `ENVIRONMENT=local`** even when enabled. Documented in
+  README and every `.example_env` / `*.env.example`.
+- **Env examples** (`media_service/.example_env`,
+  `docker_compose/hardened_media_m8/{media,auth}.env.example`) — added the
+  three-tier **Response security headers** block and the **Auth event stream**
+  (SSE bridge) settings; corrected the stale "event bus not wired into any
+  service yet" note now that the SSE consumer is live. `auth.env.example` gains
+  the fa-auth publisher-side stream knobs (`EVENT_STREAM_ENABLED`,
+  `EVENT_STREAM_BUFFER_SIZE`, `EVENT_STREAM_HEARTBEAT_SECONDS`,
+  `EVENT_STREAM_MAX_QUEUE`).
+- **Compose stack** (`docker_compose/hardened_media_m8`) — image bumps
+  (PostgreSQL 18, Redis 8.8, Traefik v3.7.5, Prometheus 26.04); Traefik hardened
+  to mirror `fa-auth-m8`: TLS 1.2 floor + strong ciphers, pinned `172.16.0.0/16`
+  subnet with gateway-trust allowlists, dashboard on the loopback `traefik`
+  entrypoint (`api.insecure=false`), encoded-character path hardening, and a
+  longer DB `start_period` for slow first-boot init.
 - `tests/test_metrics.py` — added noop + counter assertions for
   `inc_upload_rejected`; `test_setup_disabled` asserts `_uploads_rejected` is
   `None`.

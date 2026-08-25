@@ -1,159 +1,155 @@
-"""Category api routes."""
+"""Category api routes.
 
-from typing import Any, Optional, Union
-from fastapi import APIRouter, HTTPException
-from sqlmodel import select
-from sqlmodel import func
+A category is an owned record with no public form — the table carries no
+visibility column — so the router mounts the reader floor and the three
+mutations name ``CurrentWriter`` (A16, `D2`).
 
-from media_service.app.deps import CurrentUser, SessionDep
+The handlers are thin: every scoping, ownership and refusal decision lives in
+:class:`media_service.controllers.category.CategoryController` (`D5`), on the
+same convention as the rest of the media surface.
+"""
 
-from media_service.db_models.categories import (
-    Category,
-    CategoryCreate,
-    CategoryUpdate,
-    CategoriesPublic,
+from fastapi import APIRouter, Depends
+
+from fastapi_m8 import BaseController
+
+from media_service.app.deps import (
+    CurrentReader,
+    CurrentWriter,
+    SessionDep,
+    require_reader,
 )
-from auth_sdk_m8.schemas.base import ResponseMessage, ResponseModelBase
-from auth_sdk_m8.controllers.base import BaseController
+from media_service.controllers.category import CategoryController
+from media_service.db_models.categories import (
+    CategoriesPublic,
+    CategoryCreate,
+    CategoryPublic,
+    CategoryTreePublic,
+    CategoryUpdate,
+)
 
-router = APIRouter(prefix="/category", tags=["category"])
-# pylint: disable=broad-exception-caught, not-callable
+router = APIRouter(
+    prefix="/category",
+    tags=["category"],
+    dependencies=[Depends(require_reader)],
+)
 
 
 @router.get(
     "/",
-    response_model=Optional[CategoriesPublic],
+    response_model=CategoriesPublic,
     responses=BaseController.get_error_responses(),
 )
-async def read_root(
-    session: SessionDep, current_user: CurrentUser, skip: int = 0, limit: int = 100
-) -> Any:
-    """Retrieve category list."""
-    try:
-        if current_user.is_superuser:
-            count_statement = select(func.count()).select_from(Category)
-            count = session.exec(count_statement).one()
-            statement = select(Category).offset(skip).limit(limit)
-            items = session.exec(statement).all()
-        else:
-            count_statement = (
-                select(func.count())
-                .select_from(Category)
-                .where(Category.owner_id == str(current_user.id))
-            )
-            count = session.exec(count_statement).one()
-            statement = (
-                select(Category)
-                .where(Category.owner_id == str(current_user.id))
-                .offset(skip)
-                .limit(limit)
-            )
-            items = session.exec(statement).all()
+def read_root(
+    *,
+    session: SessionDep,
+    current_user: CurrentReader,
+    skip: int = 0,
+    limit: int = 100,
+) -> CategoriesPublic:
+    """Retrieve the caller's category list."""
+    return CategoryController.list_categories(
+        session=session, current_user=current_user, skip=skip, limit=limit
+    )
 
-        return CategoriesPublic(data=items, count=count)
-    except Exception as ex:
-        return BaseController.handle_exception(ex=ex, session=session)
+
+@router.get(
+    "/tree/",
+    response_model=CategoryTreePublic,
+    responses=BaseController.get_error_responses(),
+)
+def read_tree(
+    *,
+    session: SessionDep,
+    current_user: CurrentReader,
+) -> CategoryTreePublic:
+    """Get the caller's nested category tree, each node carrying object counts."""
+    return CategoryController.get_category_tree(
+        session=session, current_user=current_user
+    )
 
 
 @router.get(
     "/get/{item_id}/",
-    response_model=Union[ResponseModelBase, ResponseMessage],
+    response_model=CategoryPublic,
     responses=BaseController.get_error_responses(),
 )
-def read_item(session: SessionDep, current_user: CurrentUser, item_id: int) -> Any:
-    """
-    Get item by ID.
-    """
-    try:
-        item = session.get(Category, item_id)
-        if not item:
-            return ResponseMessage(success=False, msg="Item not found.")
-        if not current_user.is_superuser and (
-            str(item.owner_id) != str(str(current_user.id))
-        ):
-            raise HTTPException(status_code=403, detail="Not enough permissions")
-        return ResponseModelBase(success=True, data=dict(item))
-    except HTTPException as ex:
-        raise ex
-    except Exception as ex:
-        return BaseController.handle_exception(ex=ex, session=session)
+def read_item(
+    *,
+    session: SessionDep,
+    current_user: CurrentReader,
+    item_id: int,
+) -> CategoryPublic:
+    """Get a category by ID."""
+    return CategoryController.get_category(
+        session=session, current_user=current_user, category_id=item_id
+    )
 
 
 @router.post(
     "/add/",
-    response_model=ResponseModelBase,
+    response_model=CategoryPublic,
+    status_code=201,
     responses=BaseController.get_error_responses(),
 )
 def create_item(
-    *, session: SessionDep, current_user: CurrentUser, item_in: CategoryCreate
-) -> Any:
+    *,
+    session: SessionDep,
+    current_user: CurrentWriter,
+    item_in: CategoryCreate,
+) -> CategoryPublic:
+    """Create a new category, optionally nested under an existing one.
+
+    A ``parent_id`` must name a category in the caller's own scope, and the
+    name must be free among that parent's children.
     """
-    Create new item.
-    """
-    try:
-        item = Category.model_validate(item_in, update={"owner_id": current_user.id})
-        session.add(item)
-        session.commit()
-        session.refresh(item)
-        return ResponseModelBase(success=True, data=dict(item))
-    except Exception as ex:
-        return BaseController.handle_exception(ex=ex, session=session)
+    return CategoryController.create_category(
+        session=session, current_user=current_user, req=item_in
+    )
 
 
 @router.put(
     "/edit/{item_id}/",
-    response_model=ResponseModelBase,
+    response_model=CategoryPublic,
     responses=BaseController.get_error_responses(),
 )
 def update_item(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentWriter,
     item_id: int,
     item_in: CategoryUpdate,
-) -> Any:
+) -> CategoryPublic:
+    """Update an owned category, including reparenting it.
+
+    A reparent may not cross a tenant boundary or close a cycle, and the
+    resulting name must be free among the new siblings.
     """
-    Update an item.
-    """
-    try:
-        item = session.get(Category, item_id)
-        if not item:
-            raise HTTPException(status_code=404, detail="Item not found")
-        if not current_user.is_superuser and (
-            str(item.owner_id) != str(current_user.id)
-        ):
-            raise HTTPException(status_code=403, detail="Not enough permissions")
-        update_dict = item_in.model_dump(exclude_unset=True)
-        item.sqlmodel_update(update_dict)
-        session.add(item)
-        session.commit()
-        session.refresh(item)
-        return ResponseModelBase(success=True, data=dict(item))
-    except Exception as ex:
-        return BaseController.handle_exception(ex=ex, session=session)
+    return CategoryController.update_category(
+        session=session,
+        current_user=current_user,
+        category_id=item_id,
+        req=item_in,
+    )
 
 
 @router.delete(
     "/delete/{item_id}/",
-    response_model=ResponseMessage,
+    response_model=None,
+    status_code=204,
     responses=BaseController.get_error_responses(),
 )
 def delete_item(
-    session: SessionDep, current_user: CurrentUser, item_id: int
-) -> ResponseMessage:
+    *,
+    session: SessionDep,
+    current_user: CurrentWriter,
+    item_id: int,
+) -> None:
+    """Delete an owned category that holds no child categories.
+
+    A category with children is refused; reparent or delete them first.
+    Assigned media is unaffected — only the filings are removed.
     """
-    Delete an item.
-    """
-    try:
-        item = session.get(Category, item_id)
-        if not item:
-            raise HTTPException(status_code=404, detail="Item not found")
-        if not current_user.is_superuser and (
-            str(item.owner_id) != str(current_user.id)
-        ):
-            raise HTTPException(status_code=403, detail="Not enough permissions")
-        session.delete(item)
-        session.commit()
-        return ResponseMessage(success=True, msg="Category deleted successfully")
-    except Exception as ex:
-        return BaseController.handle_exception(ex=ex, session=session)
+    CategoryController.delete_category(
+        session=session, current_user=current_user, category_id=item_id
+    )

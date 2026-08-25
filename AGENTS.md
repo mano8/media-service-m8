@@ -1,21 +1,7 @@
-﻿# media-service-m8
+# media-service-m8
 
-## Layer
-Service (media storage system)
+## Repository-local context
 
----
-
-## Purpose
-Handles upload, storage, lifecycle of media assets.
-
----
-
-## Rules
-- Owns storage layer (MinIO / filesystem abstraction)
-- No coupling to auth internals
-- Must expose clean API only
----
-
-## Authority
-All rules come from /.Codex/policy.index.json (type: python)
-
+Read `REPOSITORY_CONTEXT.md` for the neutral repository context. A verified nearest
+workspace may provide optional launcher-selected enhancement; it is never required
+for standalone work.

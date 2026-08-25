@@ -321,7 +321,7 @@ def test_complete_upload_rejects_actual_size_over_declared(
     mock_storage.stat_object.return_value = _stat_mock(size=5000)
     resp = client.post(f"/media/v1/uploads/{us.id}/complete", json={})
     assert resp.status_code == 422
-    assert "size_exceeded" in resp.json()["detail"]
+    assert resp.json()["detail"]["reason"] == "size_exceeded"
     # No download/sniff happens once the size ceiling is exceeded.
     mock_storage.get_object_head.assert_not_called()
 

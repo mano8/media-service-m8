@@ -6,14 +6,13 @@ are all inherited from ConsumerServiceSettings (fastapi-m8).
 
 import ipaddress
 from pathlib import Path
-from typing import Literal, Optional
+from typing import ClassVar, Literal, Optional
 from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import SettingsConfigDict
 
-from auth_sdk_m8.utils.paths import find_dotenv
-from fastapi_m8 import ConsumerServiceSettings
+from fastapi_m8 import ConsumerServiceSettings, find_dotenv
 
 from media_service import __version__
 
@@ -33,7 +32,7 @@ def _is_loopback_host(host: str) -> bool:
 class Settings(ConsumerServiceSettings):
     """media_service settings — extends ConsumerServiceSettings."""
 
-    ENV_FILE_DIR: Path = Path(__file__).resolve().parent
+    ENV_FILE_DIR: ClassVar[Path] = Path(__file__).resolve().parent
 
     model_config = SettingsConfigDict(
         env_file=find_dotenv(Path(__file__).resolve().parent),
@@ -48,7 +47,7 @@ class Settings(ConsumerServiceSettings):
     # plugin. Overridable from the environment for non-default deployments.
     SERVICE_VERSION: str = __version__
     CONTRACT_NAME: str = "media-service-m8"
-    CONTRACT_VERSION: str = "1.0"
+    CONTRACT_VERSION: str = "1.1"
     CONTRACT_RANGE: str = ">=1.0.0 <2.0.0"
 
     secret_fields = ConsumerServiceSettings.secret_fields + [
@@ -110,6 +109,37 @@ class Settings(ConsumerServiceSettings):
     # objects are streamed + hashed at once so a burst of completions cannot
     # fan out into unbounded concurrent full-object reads.
     MEDIA_SHA256_VERIFY_MAX_CONCURRENCY: int = Field(default=4, ge=1)
+
+    # ── Archive export (`U9`) ────────────────────────────────────────────────
+    # Not secrets — literal defaults bounding the asynchronous archive export.
+    # A single request can otherwise ask the worker to stream an unbounded
+    # collection out of storage and zip it; both ceilings are checked on the
+    # request path, before a job row exists, so an oversized export is refused
+    # rather than queued and failed later.
+    MEDIA_EXPORT_MAX_OBJECTS: int = Field(default=5_000, ge=1)
+    MEDIA_EXPORT_MAX_TOTAL_BYTES: int = Field(default=5_368_709_120, ge=1)
+    # How long an assembled archive stays downloadable. After this the job
+    # answers 410 and its bytes become reclaimable by the orphan reconciler.
+    MEDIA_EXPORT_ARCHIVE_TTL_SECONDS: int = Field(default=86_400, ge=1)
+    # Chunk size (bytes) used when streaming an object out of storage into the
+    # zip — the archive is never assembled in memory (default 1 MiB).
+    MEDIA_EXPORT_STREAM_CHUNK_SIZE: int = Field(default=1_048_576, ge=1)
+
+    # ── Collection import (`U9`) ─────────────────────────────────────────────
+    # Not secrets — literal defaults bounding what one `POST /v1/import` may
+    # ask the service to do. The uploaded document is attacker-controlled, so
+    # every dimension it could grow without bound is capped at the trust
+    # boundary before any of it is parsed into models or written to the
+    # database (`SEC-VALIDATE-UNTRUSTED-INPUT`).
+    MEDIA_IMPORT_MAX_MANIFEST_BYTES: int = Field(default=16_777_216, ge=1)
+    MEDIA_IMPORT_MAX_ARCHIVE_BYTES: int = Field(default=5_368_709_120, ge=1)
+    MEDIA_IMPORT_MAX_OBJECTS: int = Field(default=5_000, ge=1)
+    MEDIA_IMPORT_MAX_TOTAL_BYTES: int = Field(default=5_368_709_120, ge=1)
+    MEDIA_IMPORT_MAX_CATEGORIES: int = Field(default=1_000, ge=1)
+    # Soft cap on category-tree depth, shared by ordinary CRUD and import.
+    # Bounds recursive client/schema parsing and per-node path work, and keeps
+    # a tree created interactively exportable and re-importable.
+    MEDIA_IMPORT_MAX_CATEGORY_DEPTH: int = Field(default=10, ge=1)
 
     # ── Storage quotas ───────────────────────────────────────────────────────
     # Default ceilings applied to every owner/tenant scope without an explicit

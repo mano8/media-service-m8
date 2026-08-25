@@ -1,8 +1,8 @@
 """media_service entry point.
 
 All CORS, health, lifespan, and the shared metrics middleware/collectors are
-wired by ``create_app`` (which calls ``auth_sdk_m8.observability.metrics.setup``
-itself when ``METRICS_ENABLED``). Only media-specific additions live here: the
+wired by ``create_app`` (which calls the SDK's metrics setup, re-exported
+through ``fastapi_m8``, itself when ``METRICS_ENABLED``). Only media-specific additions live here: the
 media-owned counters and the ``/metrics`` endpoint (guarded by an optional
 scrape credential via ``METRICS_SCRAPE_CREDENTIAL``).
 """
@@ -10,13 +10,13 @@ scrape credential via ``METRICS_SCRAPE_CREDENTIAL``).
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
-from auth_sdk_m8.security.guards import make_scrape_credential_guard
 from fastapi_m8 import (
     AppLifecycle,
     HealthCheckResult,
     HealthConfig,
     HealthStatus,
     create_app,
+    make_scrape_credential_guard,
 )
 from media_service import metrics as _media_metrics
 from media_service.app.main import api_router as domain_router
@@ -73,7 +73,7 @@ def _register_metrics_endpoint(
     if not enabled:
         return
 
-    from auth_sdk_m8.observability.metrics import render as _render_metrics  # noqa: PLC0415
+    from fastapi_m8 import render_metrics as _render_metrics  # noqa: PLC0415
 
     guard = make_scrape_credential_guard(credential)
 

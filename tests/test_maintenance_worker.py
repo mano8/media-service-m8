@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 
 import media_service.core.ssrf as ssrf
 import media_service.maintenance_worker as mw
+from media_service.core.arq import MAINTENANCE_QUEUE
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectStatus,
@@ -74,6 +75,8 @@ def test_worker_settings_wiring():
     ]
     # One scheduler, four crons (single replica prevents double-fire).
     assert len(mw.WorkerSettings.cron_jobs) == 4
+    # DB-coupled maintenance stays isolated from media-worker's default queue.
+    assert mw.WorkerSettings.queue_name == MAINTENANCE_QUEUE
 
 
 # ── startup / shutdown ───────────────────────────────────────────────────────

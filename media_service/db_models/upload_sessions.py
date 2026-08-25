@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 import uuid
 
-from sqlalchemy import Column, DateTime, String, UniqueConstraint
+from sqlalchemy import JSON, Column, DateTime, String, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from media_service.core.config import settings
@@ -63,4 +63,15 @@ class UploadSession(UploadSessionBase, SQLModel, table=True):
     completed_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    #: User categories declared at initiate, applied when the session is
+    #: promoted to a MediaObject (`U4`). The filing cannot be link rows yet —
+    #: ``media_object_category.media_object_id`` points at a row that does not
+    #: exist until completion — so the validated ids are parked here.
+    #: Nullable, and read as "no filing declared": a session created before this
+    #: column existed must complete unfiled rather than fail.
+    category_ids: list[int] | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="User categories to file the completed object into",
     )

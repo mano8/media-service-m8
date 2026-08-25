@@ -9,12 +9,18 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, false, func, or_
 from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
-from auth_sdk_m8.schemas.user import UserModel
+from fastapi_m8 import UserModel
 
+from media_service.controllers.category import (
+    assigned_category_refs,
+    branch_category_ids,
+    category_refs_by_object,
+    resolve_category_ids,
+)
 from media_service.core.config import settings
 from media_service.core.outbox import (
     EVENT_OBJECT_DELETED,
@@ -23,6 +29,8 @@ from media_service.core.outbox import (
     record_event,
 )
 from media_service.core.quotas import record_object_removed
+from media_service.core.tenancy import user_tenant_id
+from media_service.db_models.media_object_categories import MediaObjectCategoryLink
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectPublic,
@@ -32,6 +40,7 @@ from media_service.db_models.media_objects import (
     utcnow,
 )
 from media_service.schemas.objects import (
+    DownloadNotAvailableDetail,
     DownloadUrlResponse,
     MediaObjectUpdate,
     ObjectListParams,
@@ -51,6 +60,13 @@ _SORT_COLUMNS: dict[str, Any] = {
     "created_at": MediaObject.created_at,
     "size_bytes": MediaObject.size_bytes,
 }
+
+
+def _download_not_available_message(scan_status: ScanStatus) -> str:
+    """Human copy for the download-guard 409, distinct for a scan rejection."""
+    if scan_status in (ScanStatus.INFECTED, ScanStatus.QUARANTINED):
+        return "Object is not available for download: it failed the virus scan."
+    return "Object is not available for download until it passes scanning."
 
 
 def _cursor_sort_value(*, sort_by: str, obj: MediaObject) -> Any:
@@ -111,10 +127,20 @@ def _keyset_predicate(
 
 
 def _scoped_query(
-    current_user: UserModel, params: ObjectListParams
+    current_user: UserModel | None, params: ObjectListParams
 ) -> SelectOfScalar[MediaObject]:
-    """Build the base query with owner scoping and soft-delete handling."""
+    """Build the base query with owner scoping and soft-delete handling.
+
+    ``current_user is None`` is the anonymous caller (A16): the listing narrows
+    to live ``PUBLIC`` rows and nothing else, so the public read surface can
+    never widen past what an unauthenticated visitor is entitled to see.
+    """
     statement = select(MediaObject)
+    if current_user is None:
+        return statement.where(
+            col(MediaObject.visibility) == MediaVisibility.PUBLIC,
+            col(MediaObject.deleted_at).is_(None),
+        )
     if current_user.is_superuser:
         if params.owner_user_id is not None:
             statement = statement.where(
@@ -132,7 +158,7 @@ def _scoped_query(
         col(MediaObject.owner_user_id) == owner_id,
         col(MediaObject.visibility) == MediaVisibility.PUBLIC,
     ]
-    user_tenant = _user_tenant_id(current_user)
+    user_tenant = user_tenant_id(current_user)
     if user_tenant is not None:
         visibility_clauses.append(
             and_(
@@ -171,15 +197,52 @@ def _apply_filters(
     return statement
 
 
-def _user_tenant_id(current_user: UserModel) -> uuid.UUID | None:
-    """Return the caller's tenant as a UUID, or ``None`` when untenanted.
+def _apply_category_filter(
+    session: Session,
+    current_user: UserModel | None,
+    statement: SelectOfScalar[MediaObject],
+    params: ObjectListParams,
+) -> SelectOfScalar[MediaObject]:
+    """Narrow the listing to a user-category branch, or to unfiled media.
 
-    ``UserModel`` does not (yet) carry a tenant claim, so this reads it
-    defensively: callers without a tenant get ``None``, which never matches a
-    ``TENANT`` object (see :func:`require_visibility_access`).
+    Applied **after** ``_scoped_query`` and only ever as an additional
+    ``where`` over a correlated ``EXISTS`` on the link table (`U4`): every
+    clause here can subtract rows from what the caller was already entitled to
+    see and none can add one, so the branch filter is structurally incapable of
+    widening visibility — an anonymous caller passing ``category_id`` still
+    sees at most the public catalogue.
+
+    It is separate from :func:`_apply_filters` because it is the one filter
+    that needs a session and a principal: which categories a branch covers is a
+    scoped question, answered by
+    :func:`media_service.controllers.category.branch_category_ids`, not a
+    column comparison.
+
+    ``EXISTS`` rather than a join: an object filed into several categories of
+    the same branch must appear once, and a join would return it once per
+    matching link row, breaking both ``count`` and the keyset cursor.
     """
-    raw = getattr(current_user, "tenant_id", None)
-    return uuid.UUID(str(raw)) if raw is not None else None
+    filed = select(MediaObjectCategoryLink).where(
+        col(MediaObjectCategoryLink.media_object_id) == col(MediaObject.id)
+    )
+    if params.uncategorized:
+        return statement.where(~filed.exists())
+    if params.category_id is None:
+        return statement
+    branch_ids = branch_category_ids(
+        session,
+        current_user,
+        params.category_id,
+        include_descendants=params.include_descendants,
+    )
+    if not branch_ids:
+        # Only the anonymous caller reaches this: an authenticated one either
+        # resolves the branch or is refused 404/403 above. Say "no rows"
+        # explicitly rather than leaning on an empty ``IN ()``.
+        return statement.where(false())
+    return statement.where(
+        filed.where(col(MediaObjectCategoryLink.category_id).in_(branch_ids)).exists()
+    )
 
 
 def _fetch_object(
@@ -201,20 +264,33 @@ def _fetch_object(
     return obj
 
 
-def require_visibility_access(obj: MediaObject, current_user: UserModel) -> None:
+def require_visibility_access(obj: MediaObject, current_user: UserModel | None) -> None:
     """Authorize read/download access to ``obj`` by its visibility policy.
 
     Superusers and the owner always pass. Otherwise: ``PUBLIC`` is readable by
-    any authenticated user; ``TENANT`` only by callers in the same (non-null)
-    tenant; ``PRIVATE``/``SENSITIVE`` by nobody else. Raises 403 when denied.
+    anyone — including an anonymous caller (A16) — ``TENANT`` only by callers in
+    the same (non-null) tenant; ``PRIVATE``/``SENSITIVE`` by nobody else. Raises
+    403 when an authenticated caller is denied.
+
+    An anonymous caller is denied with **404, not 403**: a 403 would tell an
+    unauthenticated visitor that a given id exists while a missing id answers
+    404, turning the public surface into an existence oracle over every private
+    object. Authenticated denials keep their 403 — that caller already
+    distinguishes the two cases through ``_fetch_object``.
     """
+    if current_user is None:
+        if obj.visibility == MediaVisibility.PUBLIC:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Media object not found."
+        )
     owner_id = uuid.UUID(str(current_user.id))
     if current_user.is_superuser or obj.owner_user_id == owner_id:
         return
     if obj.visibility == MediaVisibility.PUBLIC:
         return
     if obj.visibility == MediaVisibility.TENANT:
-        user_tenant = _user_tenant_id(current_user)
+        user_tenant = user_tenant_id(current_user)
         if user_tenant is not None and obj.tenant_id == user_tenant:
             return
     raise HTTPException(
@@ -246,10 +322,16 @@ def _load_object(
 
 def _load_object_for_read(
     session: Session,
-    current_user: UserModel,
+    current_user: UserModel | None,
     object_id: uuid.UUID,
 ) -> MediaObject:
-    """Fetch a MediaObject for read/download, enforcing visibility access."""
+    """Fetch a MediaObject for read/download, enforcing visibility access.
+
+    Read path only. Widening this to admit anonymous ``PUBLIC`` reads must never
+    widen a write: ``_load_object`` above stays owner-or-superuser and takes a
+    non-optional principal, so a public object can be read by a stranger and
+    still not be patched or deleted by one.
+    """
     obj = _fetch_object(session, object_id)
     require_visibility_access(obj, current_user)
     return obj
@@ -312,11 +394,17 @@ class ObjectsController:
     def list_objects(
         *,
         session: Session,
-        current_user: UserModel,
+        current_user: UserModel | None,
         params: ObjectListParams,
     ) -> ObjectListResponse:
-        """Return a filtered, cursor-paginated page of media objects."""
+        """Return a filtered, cursor-paginated page of media objects.
+
+        ``current_user is None`` lists the public catalogue (A16). The
+        user-category filters are applied last, after the visibility scoping
+        they may only narrow — see :func:`_apply_category_filter`.
+        """
         statement = _apply_filters(_scoped_query(current_user, params), params)
+        statement = _apply_category_filter(session, current_user, statement, params)
         sort_col = _sort_column(params.sort_by)
         id_col = col(MediaObject.id)
         descending = params.order == "desc"
@@ -337,8 +425,17 @@ class ObjectsController:
         next_cursor = (
             _encode_cursor(sort_by=params.sort_by, obj=items[-1]) if has_more else None
         )
+        # One joined load for the whole page, not one query per object (`U4`).
+        refs_by_object = category_refs_by_object(
+            session, current_user, [o.id for o in items]
+        )
         return ObjectListResponse(
-            items=[MediaObjectPublic.model_validate(o) for o in items],
+            items=[
+                MediaObjectPublic.model_validate(
+                    o, update={"categories": refs_by_object.get(o.id, [])}
+                )
+                for o in items
+            ],
             next_cursor=next_cursor,
             count=len(items),
         )
@@ -347,7 +444,7 @@ class ObjectsController:
     def get_object(
         *,
         session: Session,
-        current_user: UserModel,
+        current_user: UserModel | None,
         object_id: uuid.UUID,
     ) -> MediaObjectPublic:
         """Return public metadata for a media object."""
@@ -358,7 +455,7 @@ class ObjectsController:
     def download_url(
         *,
         session: Session,
-        current_user: UserModel,
+        current_user: UserModel | None,
         object_id: uuid.UUID,
         storage: ObjectStorage,
     ) -> DownloadUrlResponse:
@@ -367,9 +464,13 @@ class ObjectsController:
         # Bytes are non-downloadable until an antivirus scan clears them; an
         # unscanned/infected object must never hand out a working URL.
         if obj.scan_status != ScanStatus.CLEAN:
+            detail = DownloadNotAvailableDetail(
+                scan_status=obj.scan_status,
+                message=_download_not_available_message(obj.scan_status),
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Object is not available for download until it passes scanning.",
+                detail=detail.model_dump(mode="json"),
             )
         expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
         url = create_download_url(
@@ -396,15 +497,31 @@ class ObjectsController:
 
         A ``visibility`` change relocates the stored bytes to the matching
         bucket so metadata never diverges from where the object actually lives.
+
+        ``category_ids`` replaces the object's whole user-category filing
+        (`U4`): it is a set, not a delta, so re-filing and unfiling are the same
+        operation. Every id is resolved in the caller's scope *before* any
+        relocation runs, so a request that is about to be refused never moves
+        bytes first.
         """
         obj = _load_object(session, current_user, object_id)
         update_data = update.model_dump(exclude_unset=True)
+        # Not a column on MediaObject — the filing is link rows — so it comes
+        # out before ``sqlmodel_update`` sees it.
+        category_ids = update_data.pop("category_ids", None)
+        categories = (
+            resolve_category_ids(session, current_user, category_ids)
+            if category_ids is not None
+            else None
+        )
         old_bucket = _relocate_for_visibility(
             storage, obj, update_data.get("visibility")
         )
         new_bucket = obj.storage_bucket
         object_key = obj.object_key
         obj.sqlmodel_update(update_data)
+        if categories is not None:
+            obj.user_categories = list(categories)
         obj.updated_at = utcnow()
         session.add(obj)
         try:
@@ -430,7 +547,14 @@ class ObjectsController:
                 object_key=obj.object_key,
                 context="visibility-relocation",
             )
-        return MediaObjectPublic.model_validate(obj)
+        return MediaObjectPublic.model_validate(
+            obj,
+            update={
+                "categories": assigned_category_refs(
+                    session, current_user, obj.user_categories
+                )
+            },
+        )
 
     @staticmethod
     def apply_scan_result(

@@ -51,6 +51,11 @@ def test_download_blocked_until_clean(
     obj = _make_object(session, current_user.id, ScanStatus.PENDING)
     resp = client.get(f"/media/v1/objects/{obj.id}/download-url")
     assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict)
+    assert detail["code"] == "scan_not_clean"
+    assert detail["scan_status"] == "pending"
+    assert "message" in detail
 
 
 def test_download_blocked_when_quarantined(
@@ -59,6 +64,23 @@ def test_download_blocked_when_quarantined(
     obj = _make_object(session, current_user.id, ScanStatus.QUARANTINED)
     resp = client.get(f"/media/v1/objects/{obj.id}/download-url")
     assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict)
+    assert detail["code"] == "scan_not_clean"
+    assert detail["scan_status"] == "quarantined"
+    assert "failed the virus scan" in detail["message"]
+
+
+def test_download_blocked_when_infected(
+    client: TestClient, session: Session, current_user
+):
+    obj = _make_object(session, current_user.id, ScanStatus.INFECTED)
+    resp = client.get(f"/media/v1/objects/{obj.id}/download-url")
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["code"] == "scan_not_clean"
+    assert detail["scan_status"] == "infected"
+    assert "failed the virus scan" in detail["message"]
 
 
 def test_download_allowed_when_clean(

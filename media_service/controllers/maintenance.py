@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from sqlmodel import Session, col, select
 
 from media_service.controllers.admin import AdminController
+from media_service.db_models.export_jobs import ExportJob, ExportJobStatus
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectStatus,
@@ -127,8 +128,11 @@ class MaintenanceController:
         * **Storage-orphans** — a stored key with no row. Removed only when
           ``repair`` is set.
 
-        Rows younger than ``grace`` and keys belonging to still-INITIATED upload
-        sessions are excluded so an in-flight upload is never flagged.
+        Rows younger than ``grace``, keys belonging to still-INITIATED upload
+        sessions, and assembled archive exports still inside their download
+        window are excluded, so neither an in-flight upload nor a collectable
+        export is ever flagged — or, under ``repair``, deleted out from under
+        the caller waiting for it.
         """
         db_orphans = MaintenanceController._find_db_orphans(
             session=session, storage=storage, cutoff=utcnow() - grace, limit=limit
@@ -207,8 +211,11 @@ class MaintenanceController:
     ) -> tuple[list[OrphanRecord], int]:
         """Direction (a): stored keys with no row; repaired only when ``repair``.
 
-        Keys of still-INITIATED upload sessions are excluded (not orphans yet).
-        Returns the orphan records and the count actually removed.
+        Two classes of key are legitimately row-less and excluded here: those of
+        still-INITIATED upload sessions (bytes on their way in, not orphans
+        yet) and those of live archive exports (bytes on their way out, owned
+        by an ``ExportJob`` rather than a ``MediaObject``). Returns the orphan
+        records and the count actually removed.
         """
         pending_keys = {
             (s.storage_bucket, s.object_key)
@@ -217,7 +224,7 @@ class MaintenanceController:
                     UploadSession.status == UploadSessionStatus.INITIATED  # type: ignore[arg-type]
                 )
             ).all()
-        }
+        } | MaintenanceController._live_export_keys(session)
 
         storage_orphans: list[OrphanRecord] = []
         repaired = 0
@@ -242,6 +249,25 @@ class MaintenanceController:
                     )
                     repaired += 1
         return storage_orphans, repaired
+
+    @staticmethod
+    def _live_export_keys(session: Session) -> set[tuple[str, str]]:
+        """Keys of assembled archives still inside their download window.
+
+        An export archive has no ``MediaObject`` row by design — it is a
+        derived artefact owned by its :class:`ExportJob` — so without this it
+        would read as a storage orphan and a ``repair`` run would delete a
+        finished export before its owner collected it. Expiry is compared in
+        SQL with an aware cutoff, for the naive-vs-aware reason in the module
+        docstring; once lapsed the bytes are *meant* to become reclaimable.
+        """
+        rows = session.exec(
+            select(ExportJob).where(
+                ExportJob.status == ExportJobStatus.COMPLETED,  # type: ignore[arg-type]
+                col(ExportJob.expires_at) > utcnow(),
+            )
+        ).all()
+        return {(str(row.storage_bucket), str(row.object_key)) for row in rows}
 
     @staticmethod
     def _best_effort_remove(

@@ -56,3 +56,20 @@ def build_variant_key(
         f"{prefix}/{safe_category}/{media_id}"
         f"/variants/{safe_variant}/{_safe_filename(filename)}"
     )
+
+
+def build_export_archive_key(
+    *,
+    owner_user_id: UUID,
+    job_id: UUID,
+    tenant_id: UUID | None = None,
+) -> str:
+    """Build the object key for an assembled archive export (`U9`).
+
+    Shares the tenant/owner prefix every original and variant uses, so an
+    export artefact is filed under the same scope as the media it carries and
+    a bucket listing stays readable. The job id is the only variable part —
+    an export job assembles exactly once, so the key never collides.
+    """
+    prefix = _owner_prefix(owner_user_id, tenant_id)
+    return f"{prefix}/exports/{job_id}.zip"

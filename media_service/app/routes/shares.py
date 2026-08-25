@@ -1,12 +1,24 @@
-"""Routes for media share links (owner-managed; public resolution)."""
+"""Routes for media share links (owner-managed; public resolution).
+
+``router`` is the owner surface and mounts the reader floor — the lowest tier
+any route on it carries — with the two mutations naming ``CurrentWriter``
+themselves. ``public_router`` holds the one genuinely unauthenticated route,
+token resolution, which was already public before A16 and is unchanged by it.
+"""
 
 import uuid
 
 from fastapi import APIRouter, Depends
 
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import BaseController
 
-from media_service.app.deps import CurrentUser, SessionDep, StorageDep
+from media_service.app.deps import (
+    CurrentReader,
+    CurrentWriter,
+    SessionDep,
+    StorageDep,
+    require_reader,
+)
 from media_service.controllers.shares import SharesController
 from media_service.core.rate_limit import AnonRateLimiter
 from media_service.schemas.objects import DownloadUrlResponse
@@ -16,7 +28,8 @@ from media_service.schemas.shares import (
     ShareTokenPublic,
 )
 
-router = APIRouter(tags=["shares"])
+router = APIRouter(tags=["shares"], dependencies=[Depends(require_reader)])
+public_router = APIRouter(tags=["shares"])
 
 _share_resolve_limit = AnonRateLimiter("shares:resolve", limit=60, window_seconds=60)
 
@@ -30,7 +43,7 @@ _share_resolve_limit = AnonRateLimiter("shares:resolve", limit=60, window_second
 def create_share(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentWriter,
     object_id: uuid.UUID,
     body: ShareTokenCreate,
 ) -> ShareTokenPublic:
@@ -51,7 +64,7 @@ def create_share(
 def list_shares(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentReader,
     object_id: uuid.UUID,
 ) -> ShareTokenListResponse:
     """List the share links of an object the caller owns."""
@@ -71,7 +84,7 @@ def list_shares(
 def revoke_share(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentWriter,
     token_id: uuid.UUID,
 ) -> None:
     """Revoke a share link (idempotent)."""
@@ -82,7 +95,7 @@ def revoke_share(
     )
 
 
-@router.get(
+@public_router.get(
     "/shares/{token}",
     response_model=DownloadUrlResponse,
     responses=BaseController.get_error_responses(),

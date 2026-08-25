@@ -30,13 +30,35 @@ README for stack setup.
 
 All routes are mounted under `API_PREFIX` (default `/media`). Domain routers:
 
+### Role tiers
+
+Every route states the **minimum role** it requires, and the guards are the
+SDK-built ones `fastapi-m8` exposes (`auth.get_current_active_reader` /
+`_writer` / `_admin`), re-exported once from `app/deps.py` as `CurrentReader` /
+`CurrentWriter` / `CurrentAdmin`. `is_superuser` alone never satisfies a role
+threshold — the flag cannot bypass a writer or admin guard.
+
+| Tier in the tables below | Minimum role | May do |
+| --- | --- | --- |
+| **public** | none — no token at all | Read `PUBLIC` objects: list them, fetch metadata, get a download URL, list variants |
+| `user` | `USER` | Everything `public` allows, with an identity; nothing owned |
+| `reader` | `READER` | Read owned lists and owned items |
+| `writer` | `WRITER` | Create, edit and delete owned records; uploads; dashboard |
+| `superuser` | `SUPERADMIN` **and** `is_superuser` | The `/v1/admin` surface |
+
+Domain routers mount their floor with `dependencies=[Depends(require_...)]`, so a
+route added later inherits it. The two read routers (`objects.read_router`,
+`variants.read_router`) and the share-resolution router deliberately mount no
+floor: they admit anonymous callers on `PUBLIC` records, so no dependency admits
+every route on them, and each handler names its own tier instead.
+
 ### Service metadata & health
 
 Auto-mounted by `fastapi-m8` (≥ 3.3.0) `create_app` — the standard m8 triad:
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@fa-m8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.0`, service-version range `>=1.0.0 <2.0.0`. |
+| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@mano8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.1`, service-version range `>=1.0.0 <2.0.0`. |
 | GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
 | GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / MinIO). |
 
@@ -49,9 +71,9 @@ so the service fails closed at boot if its identity is undeclared.
 
 | Method | Path | Auth | Rate limit | Purpose |
 | --- | --- | --- | --- | --- |
-| POST | `/v1/uploads/initiate` | user | 20/min | Create an upload session + presigned PUT URL |
-| POST | `/v1/uploads/{session_id}/complete` | user | 20/min | Finalize after the client PUTs to MinIO |
-| POST | `/v1/uploads/{session_id}/abort` | user | — | Abort an in-progress session |
+| POST | `/v1/uploads/initiate` | writer | 20/min | Create an upload session + presigned PUT URL |
+| POST | `/v1/uploads/{session_id}/complete` | writer | 20/min | Finalize after the client PUTs to MinIO |
+| POST | `/v1/uploads/{session_id}/abort` | writer | — | Abort an in-progress session |
 
 Flow: `initiate` returns a presigned `PUT` URL and a session id → client uploads
 bytes directly to MinIO → `complete` runs three integrity checks then promotes
@@ -75,18 +97,25 @@ On any failure the session is marked `ABORTED`, a `MediaObject` with
 
 | Method | Path | Auth | Rate limit | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `/v1/objects` | user | 120/min | List objects (filtered, cursor-paginated) |
-| GET | `/v1/objects/{object_id}` | user | — | Fetch object metadata |
-| GET | `/v1/objects/{object_id}/download-url` | user | 60/min | Presigned GET URL for download |
-| PATCH | `/v1/objects/{object_id}` | user | — | Update mutable metadata |
-| DELETE | `/v1/objects/{object_id}` | user | — | Soft-delete (idempotent) |
+| GET | `/v1/objects` | **public** | 120/min | List objects (filtered, cursor-paginated) |
+| GET | `/v1/objects/{object_id}` | **public** | — | Fetch object metadata |
+| GET | `/v1/objects/{object_id}/download-url` | **public** | 60/min | Presigned GET URL for download |
+| PATCH | `/v1/objects/{object_id}` | writer | — | Update mutable metadata |
+| DELETE | `/v1/objects/{object_id}` | writer | — | Soft-delete (idempotent) |
 
-`GET /v1/objects` returns, for a regular user, their own objects plus anything
-`PUBLIC` and same-tenant `TENANT` objects (superusers see all and may pass
-`owner_user_id` / `include_deleted`); `PRIVATE`/`SENSITIVE` objects of other
-owners stay hidden — see [Access control](#access-control--visibility). Supported
-query parameters:
-`category`, `visibility`, `status`, `mime_prefix` (e.g. `image/`),
+The three `GET` routes are **public**: a caller with no token sees live `PUBLIC`
+objects and nothing else, and a denial there answers **404**, never 403, so the
+public surface is not an existence oracle over private ids. A caller who does
+present a token is resolved normally — a broken or expired token is rejected,
+never silently downgraded to anonymous. `GET /v1/objects` returns, for a regular
+authenticated user, their own objects plus anything `PUBLIC` and same-tenant
+`TENANT` objects (superusers see all and may pass `owner_user_id` /
+`include_deleted`); `PRIVATE`/`SENSITIVE` objects of other owners stay hidden —
+see [Access control](#access-control--visibility). Rate limiting follows the
+caller: per-user **and** per-IP once identified, per-IP only while anonymous.
+Supported query parameters:
+the fixed-policy `category`, user-category `category_id`, `include_descendants`,
+`uncategorized`, `visibility`, `status`, `mime_prefix` (e.g. `image/`),
 `created_from`/`created_to`, `q` (filename contains), `sort_by`
 (`original_filename`|`category`|`status`|`size_bytes`|`created_at`), `order`
 (`asc`|`desc`), and `limit` (1–100).
@@ -98,9 +127,9 @@ excluded unless a superuser passes `include_deleted=true`.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| POST | `/v1/objects/{object_id}/shares` | owner | Mint a time-boxed signed share link (**201**) |
-| GET | `/v1/objects/{object_id}/shares` | owner | List an object's share links |
-| DELETE | `/v1/shares/{token_id}` | owner | Revoke a share link (idempotent, **204**) |
+| POST | `/v1/objects/{object_id}/shares` | writer + owner | Mint a time-boxed signed share link (**201**) |
+| GET | `/v1/objects/{object_id}/shares` | reader + owner | List an object's share links |
+| DELETE | `/v1/shares/{token_id}` | writer + owner | Revoke a share link (idempotent, **204**) |
 | GET | `/v1/shares/{token}` | **public** | Resolve a signed token → presigned download URL |
 
 Creation, listing and revocation are owner-only (superusers may revoke any
@@ -145,10 +174,10 @@ The guard is applied at the router level via
 
 | Method | Path | Auth | Rate limit | Purpose |
 | --- | --- | --- | --- | --- |
-| POST | `/v1/objects/{id}/variants:generate` | user | 30/min | Create a variant job from named presets (**202**) and enqueue it |
-| GET | `/v1/objects/{id}/variants` | user | — | List generated variants |
-| GET | `/v1/objects/{id}/variants/jobs/{jid}` | user | — | Variant job progress |
-| DELETE | `/v1/objects/{id}/variants/{vid}` | user | — | Delete a variant (row + bytes) |
+| POST | `/v1/objects/{id}/variants:generate` | writer | 30/min | Create a variant job from named presets (**202**) and enqueue it |
+| GET | `/v1/objects/{id}/variants` | **public** | — | List generated variants (follows the object's visibility) |
+| GET | `/v1/objects/{id}/variants/jobs/{jid}` | reader | — | Variant job progress |
+| DELETE | `/v1/objects/{id}/variants/{vid}` | writer | — | Delete a variant (row + bytes) |
 
 `:generate` accepts `{ "presets": ["thumb", "web", …] }`. The object must have
 cleared antivirus scanning and reached `READY` (`scan_status == CLEAN` **and**
@@ -171,10 +200,10 @@ independent runtime safety ceilings as defense in depth.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/v1/presets` | user | Built-in presets merged with the caller's named presets |
-| POST | `/v1/presets` | user | Create a user-owned named preset (**201**) |
-| PATCH | `/v1/presets/{id}` | user | Replace a preset's recipe |
-| DELETE | `/v1/presets/{id}` | user | Delete a user preset |
+| GET | `/v1/presets` | reader | Built-in presets merged with the caller's named presets |
+| POST | `/v1/presets` | writer | Create a user-owned named preset (**201**) |
+| PATCH | `/v1/presets/{id}` | writer | Replace a preset's recipe |
+| DELETE | `/v1/presets/{id}` | writer | Delete a user preset |
 
 Built-in defaults (`thumb`/`small`/`medium`/`large`) ship as code constants; a
 user row of the same name shadows the built-in at resolve time. Each preset is a
@@ -194,6 +223,7 @@ rejected at create/update time (**422**).
 | POST | `/v1/internal/objects/{id}/scan-result` | Apply an antivirus verdict (CLEAN → `READY`, else `QUARANTINED`) |
 | POST | `/v1/internal/objects/{id}/variants` | Register a worker-written variant (idempotent) |
 | PATCH | `/v1/internal/variant-jobs/{jid}` | Advance a variant job's status/progress |
+| PATCH | `/v1/internal/export-jobs/{jid}` | Apply delegated archive progress/result |
 
 Every internal route requires `Authorization: Bearer <MEDIA_INTERNAL_SERVICE_TOKEN>`,
 compared in constant time (`secrets.compare_digest`); anything missing or
@@ -275,8 +305,29 @@ endpoints (and the optional `?tenant_id=`) are superuser-only.
 
 ### Category & Dashboard
 
-`/{prefix}/category` (CRUD) and `/{prefix}/dashboard` (user-activity stats) are
-inherited consumer-template routers retained for ecosystem parity.
+`/{prefix}/category` supplies a tenant-scoped, nested **user-category** tree;
+it is an organizational layer and does not replace the fixed `MediaCategory`
+enum that drives media policy. An object may be filed in multiple user
+categories. `GET /category/tree/` gives reader-tier callers the complete tree
+with direct and subtree object counts. CRUD reads are **reader** tier and
+mutations are **writer** tier; foreign, invalid-parent, cyclic, duplicate-sibling
+and non-empty-delete requests are refused rather than widening a caller's view.
+Creation and branch reparenting also share import's
+`MEDIA_IMPORT_MAX_CATEGORY_DEPTH` ceiling (10 levels by default), keeping every
+interactive tree portable through collection export/import.
+
+`/{prefix}/dashboard` remains a writer-tier user-activity view. Both routers are
+retained for ecosystem parity.
+
+### Collection export & import
+
+Writer-tier callers can export their authorized collection through
+`POST /v1/export` as a streamed manifest or an asynchronous archive job, then
+restore it through `POST /v1/import`. The import recreates the category tree
+before filings, scopes every record to the importing caller and re-runs archived
+bytes through the normal upload and scan pipeline. Archive downloads only contain
+objects whose bytes are currently safe to serve; manifest rows report any missing
+bytes explicitly.
 
 > **Note:** media variants (`db_models/media_variants.py`, `schemas/variants.py`,
 > `app/routes/variants.py`) are **reserved stubs** — the model exists but no
@@ -289,13 +340,16 @@ listing returns) is governed by each object's `visibility`:
 
 | Visibility | Who may read / download |
 | --- | --- |
-| `PUBLIC` | Any authenticated user |
+| `PUBLIC` | **Anyone, including a caller with no token at all** |
 | `TENANT` | The owner, superusers, and callers in the **same (non-null) tenant** |
 | `PRIVATE` / `SENSITIVE` | The owner and superusers only |
 
 The owner and superusers always have access regardless of visibility. A caller
-with no tenant never matches a `TENANT` object. Mutations (`PATCH`/`DELETE`)
-remain owner-or-superuser only.
+with no tenant never matches a `TENANT` object. Widening the read never widens
+the write: mutations (`PATCH`/`DELETE`) remain **writer tier and
+owner-or-superuser**, so a stranger who can read a `PUBLIC` object still cannot
+change or delete it. An anonymous caller denied by visibility gets **404**, not
+403 — an authenticated one still gets 403.
 
 Tenancy is taken from the caller's `tenant_id` claim (surfaced on `UserModel` by
 `auth-sdk-m8`, requires `fastapi-m8>=3.3.0`) and stamped onto each object at
@@ -312,7 +366,7 @@ By default every presigned URL is built from the internal `MINIO_HOST:MINIO_PORT
 address, which the browser cannot reach in most deployments. Set
 `MINIO_PUBLIC_ENDPOINT` to the **full URL** the browser can reach:
 
-```
+```text
 # dev / loopback (MinIO already bound to 127.0.0.1:9005 in dev stacks)
 MINIO_PUBLIC_ENDPOINT=http://127.0.0.1:9005
 
@@ -416,12 +470,16 @@ commented set of settings.
 Media-owned state (rate limits, queues, locks, caches) uses the `MEDIA_REDIS_*`
 settings and the `media:*` key namespace — **separate** from the auth Redis. Rate
 limiting fails open if the media Redis is unavailable. The same Redis backs the
-ARQ job queue (`scan_object`, `generate_variants`) consumed by `media-worker-m8`.
+ARQ job queue (`scan_object`, `generate_variants`, `build_export_archive`)
+consumed by `media-worker-m8`.
 
 ## Worker integration
 
 Media-service is the **producer** for background work run by `media-worker-m8`,
-sharing storage + job contracts via `media-sdk-m8`. Two settings wire it up:
+sharing storage + job contracts via `media-sdk-m8`. For archive exports the
+service resolves the caller's authorized manifest and storage references into
+`ExportArchiveJobPayload`; the DB-free worker streams the ZIP and reports its
+result through `/v1/internal/export-jobs/{job_id}`. Two settings wire it up:
 
 - `MEDIA_INTERNAL_SERVICE_TOKEN` — shared bearer token the worker presents on the
   `/v1/internal/*` callbacks (set the **same** value here and on the worker).

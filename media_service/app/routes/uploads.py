@@ -1,14 +1,24 @@
-"""Routes for the presigned upload flow."""
+"""Routes for the presigned upload flow.
+
+Every route here creates or cancels an owned record, so the whole router sits on
+the writer floor (A16): a route added later inherits it instead of relying on
+its author to remember a guard.
+"""
 
 import uuid
 
 from fastapi import APIRouter, Depends
 
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import BaseController
 
 from media_sdk_m8 import ScanJobPayload
 
-from media_service.app.deps import CurrentUser, SessionDep, StorageDep
+from media_service.app.deps import (
+    CurrentWriter,
+    SessionDep,
+    StorageDep,
+    require_writer,
+)
 from media_service.controllers.uploads import UploadsController
 from media_service.core.arq import ArqPoolDep, enqueue_scan
 from media_service.core.rate_limit import RateLimiter
@@ -19,7 +29,11 @@ from media_service.schemas.uploads import (
     UploadInitiateResponse,
 )
 
-router = APIRouter(prefix="/uploads", tags=["uploads"])
+router = APIRouter(
+    prefix="/uploads",
+    tags=["uploads"],
+    dependencies=[Depends(require_writer)],
+)
 
 _initiate_limit = RateLimiter("uploads:initiate", limit=20, window_seconds=60)
 _complete_limit = RateLimiter("uploads:complete", limit=20, window_seconds=60)
@@ -34,7 +48,7 @@ _complete_limit = RateLimiter("uploads:complete", limit=20, window_seconds=60)
 def initiate_upload(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentWriter,
     storage: StorageDep,
     body: UploadInitiateRequest,
 ) -> UploadInitiateResponse:
@@ -56,7 +70,7 @@ def initiate_upload(
 async def complete_upload(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentWriter,
     storage: StorageDep,
     arq_pool: ArqPoolDep,
     session_id: uuid.UUID,
@@ -96,7 +110,7 @@ async def complete_upload(
 def abort_upload(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentWriter,
     storage: StorageDep,
     session_id: uuid.UUID,
 ) -> None:

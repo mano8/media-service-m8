@@ -1,5 +1,5 @@
 # ---------- BUILD STAGE ----------
-FROM python:3.14-slim@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97 AS builder
+FROM python:3.14-slim@sha256:83ff1d245a3d57d04152252d3ef9cb361494d0b3395abd65a5ebe91c401c8e83 AS builder
 
 WORKDIR /install
 
@@ -28,7 +28,7 @@ RUN pip install --upgrade "pip==26.1.1" && \
 
 
 # ---------- RUNTIME STAGE ----------
-FROM python:3.14-slim@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97
+FROM python:3.14-slim@sha256:83ff1d245a3d57d04152252d3ef9cb361494d0b3395abd65a5ebe91c401c8e83
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -50,6 +50,29 @@ RUN groupadd --gid 1000 appuser && \
 WORKDIR /opt
 
 COPY --from=builder /install /usr/local
+
+# Strip the installer tooling from the runtime image. The entrypoint is
+# `docker_start.sh` -> alembic + uvicorn; this image is built from a hash-locked
+# set and never installs anything at run time, so pip, setuptools and wheel are
+# pure attack surface. Mirrors media-worker-m8.
+#
+# At the digest pinned above the base ships pip alone — setuptools and wheel are
+# already absent and their uninstall reports "Skipping" — so this layer removes
+# pip today and stands as a guard for the rest: a later base bump that
+# reintroduces setuptools cannot silently add its CVEs (e.g. CVE-2025-47273 in
+# 70.3.0) to the image.
+#
+# Ordered after the COPY above so the builder's tree cannot reintroduce them,
+# and pip uninstalls itself last because the earlier uninstalls need it.
+# The two checks below are the guard, and fail the build if the removal broke
+# anything: the import line covers the declared runtime graph (it fails if any
+# dependency needed `pkg_resources`/`setuptools` at import time), and the
+# console-script line covers the entrypoint's own binaries.
+RUN python -m pip uninstall -y setuptools wheel && \
+    python -m pip uninstall -y pip && \
+    python -c "import alembic, arq, asyncpg, fastapi, fastapi_m8, filetype, httpx, jinja2, media_sdk_m8, minio, prometheus_client, pydantic, pydantic_settings, redis, slugify, sqlalchemy, sqlmodel, starlette, tenacity, uvicorn" && \
+    alembic --version && uvicorn --version && gunicorn --version
+
 COPY --chown=appuser:appuser ./media_service ./media_service
 
 RUN find /opt/media_service/scripts -name "*.sh" -exec sed -i 's/\r$//' {} + && \

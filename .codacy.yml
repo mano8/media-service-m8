@@ -26,3 +26,5 @@ exclude_paths:
   - "**/alembic/versions/**"
   - "docker_compose/**"
   - "AGENTS.md"
+  - "CLAUDE.md"
+  - "REPOSITORY_CONTEXT.md"

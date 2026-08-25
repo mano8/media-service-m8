@@ -7,7 +7,7 @@ import redis as redis_lib
 from fastapi import Depends, HTTPException, Request, status
 
 import media_service.metrics as _metrics
-from media_service.core.deps import CurrentUser
+from media_service.core.deps import CurrentPrincipal, OptionalPrincipal
 from media_service.core.media_redis import get_media_redis_config
 
 _logger = logging.getLogger(__name__)
@@ -113,25 +113,55 @@ class RateLimiter:
     def _check(self, redis_client: redis_lib.Redis, key: str, limit: int) -> None:
         _check_window(redis_client, key, limit, self.window_seconds)
 
-    def __call__(
+    def _apply(
         self,
+        redis_client: redis_lib.Redis,
         request: Request,
-        current_user: CurrentUser,
-        redis_client: RedisDep,
+        user_id: str | None,
     ) -> None:
-        """Increment the counters and raise HTTP 429 if a limit is exceeded."""
-        user_key = _config.key(f"ratelimit:{self.action}", str(current_user.id))
+        """Run the per-user (when identified) and per-IP windows for one call."""
         peer = request.client.host if request.client else "unknown"
         ip = "".join(c for c in peer if c.isprintable())[:_MAX_IP_LEN]
         ip_key = _config.key(f"ratelimit:ip:{self.action}", ip)
         mode = _resolve_failure_mode(self._failure_mode)
         try:
-            self._check(redis_client, user_key, self.limit)
+            if user_id is not None:
+                user_key = _config.key(f"ratelimit:{self.action}", user_id)
+                self._check(redis_client, user_key, self.limit)
             self._check(redis_client, ip_key, self.limit * _IP_LIMIT_FACTOR)
         except HTTPException:
             raise
         except Exception as exc:
             _handle_redis_error(exc, self.action, mode)
+
+    def __call__(
+        self,
+        request: Request,
+        current_user: CurrentPrincipal,
+        redis_client: RedisDep,
+    ) -> None:
+        """Increment the counters and raise HTTP 429 if a limit is exceeded."""
+        self._apply(redis_client, request, str(current_user.id))
+
+
+class OptionalRateLimiter(RateLimiter):
+    """FastAPI callable dependency for the public read surface (A16).
+
+    Keyed exactly like :class:`RateLimiter` once a caller is identified, and
+    per-IP only while they are not. Mounting :class:`RateLimiter` on a route
+    that admits anonymous callers would defeat the route: its ``CurrentUser``
+    dependency raises 401 before the handler ever runs.
+    """
+
+    def __call__(  # type: ignore[override]
+        self,
+        request: Request,
+        current_user: OptionalPrincipal,
+        redis_client: RedisDep,
+    ) -> None:
+        """Increment the counters and raise HTTP 429 if a limit is exceeded."""
+        user_id = None if current_user is None else str(current_user.id)
+        self._apply(redis_client, request, user_id)
 
 
 class AnonRateLimiter:

@@ -1,91 +1,10 @@
-"""Tests for media_service/core/events.py — auth event-stream handlers."""
+"""Tests for media_service/core/events.py — auth event-stream wiring."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi_m8 import AuthStreamEvent
 
-from media_service.core.events import (
-    handle_auth_event,
-    handle_auth_gap,
-    make_lifespan_extras,
-)
-
-
-def _make_auth(**overrides):
-    auth = MagicMock()
-    for k, v in overrides.items():
-        setattr(auth, k, v)
-    return auth
-
-
-def _make_event(event_type: str, extra: dict | None = None) -> AuthStreamEvent:
-    payload = {"event_type": event_type}
-    if extra:
-        payload.update(extra)
-    return AuthStreamEvent(event_type=event_type, payload=payload, event_id=None)
-
-
-# ── handle_auth_event ────────────────────────────────────────────────────────
-
-
-@pytest.mark.anyio
-async def test_session_revoked_with_jti_calls_evict_jti():
-    auth = _make_auth()
-    event = _make_event("session.revoked", {"user_id": "uid1", "jti": "jti1"})
-    await handle_auth_event(event, auth=auth)
-    auth.evict_jti.assert_called_once_with("jti1")
-    auth.evict_user.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_session_revoked_without_jti_calls_evict_user():
-    auth = _make_auth()
-    event = _make_event("session.revoked", {"user_id": "uid2"})
-    await handle_auth_event(event, auth=auth)
-    auth.evict_user.assert_called_once_with("uid2")
-    auth.evict_jti.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_user_deleted_calls_evict_user():
-    auth = _make_auth()
-    event = _make_event("user.deleted", {"user_id": "uid3"})
-    await handle_auth_event(event, auth=auth)
-    auth.evict_user.assert_called_once_with("uid3")
-    auth.evict_jti.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_unknown_event_type_is_ignored():
-    auth = _make_auth()
-    event = _make_event("other.event")
-    await handle_auth_event(event, auth=auth)
-    auth.evict_jti.assert_not_called()
-    auth.evict_user.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_handler_exception_is_swallowed():
-    auth = _make_auth(evict_jti=MagicMock(side_effect=RuntimeError("boom")))
-    event = _make_event("session.revoked", {"user_id": "uid4", "jti": "jti4"})
-    await handle_auth_event(event, auth=auth)  # must not raise
-
-
-# ── handle_auth_gap ──────────────────────────────────────────────────────────
-
-
-@pytest.mark.anyio
-async def test_gap_calls_flush_cache():
-    auth = _make_auth()
-    await handle_auth_gap(auth=auth)
-    auth.flush_cache.assert_called_once()
-
-
-@pytest.mark.anyio
-async def test_gap_exception_is_swallowed():
-    auth = _make_auth(flush_cache=MagicMock(side_effect=RuntimeError("boom")))
-    await handle_auth_gap(auth=auth)  # must not raise
+from media_service.core.events import make_lifespan_extras
 
 
 # ── make_lifespan_extras ─────────────────────────────────────────────────────
@@ -100,6 +19,9 @@ def test_returns_none_when_introspection_url_unset():
 
 @pytest.mark.anyio
 async def test_returns_factory_and_starts_stops_client():
+    """The stream client is built with the SDK's own dispatch, not a local
+    re-implementation: ``on_event`` must be ``auth.handle_auth_event`` and
+    ``on_gap`` must delegate to ``auth.flush_cache``."""
     settings = MagicMock()
     settings.INTROSPECTION_URL = "http://auth:8000/private/v1/jti-status"
 
@@ -124,10 +46,12 @@ async def test_returns_factory_and_starts_stops_client():
     mock_client.start.assert_called_once()
     mock_client.stop.assert_awaited_once()
 
-    # Exercise the captured closures to cover the inner functions.
-    event = _make_event("user.deleted", {"user_id": "uid-x"})
-    await captured["on_event"](event)
+    # The client must be wired straight to the SDK's own dispatch methods —
+    # no locally re-derived handler in between.
+    assert captured["on_event"] is auth.handle_auth_event
+
     await captured["on_gap"]()
+    auth.flush_cache.assert_called_once()
 
 
 # ── isolation guard ──────────────────────────────────────────────────────────

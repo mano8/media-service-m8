@@ -6,7 +6,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "List categories — requires valid bearer token"
+    "note": "List categories — reader tier (A16)"
   },
   {
     "path": "/media/category/add/",
@@ -15,7 +15,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Create category — requires valid bearer token"
+    "note": "Create category — writer tier (A16)"
   },
   {
     "path": "/media/category/delete/{item_id}/",
@@ -24,7 +24,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Delete category — requires valid bearer token + ownership"
+    "note": "Delete category — writer tier + ownership (A16)"
   },
   {
     "path": "/media/category/edit/{item_id}/",
@@ -33,7 +33,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Update category — requires valid bearer token + ownership"
+    "note": "Update category — writer tier + ownership (A16)"
   },
   {
     "path": "/media/category/get/{item_id}/",
@@ -42,7 +42,16 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Get category by id — requires valid bearer token + ownership"
+    "note": "Get category by id — reader tier + ownership (A16)"
+  },
+  {
+    "path": "/media/category/tree/",
+    "method": "GET",
+    "tag": "category",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Nested category tree with per-node object counts — reader tier (A16, `D-filter`)"
   },
   {
     "path": "/media/dashboard/users/activity/",
@@ -51,7 +60,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "All-users activity summary — requires valid bearer token (superuser sees all)"
+    "note": "All-users activity summary — writer tier (A16; superuser sees all)"
   },
   {
     "path": "/media/dashboard/users/activity/current/",
@@ -60,7 +69,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Current-user activity summary — requires valid bearer token"
+    "note": "Current-user activity summary — writer tier (A16)"
   },
   {
     "path": "/media/health/",
@@ -189,6 +198,42 @@
     "note": "List expired upload sessions still in INITIATED state — requires superuser"
   },
   {
+    "path": "/media/v1/export",
+    "method": "POST",
+    "tag": "transfer",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Export the caller's scoped media as a manifest (streamed JSON, no bytes) or as an archive job (202, assembled by the maintenance worker) — writer tier (U9)"
+  },
+  {
+    "path": "/media/v1/export/{job_id}",
+    "method": "GET",
+    "tag": "transfer",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Archive export status, with a presigned download once assembled — reader tier + ownership (U9)"
+  },
+  {
+    "path": "/media/v1/import",
+    "method": "POST",
+    "tag": "transfer",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Import a collection from an exported manifest or archive (multipart) — writer tier (U9); rate-limited"
+  },
+  {
+    "path": "/media/v1/internal/export-jobs/{job_id}",
+    "method": "PATCH",
+    "tag": "internal",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "Apply delegated archive progress/result from media-worker — internal only; requires MEDIA_INTERNAL_SERVICE_TOKEN bearer"
+  },
+  {
     "path": "/media/v1/internal/objects/{object_id}/scan-result",
     "method": "POST",
     "tag": "internal",
@@ -219,10 +264,10 @@
     "path": "/media/v1/objects",
     "method": "GET",
     "tag": "objects",
-    "exposure": "authenticated",
+    "exposure": "public",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "List media objects (cursor-paginated) — requires valid bearer token"
+    "note": "List media objects (cursor-paginated) — public: anonymous callers see live PUBLIC objects only; authenticated callers see their own plus PUBLIC/TENANT (A16); rate-limited"
   },
   {
     "path": "/media/v1/objects/{object_id}",
@@ -231,16 +276,16 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Soft-delete a media object — requires valid bearer token + ownership"
+    "note": "Soft-delete a media object — writer tier + ownership (A16)"
   },
   {
     "path": "/media/v1/objects/{object_id}",
     "method": "GET",
     "tag": "objects",
-    "exposure": "authenticated",
+    "exposure": "public",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Get media object metadata — requires valid bearer token + ownership"
+    "note": "Get media object metadata — public for PUBLIC objects; otherwise owner/superuser (anonymous denials answer 404, never 403) (A16)"
   },
   {
     "path": "/media/v1/objects/{object_id}",
@@ -249,16 +294,16 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Patch media object metadata — requires valid bearer token + ownership"
+    "note": "Patch media object metadata — writer tier + ownership (A16)"
   },
   {
     "path": "/media/v1/objects/{object_id}/download-url",
     "method": "GET",
     "tag": "objects",
-    "exposure": "authenticated",
+    "exposure": "public",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Generate presigned download URL — requires valid bearer token + ownership; rate-limited"
+    "note": "Generate presigned download URL — public for PUBLIC, scan-clean objects; otherwise owner/superuser (A16); rate-limited"
   },
   {
     "path": "/media/v1/objects/{object_id}/shares",
@@ -267,7 +312,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "List share links for an object — requires valid bearer token + ownership"
+    "note": "List share links for an object — reader tier + ownership (A16)"
   },
   {
     "path": "/media/v1/objects/{object_id}/shares",
@@ -276,16 +321,16 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Mint a share link — requires valid bearer token + ownership"
+    "note": "Mint a share link — writer tier + ownership (A16)"
   },
   {
     "path": "/media/v1/objects/{object_id}/variants",
     "method": "GET",
     "tag": "variants",
-    "exposure": "authenticated",
+    "exposure": "public",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "List generated variants for an object — requires valid bearer token + ownership"
+    "note": "List generated variants — follows the source object's visibility, anonymous callers included (A16)"
   },
   {
     "path": "/media/v1/objects/{object_id}/variants/jobs/{job_id}",
@@ -294,7 +339,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Get variant job progress — requires valid bearer token + ownership"
+    "note": "Get variant job progress — reader tier + ownership (A16)"
   },
   {
     "path": "/media/v1/objects/{object_id}/variants/{variant_id}",
@@ -303,7 +348,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Delete a generated variant — requires valid bearer token + ownership"
+    "note": "Delete a generated variant — writer tier + ownership (A16)"
   },
   {
     "path": "/media/v1/objects/{object_id}/variants:generate",
@@ -312,7 +357,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Create variant job and enqueue — requires valid bearer token + ownership; rate-limited"
+    "note": "Create variant job and enqueue — writer tier + ownership (A16); rate-limited"
   },
   {
     "path": "/media/v1/presets",
@@ -321,7 +366,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "List built-in and user presets — requires valid bearer token"
+    "note": "List built-in and user presets — reader tier (A16)"
   },
   {
     "path": "/media/v1/presets",
@@ -330,7 +375,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Create a user preset — requires valid bearer token"
+    "note": "Create a user preset — writer tier (A16)"
   },
   {
     "path": "/media/v1/presets/{preset_id}",
@@ -339,7 +384,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Delete a user preset — requires valid bearer token + ownership"
+    "note": "Delete a user preset — writer tier + ownership (A16)"
   },
   {
     "path": "/media/v1/presets/{preset_id}",
@@ -348,7 +393,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Replace a user preset's recipe — requires valid bearer token + ownership"
+    "note": "Replace a user preset's recipe — writer tier + ownership (A16)"
   },
   {
     "path": "/media/v1/shares/{token_id}",
@@ -357,7 +402,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Revoke a share link — requires valid bearer token + ownership"
+    "note": "Revoke a share link — writer tier + ownership (A16)"
   },
   {
     "path": "/media/v1/shares/{token}",
@@ -375,7 +420,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Create a presigned PUT URL and upload session — requires valid bearer token; rate-limited"
+    "note": "Create a presigned PUT URL and upload session — writer tier (A16); rate-limited"
   },
   {
     "path": "/media/v1/uploads/{session_id}/abort",
@@ -384,7 +429,7 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Cancel an upload session and remove partial object — requires valid bearer token + ownership"
+    "note": "Cancel an upload session and remove partial object — writer tier + ownership (A16)"
   },
   {
     "path": "/media/v1/uploads/{session_id}/complete",
@@ -393,6 +438,6 @@
     "exposure": "authenticated",
     "in_openapi": true,
     "traefik_router": "public",
-    "note": "Verify object in storage and promote to MediaObject — requires valid bearer token + ownership; rate-limited"
+    "note": "Verify object in storage and promote to MediaObject — writer tier + ownership (A16); rate-limited"
   }
 ]

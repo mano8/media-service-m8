@@ -14,9 +14,9 @@ References: plan item 5.5 (consumer side), auth-sdk-m8 2.0.1 / fastapi-m8 3.0.0.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
@@ -29,21 +29,48 @@ from pydantic_settings import SettingsConfigDict
 from auth_sdk_m8.schemas.user import UserModel
 from fastapi_m8 import ConsumerServiceSettings, build_auth_deps
 
-# ── Isolated settings (reads from constructor kwargs; env file suppressed) ────
+# ── Isolated settings (constructor kwargs only — no ambient state) ───────────
 
-_ACCESS_SECRET: str = os.environ.get(
-    "ACCESS_SECRET_KEY", "TestSecret!Key4UnitTests_onlyXYZ0987"
-)
-_REFRESH_SECRET: str = os.environ.get(
-    "REFRESH_SECRET_KEY", "TestRefresh!Key4UnitTests_onlyABC1234"
-)
-_DB_PASSWORD: str = os.environ.get("DB_PASSWORD", "TestDb!Pass1secure")
+# Fixed test credentials. `_BASE` and `_mint_token` must agree on the signing
+# key, so it has to be one constant: reading it from the environment let a real
+# ACCESS_SECRET_KEY in the developer's shell reach a test that mints its own
+# tokens, and a real key that fails the SDK's strength check took the whole
+# suite down at import.
+_ACCESS_SECRET: str = "TestSecret!Key4UnitTests_onlyXYZ0987"
+_REFRESH_SECRET: str = "TestRefresh!Key4UnitTests_onlyABC1234"
+_DB_PASSWORD: str = "TestDb!Pass1secure"
 
 
 class _IsolatedConsumerSettings(ConsumerServiceSettings):
-    """ConsumerServiceSettings that reads ONLY from constructor kwargs."""
+    """ConsumerServiceSettings that reads ONLY from constructor kwargs.
+
+    ``env_file=None`` suppresses the dotenv source alone. It does **not**
+    suppress the process environment, the ``<FIELD>_FILE`` secret-file source,
+    the secrets dir or Vault — ``CommonSettings.settings_customise_sources``
+    wires all of those in below init kwargs. So a shell carrying, say,
+    ``ACCESS_REVOCATION_FAILURE_MODE`` (exported by hand, or sourced from one of
+    the workspace stack env files) leaked straight into the matrix below and
+    flipped this file red on a machine whose only difference from CI was an
+    exported variable.
+
+    Restricting the source list to ``init_settings`` makes the first line of
+    this docstring true: every field these tests depend on comes from ``_BASE``
+    and the per-test overrides, and from nowhere else.
+    """
 
     model_config = SettingsConfigDict(env_file=None)
+
+    @classmethod
+    def settings_customise_sources(  # type: ignore[override]
+        cls,
+        _settings_cls: type[ConsumerServiceSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        """Constructor kwargs only — drop env, dotenv and secret-file sources."""
+        return (init_settings,)
 
 
 _BASE: dict = {
@@ -108,6 +135,28 @@ def _mint_token() -> str:
         "is_superuser": False,
     }
     return jwt.encode(payload, _ACCESS_SECRET, algorithm="HS256")
+
+
+# ── Isolation lock ───────────────────────────────────────────────────────────
+
+
+def test_isolated_settings_ignore_the_ambient_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exported override must not reach the degradation matrix (regression).
+
+    Before ``_IsolatedConsumerSettings`` pinned its source list, exporting
+    ``ACCESS_REVOCATION_FAILURE_MODE=fail_open`` was enough to turn
+    ``test_fail_closed_is_the_consumer_default`` red — the test that exists
+    precisely to prove the default is *not* fail_open.
+    """
+    monkeypatch.setenv("ACCESS_REVOCATION_FAILURE_MODE", "fail_open")
+    monkeypatch.setenv("AUTH_PREFIX", "/hijacked")
+
+    settings = _stateful_settings()
+
+    assert settings.ACCESS_REVOCATION_FAILURE_MODE == "fail_closed"
+    assert settings.AUTH_PREFIX == "/user"
 
 
 # ── Env-example audit ─────────────────────────────────────────────────────────

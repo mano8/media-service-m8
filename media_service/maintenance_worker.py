@@ -5,13 +5,15 @@ This is a *second run-mode of the same media-service image*: launched as
 process. It owns the DB-coupled housekeeping jobs (hard-purge, stale-upload
 expiry, orphan reconciliation) that must run on a schedule with direct DB +
 storage access — work that does **not** belong in the DB-free, enqueue-driven
-media-worker-m8 image.
+media-worker-m8 image. Archive-export assembly is the complementary case: the
+web process resolves database scope into the shared SDK payload first, allowing
+the DB-free worker to stream the commissioned objects without direct DB access.
 
 The FastAPI app stays sync; only this module is async (arq is async by nature).
 Each cron opens a short-lived ``engine.session()`` and calls straight into the
 sync :class:`MaintenanceController`. Housekeeping is serial and infrequent, so
 briefly blocking the event loop in the sync controller is acceptable;
-``asyncio.to_thread`` is the noted escape hatch if that ever changes.
+``asyncio.to_thread`` remains the noted escape hatch if that ever changes.
 
 Deployed ``replicas: 1`` so arq's cron fires exactly once per schedule.
 """
@@ -25,7 +27,7 @@ from arq.connections import RedisSettings
 
 from media_service.controllers.maintenance import MaintenanceController
 from media_service.controllers.outbox import OutboxDeliveryController
-from media_service.core.arq import get_arq_redis_settings
+from media_service.core.arq import MAINTENANCE_QUEUE, get_arq_redis_settings
 from media_service.core.config import settings
 from media_service.core.deps import engine
 from media_service.core.ssrf import WebhookPolicy, build_url_guard
@@ -122,10 +124,11 @@ class WorkerSettings:
     # them as "function not found", silently breaking the upload scan pipeline,
     # while media-worker pops the maintenance crons. Keep the maintenance crons on
     # their own queue; media-worker + the web producer stay on the default queue.
-    queue_name: str = "arq:maintenance"
+    queue_name: str = MAINTENANCE_QUEUE
     on_startup = startup
     on_shutdown = shutdown
-    # Exposed as functions too so an operator can enqueue them on demand.
+    # The crons are exposed as functions too, so an operator can enqueue them
+    # on demand. Archive assembly is delegated to media-worker-m8 (`P2 U11`).
     functions = [
         hard_purge_expired,
         expire_stale_uploads,

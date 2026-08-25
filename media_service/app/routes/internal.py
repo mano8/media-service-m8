@@ -9,14 +9,16 @@ import uuid
 
 from fastapi import APIRouter, Depends
 
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import BaseController
 
 from media_service.app.deps import SessionDep
 from media_service.controllers.objects import ObjectsController
+from media_service.controllers.transfer import TransferController
 from media_service.controllers.variants import VariantsController
 from media_service.core.deps import require_service_token
 from media_service.db_models.media_objects import MediaObjectPublic
 from media_service.schemas.objects import ScanResultRequest
+from media_service.schemas.transfer import ExportJobPublic, ExportJobUpdate
 from media_service.schemas.variants import (
     VariantJobPublic,
     VariantJobUpdate,
@@ -34,6 +36,20 @@ router = APIRouter(
     # additionally blocks /media/v1/internal at the public ingress.
     include_in_schema=False,
 )
+
+
+@router.patch(
+    "/export-jobs/{job_id}",
+    response_model=ExportJobPublic,
+    responses=BaseController.get_error_responses(),
+)
+def update_export_job(
+    *, session: SessionDep, job_id: uuid.UUID, body: ExportJobUpdate
+) -> ExportJobPublic:
+    """Apply a delegated archive worker's lifecycle/result callback."""
+    return TransferController.update_export_job(
+        session=session, job_id=job_id, body=body
+    )
 
 
 @router.post(

@@ -39,16 +39,63 @@ _AUTH_PROD_EXAMPLE = _HARDENED_DIR / "auth.env.production.example"
 # ── Dependency floor ──────────────────────────────────────────────────────────
 
 
-def test_fastapi_m8_floor_is_3_1():
-    """requirements_base.txt must pin fastapi-m8 floor at >=3.1.0 for 9.1 auth."""
-    content = _REQS_BASE.read_text()
-    for line in content.splitlines():
+# The oldest fastapi-m8 that re-exports the full `auth_sdk_m8` symbol set this
+# repo relies on (`BaseController`, `UserModel`, `TimestampMixin`, `find_dotenv`,
+# `make_scrape_credential_guard`, `REGISTRY`, `render_metrics`, `ResponseMessage`,
+# `ResponseModelBase`). The floor may be raised above this freely; it must never
+# drop below it, or the operator ruling that `auth-sdk-m8` is never called from a
+# consumer repository (§F5) becomes unsatisfiable.
+_REEXPORT_SURFACE_FLOOR = (4, 3, 0)
+
+
+def _declared_fastapi_m8_floor() -> tuple[int, ...]:
+    """Parse the `>=` floor of the fastapi-m8 line in requirements_base.txt."""
+    for line in _REQS_BASE.read_text().splitlines():
         if line.startswith("fastapi-m8"):
-            assert re.search(r">=\s*3\.[1-9]", line), (
-                f"fastapi-m8 floor must be >=3.1.0 for per-consumer auth: {line!r}"
-            )
-            return
+            m = re.search(r">=\s*(\d+)\.(\d+)\.(\d+)", line)
+            assert m, f"fastapi-m8 line declares no >= floor: {line!r}"
+            return tuple(int(g) for g in m.groups())
     pytest.fail("fastapi-m8 not found in requirements_base.txt")
+
+
+def test_fastapi_m8_floor_covers_the_sdk_reexport_surface():
+    """The declared floor must be at least the re-export surface floor (A19).
+
+    Asserted as a version *comparison*, not a literal string match. The previous
+    form hard-coded ``>=4.3.0`` and had already been hand-edited once (from the
+    4.2.2-era floor); every subsequent raise silently required editing this test
+    too, which is the same stale-literal failure mode ``fastapi-m8``'s own A30
+    work removed from ``COMPAT_MATRIX``. Raising the floor is now a one-line
+    change to ``requirements_base.txt``.
+    """
+    floor = _declared_fastapi_m8_floor()
+    assert floor >= _REEXPORT_SURFACE_FLOOR, (
+        f"fastapi-m8 floor {floor} is below the SDK re-export surface "
+        f"{_REEXPORT_SURFACE_FLOOR}; the consumer could resolve a version that "
+        "does not re-export the symbols media_service imports through fastapi_m8."
+    )
+
+
+def test_fastapi_m8_floor_matches_the_resolved_constraint_pin():
+    """The declared floor must agree with what constraints.txt actually pins.
+
+    Catches the drift where the floor is raised but the compiled constraints are
+    left resolving an older version (or vice versa) — the pair that must move
+    together for the lock to mean anything.
+    """
+    floor = _declared_fastapi_m8_floor()
+    pinned = None
+    for line in (_ROOT / "constraints.txt").read_text().splitlines():
+        if line.startswith("fastapi-m8"):
+            m = re.search(r"==\s*(\d+)\.(\d+)\.(\d+)", line)
+            assert m, f"constraints.txt fastapi-m8 line has no == pin: {line!r}"
+            pinned = tuple(int(g) for g in m.groups())
+            break
+    assert pinned is not None, "fastapi-m8 not pinned in constraints.txt"
+    assert pinned >= floor, (
+        f"constraints.txt pins fastapi-m8 {pinned} but requirements_base.txt "
+        f"declares a floor of {floor}; regenerate constraints.txt."
+    )
 
 
 # ── Env example audits ────────────────────────────────────────────────────────

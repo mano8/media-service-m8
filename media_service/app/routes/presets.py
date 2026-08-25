@@ -1,12 +1,22 @@
-"""Public routes for user-managed image presets."""
+"""Routes for user-managed image presets.
+
+A preset is an owned record with no public form — the built-in catalogue is
+code, not data — so the router mounts the reader floor and the three mutations
+name ``CurrentWriter`` (A16).
+"""
 
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import BaseController
 
-from media_service.app.deps import CurrentUser, SessionDep
+from media_service.app.deps import (
+    CurrentReader,
+    CurrentWriter,
+    SessionDep,
+    require_reader,
+)
 from media_service.controllers.presets import PresetsController
 from media_service.schemas.presets import (
     ImagePresetCreate,
@@ -14,7 +24,11 @@ from media_service.schemas.presets import (
     ImagePresetUpdate,
 )
 
-router = APIRouter(prefix="/presets", tags=["presets"])
+router = APIRouter(
+    prefix="/presets",
+    tags=["presets"],
+    dependencies=[Depends(require_reader)],
+)
 
 
 @router.get(
@@ -25,7 +39,7 @@ router = APIRouter(prefix="/presets", tags=["presets"])
 def list_presets(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentReader,
 ) -> list[ImagePresetPublic]:
     """Return built-in presets merged with the caller's named presets."""
     return PresetsController.list_presets(session=session, current_user=current_user)
@@ -40,7 +54,7 @@ def list_presets(
 def create_preset(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentWriter,
     body: ImagePresetCreate,
 ) -> ImagePresetPublic:
     """Create a user-owned named preset."""
@@ -57,7 +71,7 @@ def create_preset(
 def update_preset(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentWriter,
     preset_id: uuid.UUID,
     body: ImagePresetUpdate,
 ) -> ImagePresetPublic:
@@ -79,7 +93,7 @@ def update_preset(
 def delete_preset(
     *,
     session: SessionDep,
-    current_user: CurrentUser,
+    current_user: CurrentWriter,
     preset_id: uuid.UUID,
 ) -> None:
     """Delete a user preset."""

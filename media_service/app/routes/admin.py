@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, status
 
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import BaseController
 
 from media_service.app.deps import SessionDep, StorageDep
 from media_service.controllers.admin import AdminController
