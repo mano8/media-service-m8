@@ -47,6 +47,7 @@ from media_service.core.category_tree import (
     collect_branch_ids,
     count_category_nodes,
 )
+from media_service.core.config import settings
 from media_service.core.tenancy import user_tenant_id
 from media_service.db_models.categories import (
     CategoriesPublic,
@@ -196,6 +197,86 @@ def _reject_cycle(session: Session, category_id: int, parent_id: int) -> None:
         if ancestor is None:
             return
         ancestor_id = ancestor.parent_id
+
+
+def _categories_in_write_scope(
+    session: Session,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_id: uuid.UUID,
+) -> list[Category]:
+    """Load one tenant/owner tree for structural depth validation."""
+    statement = select(Category)
+    if tenant_id is not None:
+        statement = statement.where(col(Category.tenant_id) == tenant_id)
+    else:
+        statement = statement.where(
+            and_(
+                col(Category.tenant_id).is_(None),
+                col(Category.owner_id) == owner_id,
+            )
+        )
+    return list(session.exec(statement).all())
+
+
+def _reject_depth_overflow(
+    session: Session,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_id: uuid.UUID,
+    parent_id: int | None,
+    category_id: int | None = None,
+) -> None:
+    """Keep a newly created or moved branch within the category depth cap.
+
+    The import boundary already applies ``MEDIA_IMPORT_MAX_CATEGORY_DEPTH``.
+    Applying the same ceiling here prevents the ordinary CRUD surface from
+    constructing a tree that a later export cannot re-import. Both walks are
+    iterative and cycle-bounded, so legacy corrupt rows cannot hang a request.
+    """
+    categories = _categories_in_write_scope(
+        session, tenant_id=tenant_id, owner_id=owner_id
+    )
+    rows = {category.id: category for category in categories}
+
+    parent_depth = 0
+    ancestor_id = parent_id
+    seen_ancestors: set[int] = set()
+    while (
+        ancestor_id is not None
+        and ancestor_id in rows
+        and ancestor_id not in seen_ancestors
+    ):
+        seen_ancestors.add(ancestor_id)
+        parent_depth += 1
+        ancestor_id = rows[ancestor_id].parent_id
+
+    branch_height = 1
+    if category_id is not None:
+        children: dict[int, list[int]] = {}
+        for category in categories:
+            if category.parent_id is not None:
+                children.setdefault(category.parent_id, []).append(category.id)
+        pending = [(category_id, 1)]
+        seen_descendants: set[int] = set()
+        while pending:
+            current_id, height = pending.pop()
+            if current_id in seen_descendants:
+                continue
+            seen_descendants.add(current_id)
+            branch_height = max(branch_height, height)
+            pending.extend(
+                (child_id, height + 1) for child_id in children.get(current_id, ())
+            )
+
+    if parent_depth + branch_height > settings.MEDIA_IMPORT_MAX_CATEGORY_DEPTH:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Category tree cannot exceed "
+                f"{settings.MEDIA_IMPORT_MAX_CATEGORY_DEPTH} levels."
+            ),
+        )
 
 
 def _sibling_with_slug(
@@ -584,6 +665,12 @@ class CategoryController:
                 tenant_id=tenant_id,
                 owner_id=owner_id,
             )
+        _reject_depth_overflow(
+            session,
+            tenant_id=tenant_id,
+            owner_id=owner_id,
+            parent_id=req.parent_id,
+        )
         _reject_duplicate_slug(
             session,
             slug=req.slug,
@@ -628,6 +715,14 @@ class CategoryController:
                 owner_id=row.owner_id,
             )
             _reject_cycle(session, row.id, parent_id)
+        if parent_id != row.parent_id:
+            _reject_depth_overflow(
+                session,
+                tenant_id=row.tenant_id,
+                owner_id=row.owner_id,
+                parent_id=parent_id,
+                category_id=row.id,
+            )
         if (parent_id, slug) != (row.parent_id, row.slug):
             _reject_duplicate_slug(
                 session,

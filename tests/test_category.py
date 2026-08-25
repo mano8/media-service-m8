@@ -11,6 +11,7 @@ from sqlmodel import Session, col, select
 
 from auth_sdk_m8.schemas.user import UserModel
 from media_service.controllers.category import CategoryController
+from media_service.core.config import settings
 from media_service.db_models.categories import (
     Category,
     CategoryCreate,
@@ -532,6 +533,21 @@ def test_create_under_a_parent_nests_the_new_category(
     assert resp.json()["parent_id"] == parent.id
 
 
+def test_create_cannot_exceed_the_category_depth_cap(
+    client: TestClient, session: Session, current_user, monkeypatch
+):
+    monkeypatch.setattr(settings, "MEDIA_IMPORT_MAX_CATEGORY_DEPTH", 2)
+    root = _make_category(session, current_user.id, "Root")
+    child = _make_category(session, current_user.id, "Child", parent_id=root.id)
+
+    resp = client.post(
+        "/media/category/add/", json={"name": "TooDeep", "parent_id": child.id}
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Category tree cannot exceed 2 levels."
+
+
 def test_create_under_a_missing_parent_is_404(client: TestClient):
     resp = client.post(
         "/media/category/add/", json={"name": "Orphan", "parent_id": 99999}
@@ -659,6 +675,27 @@ def test_a_preexisting_cycle_on_disk_does_not_hang_the_walk(
     assert out.parent_id == first.id
 
 
+def test_reparenting_a_corrupt_cyclic_branch_bounds_the_depth_walk(
+    session: Session, current_user
+):
+    """A descendant loop is visited once and the successful move repairs it."""
+    first = _make_category(session, current_user.id, "First")
+    second = _make_category(session, current_user.id, "Second", parent_id=first.id)
+    first.parent_id = second.id
+    session.add(first)
+    session.commit()
+    destination = _make_category(session, current_user.id, "Destination")
+
+    out = CategoryController.update_category(
+        session=session,
+        current_user=current_user,
+        category_id=first.id,
+        req=CategoryUpdate(name="First", parent_id=destination.id),
+    )
+
+    assert out.parent_id == destination.id
+
+
 def test_a_dangling_parent_reference_ends_the_cycle_walk(
     session: Session, current_user
 ):
@@ -689,6 +726,26 @@ def test_reparenting_to_a_root_is_allowed(
     )
     assert resp.status_code == 200
     assert resp.json()["parent_id"] is None
+
+
+def test_reparent_cannot_push_a_branch_past_the_depth_cap(
+    client: TestClient, session: Session, current_user, monkeypatch
+):
+    monkeypatch.setattr(settings, "MEDIA_IMPORT_MAX_CATEGORY_DEPTH", 3)
+    destination = _make_category(session, current_user.id, "Destination")
+    destination_child = _make_category(
+        session, current_user.id, "DestinationChild", parent_id=destination.id
+    )
+    branch = _make_category(session, current_user.id, "Branch")
+    _make_category(session, current_user.id, "BranchChild", parent_id=branch.id)
+
+    resp = client.put(
+        f"/media/category/edit/{branch.id}/",
+        json={"name": "Branch", "parent_id": destination_child.id},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Category tree cannot exceed 3 levels."
 
 
 def test_duplicate_root_slug_is_rejected(

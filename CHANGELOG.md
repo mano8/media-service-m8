@@ -15,6 +15,10 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Changed
 
+- **Category depth is now consistent across CRUD and transfer.** The existing
+  `MEDIA_IMPORT_MAX_CATEGORY_DEPTH` ceiling (10 by default) also guards category
+  creation and branch reparenting, so an interactively-created tree cannot become
+  impossible to export and re-import.
 - **Contract `media-service-m8@1.1`** (`U12`). The additive media UX surface is
   now advertised through `/media/meta`: hierarchical user categories, multi-file
   category assignments and filters, plus collection export/import. The existing

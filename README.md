@@ -312,6 +312,9 @@ categories. `GET /category/tree/` gives reader-tier callers the complete tree
 with direct and subtree object counts. CRUD reads are **reader** tier and
 mutations are **writer** tier; foreign, invalid-parent, cyclic, duplicate-sibling
 and non-empty-delete requests are refused rather than widening a caller's view.
+Creation and branch reparenting also share import's
+`MEDIA_IMPORT_MAX_CATEGORY_DEPTH` ceiling (10 levels by default), keeping every
+interactive tree portable through collection export/import.
 
 `/{prefix}/dashboard` remains a writer-tier user-activity view. Both routers are
 retained for ecosystem parity.

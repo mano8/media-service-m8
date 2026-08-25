@@ -136,10 +136,9 @@ class Settings(ConsumerServiceSettings):
     MEDIA_IMPORT_MAX_OBJECTS: int = Field(default=5_000, ge=1)
     MEDIA_IMPORT_MAX_TOTAL_BYTES: int = Field(default=5_368_709_120, ge=1)
     MEDIA_IMPORT_MAX_CATEGORIES: int = Field(default=1_000, ge=1)
-    # Soft cap on how deep a recreated category tree may nest. Bounds both the
-    # recursive schema parsing of the uploaded tree and the per-node work the
-    # path walk does; the category surface itself is an adjacency list and has
-    # no structural depth limit of its own.
+    # Soft cap on category-tree depth, shared by ordinary CRUD and import.
+    # Bounds recursive client/schema parsing and per-node path work, and keeps
+    # a tree created interactively exportable and re-importable.
     MEDIA_IMPORT_MAX_CATEGORY_DEPTH: int = Field(default=10, ge=1)
 
     # ── Storage quotas ───────────────────────────────────────────────────────
