@@ -28,7 +28,7 @@ and MinIO.
 | Stack | media_service / worker | fa-auth + media_worker | MinIO host ports | Best for |
 | --- | --- | --- | --- | --- |
 | [dev_media_m8](dev_media_m8/) | built from `../../media_service` | published images | `127.0.0.1:9005/9006` | Iterating on media-service against published peers |
-| [hardened_media_m8](hardened_media_m8/) | `tepochtli/media-service-m8:1.0.0` | published images | none (internal only) | Reference deployment / production-shaped posture |
+| [hardened_media_m8](hardened_media_m8/) | `tepochtli/media-service-m8:2.0.0` | published images | none (internal only) | Reference deployment / production-shaped posture |
 | [worspace_dev_media_m8](worspace_dev_media_m8/) | built from `../../` | built from sibling repos | `127.0.0.1:9005/9006` | Cross-repo workspace dev (local-only, not in CI) |
 
 **Decision guide:**
