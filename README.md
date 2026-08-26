@@ -58,7 +58,7 @@ Auto-mounted by `fastapi-m8` (≥ 3.3.0) `create_app` — the standard m8 triad:
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@mano8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.1`, contract range `>=1.0.0 <2.0.0` — the range of *contract* versions served, which moves independently of the package version (`2.0.0`), reported separately as `version`. |
+| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@mano8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.1`, service-version range `>=2.0.0 <3.0.0`. |
 | GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
 | GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / MinIO). |
 

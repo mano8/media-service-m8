@@ -174,9 +174,21 @@ alignment — because all of it ships under this one tag.
   impossible to export and re-import.
 - **Contract `media-service-m8@1.1`** (`U12`). The additive media UX surface is
   now advertised through `/media/meta`: hierarchical user categories, multi-file
-  category assignments and filters, plus collection export/import. The existing
-  contract range remains `>=1.0.0 <2.0.0`, so clients using the 1.0 contract
-  continue to be served.
+  category assignments and filters, plus collection export/import. The surface is
+  additive, so a client written against contract `1.0` continues to be served —
+  `astro-media-m8` admits both `1.0` and `1.1`.
+- **`CONTRACT_RANGE` bumped `>=1.0.0 <2.0.0` → `>=2.0.0 <3.0.0`.** This field is
+  the **service-version** range advertised as `contract.range` by `GET
+  {prefix}/meta`, not a range of contract versions — the same meaning it carried
+  when `1.0.0` moved it to `>=1.0.0 <2.0.0` and `0.0.9` moved it to
+  `>=0.0.9 <0.1.0`. It had been left behind by the major bump, so a `2.0.0`
+  service was advertising a supported range that **excluded its own version**;
+  any client honouring the advertised range would have refused this release.
+  `>=2.0.0 <3.0.0` is also exactly what `astro-media-m8` already expects
+  (`MEDIA_SERVICE_M8_SERVICE_VERSION_RANGE`), so server and plugin now agree.
+  Clients must allow `>=2.0.0`: a pre-tier `1.x` service is deliberately no
+  longer admitted, because it cannot serve the authorization behavior the role
+  tiers assume.
 - `UploadsController.initiate_upload` is now composed from two reusable
   pieces, `stage_upload` (the declared-MIME allowlist, the quota pre-check,
   resolving the caller's user categories, and deriving the object key) and

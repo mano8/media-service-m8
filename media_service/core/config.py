@@ -48,7 +48,7 @@ class Settings(ConsumerServiceSettings):
     SERVICE_VERSION: str = __version__
     CONTRACT_NAME: str = "media-service-m8"
     CONTRACT_VERSION: str = "1.1"
-    CONTRACT_RANGE: str = ">=1.0.0 <2.0.0"
+    CONTRACT_RANGE: str = ">=2.0.0 <3.0.0"
 
     secret_fields = ConsumerServiceSettings.secret_fields + [
         "MINIO_SECRET_KEY",
