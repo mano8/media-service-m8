@@ -11,45 +11,19 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
-## [Unreleased]
+## [2.0.0] — 2026-08-26 · role-tier enforcement, user categories, collection transfer
 
-### Changed
+**Major bump.** The reader/writer role tiers (`A16`) change who may call this
+service's routes: a token that was merely authenticated no longer suffices, and
+`PUBLIC` objects became readable with no token at all. The category CRUD surface
+also stops answering in the `{success, ...}` envelope and returns typed schemas
+with real status codes. Both are breaking changes to the served contract, so this
+releases as `2.0.0` rather than `1.1.0`.
 
-- **Base image digest bumped** for both `media_service/Dockerfile` stages,
-  `python:3.14-slim@sha256:c845af93…` → `@sha256:83ff1d24…`. The pinned digest
-  was built 2026-05-19 and carried `util-linux` `2.41-5`, which Debian has since
-  fixed in `2.41.5-0+deb13u1`; Trivy reported the resulting `CVE-2026-53612`,
-  `-53613`, `-53614` and `-53615` 36 times — the same four CVEs across the nine
-  binary packages built from that one source (`bsdutils`, `libblkid1`,
-  `liblastlog2-2`, `libmount1`, `libsmartcols1`, `libuuid1`, `login`, `mount`,
-  `util-linux`) — and the `trivy-image` gate blocks the PR on HIGH findings.
-  Nothing was added to a `.trivyignore`: the fix existed upstream, so the pin
-  moved to collect it. Same digest and same reasoning as `media-worker-m8`.
-- **`pip` removed from the runtime image stage** (and `setuptools`/`wheel` with
-  it, where a base ever carries them). The entrypoint is
-  `media_service/scripts/docker_start.sh` — alembic, then uvicorn — and the
-  image is built from a hash-locked set that never installs at run time, so the
-  installer tooling is pure attack surface and is what `media-worker-m8` removed
-  for the same reason. Verified against the built image: `python:3.14-slim` at
-  this digest ships `pip` only (`setuptools` and `wheel` are already absent, and
-  the uninstall reports them skipped), and nothing in `requirements_prod.lock`
-  reinstalls them — so this layer removes `pip` today and stands as a guard if a
-  future base bump reintroduces the rest, rather than that bump quietly adding a
-  `setuptools` CVE to the image. Ordered after `COPY --from=builder` so the
-  builder tree cannot reintroduce them, with `pip` uninstalling itself last.
-  Two build-time checks follow: an import of the declared runtime dependency
-  graph, which fails the build if anything needed `pkg_resources` at import
-  time, and an `alembic`/`uvicorn`/`gunicorn` `--version` check, which fails it
-  if an entrypoint console script no longer resolves.
-- **Category depth is now consistent across CRUD and transfer.** The existing
-  `MEDIA_IMPORT_MAX_CATEGORY_DEPTH` ceiling (10 by default) also guards category
-  creation and branch reparenting, so an interactively-created tree cannot become
-  impossible to export and re-import.
-- **Contract `media-service-m8@1.1`** (`U12`). The additive media UX surface is
-  now advertised through `/media/meta`: hierarchical user categories, multi-file
-  category assignments and filters, plus collection export/import. The existing
-  contract range remains `>=1.0.0 <2.0.0`, so clients using the 1.0 contract
-  continue to be served.
+This entry is the whole release. It absorbs what earlier drafts staged under
+`[Unreleased]` — the `P1` category line (`U1`, `U3`, `U4`), the `P2` collection
+transfer line (`U9`, `U11`, `U12`), and the `fastapi-m8` 4.4.0 / image-hardening
+alignment — because all of it ships under this one tag.
 
 ### Added
 
@@ -168,6 +142,41 @@ All notable changes to `media-service-m8` are documented here.
 
 ### Changed
 
+- **Base image digest bumped** for both `media_service/Dockerfile` stages,
+  `python:3.14-slim@sha256:c845af93…` → `@sha256:83ff1d24…`. The pinned digest
+  was built 2026-05-19 and carried `util-linux` `2.41-5`, which Debian has since
+  fixed in `2.41.5-0+deb13u1`; Trivy reported the resulting `CVE-2026-53612`,
+  `-53613`, `-53614` and `-53615` 36 times — the same four CVEs across the nine
+  binary packages built from that one source (`bsdutils`, `libblkid1`,
+  `liblastlog2-2`, `libmount1`, `libsmartcols1`, `libuuid1`, `login`, `mount`,
+  `util-linux`) — and the `trivy-image` gate blocks the PR on HIGH findings.
+  Nothing was added to a `.trivyignore`: the fix existed upstream, so the pin
+  moved to collect it. Same digest and same reasoning as `media-worker-m8`.
+- **`pip` removed from the runtime image stage** (and `setuptools`/`wheel` with
+  it, where a base ever carries them). The entrypoint is
+  `media_service/scripts/docker_start.sh` — alembic, then uvicorn — and the
+  image is built from a hash-locked set that never installs at run time, so the
+  installer tooling is pure attack surface and is what `media-worker-m8` removed
+  for the same reason. Verified against the built image: `python:3.14-slim` at
+  this digest ships `pip` only (`setuptools` and `wheel` are already absent, and
+  the uninstall reports them skipped), and nothing in `requirements_prod.lock`
+  reinstalls them — so this layer removes `pip` today and stands as a guard if a
+  future base bump reintroduces the rest, rather than that bump quietly adding a
+  `setuptools` CVE to the image. Ordered after `COPY --from=builder` so the
+  builder tree cannot reintroduce them, with `pip` uninstalling itself last.
+  Two build-time checks follow: an import of the declared runtime dependency
+  graph, which fails the build if anything needed `pkg_resources` at import
+  time, and an `alembic`/`uvicorn`/`gunicorn` `--version` check, which fails it
+  if an entrypoint console script no longer resolves.
+- **Category depth is now consistent across CRUD and transfer.** The existing
+  `MEDIA_IMPORT_MAX_CATEGORY_DEPTH` ceiling (10 by default) also guards category
+  creation and branch reparenting, so an interactively-created tree cannot become
+  impossible to export and re-import.
+- **Contract `media-service-m8@1.1`** (`U12`). The additive media UX surface is
+  now advertised through `/media/meta`: hierarchical user categories, multi-file
+  category assignments and filters, plus collection export/import. The existing
+  contract range remains `>=1.0.0 <2.0.0`, so clients using the 1.0 contract
+  continue to be served.
 - `UploadsController.initiate_upload` is now composed from two reusable
   pieces, `stage_upload` (the declared-MIME allowlist, the quota pre-check,
   resolving the caller's user categories, and deriving the object key) and
@@ -234,25 +243,6 @@ All notable changes to `media-service-m8` are documented here.
   `except Exception` / `BaseController.handle_exception` pair answered `200` with
   a false `success` flag (or a `500` JSONResponse) for any error, hiding a failed
   commit from the caller. Errors now propagate to the app's error handling.
-
-## [2.0.0] — 2026-08-16 · role-tier enforcement + `fastapi-m8` 4.4.0 alignment
-
-**Major bump.** The reader/writer role tiers wired below (`A16`) change who may
-call this service's routes: a token that was merely authenticated no longer
-suffices, and `PUBLIC` objects became readable with no token at all. That is a
-breaking change to the authorization contract, so this releases as `2.0.0`
-rather than `1.1.0`. Everything previously listed under `[Unreleased]` ships
-here.
-
-### Security
-
-- **Runtime image patches OpenSSL to `3.5.6-1~deb13u2`** (`openssl`,
-  `libssl3t64`, `openssl-provider-legacy`) to close CVE-2026-45447 (heap
-  use-after-free in `PKCS7_verify`), which is not yet fixed in the pinned
-  `python:3.14-slim` base. Matches the media-worker-m8 remediation.
-
-### Changed
-
 - `PresetSpec._enforce_cost_bounds` split its per-ceiling checks into helper
   methods (behavior unchanged) to keep each path under the complexity limit.
 - `.codacy.yml` excludes `AGENTS.md` from analysis (not repo source code).
@@ -280,6 +270,13 @@ here.
   breaking minors. `constraints.txt`, `constraints-all.txt` and
   `requirements_prod.lock` regenerated on Linux against the published `0.6.0`;
   no other pin moved.
+
+### Security
+
+- **Runtime image patches OpenSSL to `3.5.6-1~deb13u2`** (`openssl`,
+  `libssl3t64`, `openssl-provider-legacy`) to close CVE-2026-45447 (heap
+  use-after-free in `PKCS7_verify`), which is not yet fixed in the pinned
+  `python:3.14-slim` base. Matches the media-worker-m8 remediation.
 
 ---
 
