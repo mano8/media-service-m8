@@ -11,6 +11,36 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [2.1.0] — 2026-08-30 · release-notes completeness
+
+**No runtime change.** No source, dependency floor, lock, image pin, contract or
+served response moves in this release; `GET /media/meta` answers exactly what
+`2.0.0` answered apart from `version`.
+
+This version exists because the `2.0.0` notes understated the tag. Two changes
+shipped **inside** `v2.0.0` (`693a577`) with no changelog entry — the OpenSSL
+apt pin raise for CVE-2026-14456 and both stacks' `media-worker-m8` `0.4.1`
+re-pin. They are recorded under `## [2.0.0]` below, which is where they
+factually belong; this section gives the correction itself a released number
+rather than editing a published tag's notes and leaving no trace that anything
+changed.
+
+`CONTRACT_VERSION` stays `1.1` and `CONTRACT_RANGE` stays `>=2.0.0 <3.0.0` —
+the latter is the **service-version** range, and `2.1.0` is inside it, so the
+service keeps advertising a range that admits itself. `astro-media-m8` needs no
+release: its gate is `>=2.0.0 <3.0.0` on the service version, which already
+admits `2.1.0`.
+
+### Changed
+
+- **`CHANGELOG.md` records two changes that shipped inside `v2.0.0`.** See the
+  `Security` and `Changed` entries added under `## [2.0.0]`. The gap was found
+  by a workspace version-matrix re-measurement, not by a repository gate:
+  `tests/test_changelog_version_parity.py` locks that the *current version*
+  heads an entry, which it did — it cannot see that an entry is incomplete.
+
+---
+
 ## [2.0.0] — 2026-08-26 · role-tier enforcement, user categories, collection transfer
 
 **Major bump.** The reader/writer role tiers (`A16`) change who may call this
