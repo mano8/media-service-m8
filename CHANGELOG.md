@@ -276,6 +276,15 @@ alignment — because all of it ships under this one tag.
   fleet's accepted 3.12–3.14 range (`A32` follow-up). The Codecov and Codacy
   coverage uploads were conditioned on the 3.11 leg, so both moved to 3.12 with
   it — dropping the leg alone would have silently stopped every coverage upload.
+- **Both stacks re-pin `media-worker-m8` `0.4.0` → `0.4.1`** (four sites: the
+  two compose files and the two stack README service tables). `0.4.1` replaces
+  the `0.4.0` bits after the same CVE-2026-14456 above — `0.4.0` shipped the
+  vulnerable `3.5.6-1~deb13u2`. No runtime behaviour change: task registration,
+  payload schemas and dependency floors are identical, so the stacks move
+  without a compatibility question. Pull confirmed before the pins were written
+  (digest `sha256:67cc1470fbc36df1eb83be853754c2cb1fe22864ffbc4ca25748ada62bb8b731`,
+  `worker.__version__ == 0.4.1` and `openssl version == 3.5.7` inside the
+  container).
 - **`media-sdk-m8` floor raised `>=0.5.1` → `>=0.6.0,<0.7.0`.** The upper bound
   is new: under the SDK's 0.x SemVer a minor bump is breaking (`0.6.0` itself
   raises its Python floor to 3.12), so an unbounded floor would keep pulling
@@ -289,6 +298,14 @@ alignment — because all of it ships under this one tag.
   `libssl3t64`, `openssl-provider-legacy`) to close CVE-2026-45447 (heap
   use-after-free in `PKCS7_verify`), which is not yet fixed in the pinned
   `python:3.14-slim` base. Matches the media-worker-m8 remediation.
+- **That pin was then raised to `3.5.7-1~deb13u2`** for CVE-2026-14456
+  (unbounded memory growth in the OpenSSL QUIC server), which Trivy reported as
+  3 HIGH findings against all three packages and which **blocked the `2.0.0`
+  publish run** — nothing was pushed until it was fixed. The exact-equals apt
+  pin added for CVE-2026-45447 is itself what held the image on the vulnerable
+  version: raising the base image digest alone cannot move past a pinned
+  `=3.5.6-1~deb13u2`, so this block must be raised per advisory. No application
+  code, dependency floor or lock changed.
 
 ---
 
