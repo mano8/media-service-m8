@@ -11,6 +11,36 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [2.1.0] — 2026-08-30 · release-notes completeness
+
+**No runtime change.** No source, dependency floor, lock, image pin, contract or
+served response moves in this release; `GET /media/meta` answers exactly what
+`2.0.0` answered apart from `version`.
+
+This version exists because the `2.0.0` notes understated the tag. Two changes
+shipped **inside** `v2.0.0` (`693a577`) with no changelog entry — the OpenSSL
+apt pin raise for CVE-2026-14456 and both stacks' `media-worker-m8` `0.4.1`
+re-pin. They are recorded under `## [2.0.0]` below, which is where they
+factually belong; this section gives the correction itself a released number
+rather than editing a published tag's notes and leaving no trace that anything
+changed.
+
+`CONTRACT_VERSION` stays `1.1` and `CONTRACT_RANGE` stays `>=2.0.0 <3.0.0` —
+the latter is the **service-version** range, and `2.1.0` is inside it, so the
+service keeps advertising a range that admits itself. `astro-media-m8` needs no
+release: its gate is `>=2.0.0 <3.0.0` on the service version, which already
+admits `2.1.0`.
+
+### Changed
+
+- **`CHANGELOG.md` records two changes that shipped inside `v2.0.0`.** See the
+  `Security` and `Changed` entries added under `## [2.0.0]`. The gap was found
+  by a workspace version-matrix re-measurement, not by a repository gate:
+  `tests/test_changelog_version_parity.py` locks that the *current version*
+  heads an entry, which it did — it cannot see that an entry is incomplete.
+
+---
+
 ## [2.0.0] — 2026-08-26 · role-tier enforcement, user categories, collection transfer
 
 **Major bump.** The reader/writer role tiers (`A16`) change who may call this
@@ -276,6 +306,15 @@ alignment — because all of it ships under this one tag.
   fleet's accepted 3.12–3.14 range (`A32` follow-up). The Codecov and Codacy
   coverage uploads were conditioned on the 3.11 leg, so both moved to 3.12 with
   it — dropping the leg alone would have silently stopped every coverage upload.
+- **Both stacks re-pin `media-worker-m8` `0.4.0` → `0.4.1`** (four sites: the
+  two compose files and the two stack README service tables). `0.4.1` replaces
+  the `0.4.0` bits after the same CVE-2026-14456 above — `0.4.0` shipped the
+  vulnerable `3.5.6-1~deb13u2`. No runtime behaviour change: task registration,
+  payload schemas and dependency floors are identical, so the stacks move
+  without a compatibility question. Pull confirmed before the pins were written
+  (digest `sha256:67cc1470fbc36df1eb83be853754c2cb1fe22864ffbc4ca25748ada62bb8b731`,
+  `worker.__version__ == 0.4.1` and `openssl version == 3.5.7` inside the
+  container).
 - **`media-sdk-m8` floor raised `>=0.5.1` → `>=0.6.0,<0.7.0`.** The upper bound
   is new: under the SDK's 0.x SemVer a minor bump is breaking (`0.6.0` itself
   raises its Python floor to 3.12), so an unbounded floor would keep pulling
@@ -289,6 +328,14 @@ alignment — because all of it ships under this one tag.
   `libssl3t64`, `openssl-provider-legacy`) to close CVE-2026-45447 (heap
   use-after-free in `PKCS7_verify`), which is not yet fixed in the pinned
   `python:3.14-slim` base. Matches the media-worker-m8 remediation.
+- **That pin was then raised to `3.5.7-1~deb13u2`** for CVE-2026-14456
+  (unbounded memory growth in the OpenSSL QUIC server), which Trivy reported as
+  3 HIGH findings against all three packages and which **blocked the `2.0.0`
+  publish run** — nothing was pushed until it was fixed. The exact-equals apt
+  pin added for CVE-2026-45447 is itself what held the image on the vulnerable
+  version: raising the base image digest alone cannot move past a pinned
+  `=3.5.6-1~deb13u2`, so this block must be raised per advisory. No application
+  code, dependency floor or lock changed.
 
 ---
 
