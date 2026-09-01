@@ -343,9 +343,7 @@ def test_get_object_includes_existing_category_assignments(
 ):
     obj = _make_object(session, current_user.id)
     parent = _make_category(session, current_user.id, "Documents")
-    child = _make_category(
-        session, current_user.id, "Invoices", parent_id=parent.id
-    )
+    child = _make_category(session, current_user.id, "Invoices", parent_id=parent.id)
     session.add(MediaObjectCategoryLink(media_object_id=obj.id, category_id=child.id))
     session.commit()
 
