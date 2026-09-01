@@ -11,6 +11,46 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [2.1.1] — 2026-09-01 · single-object reads carry their filing
+
+**Bug fix.** `GET /media/v1/objects/{id}` answered `categories: []` for an
+object that *was* filed into user categories. The served contract is unchanged
+— the field was already declared, already documented, and already populated by
+every other surface — so this is a patch, not a minor. `CONTRACT_VERSION` stays
+`1.1` and `CONTRACT_RANGE` stays `>=2.0.0 <3.0.0`; `2.1.1` is inside it.
+
+`astro-media-m8` needs no release for this: its gate is `>=2.0.0 <3.0.0` on the
+service version, which already admits `2.1.1`, and its client was already
+reading `object.categories` correctly.
+
+### Fixed
+
+- **The single-object read projects the object's user categories** (`U4`).
+  `ObjectsController.get_object` returned `MediaObjectPublic.model_validate(obj)`
+  against the database model. `MediaObject` deliberately names its relationship
+  `user_categories`, not `categories`, so that `model_validate` cannot lazy-load
+  it once per row — which means the unenriched call could only ever produce the
+  schema's `default_factory=list`, an empty filing. The list path
+  (`list_objects`) and the write paths (`update_object`, `complete_upload`) each
+  already passed the projection through `update=`; the detail path was the one
+  surface that did not, so the same object read one way carried its categories
+  and read the other way did not.
+
+  It now goes through `category_refs_by_object`, the same helper `list_objects`
+  uses, called with a single-element `object_ids`. That is deliberate over
+  `assigned_category_refs`: both cost two queries here, but `category_refs_by_object`
+  takes `UserModel | None` and so already answers the anonymous `PUBLIC`-object
+  reader (`A16`, `D3`) with an empty filing rather than needing a principal — and
+  this route's principal is `OptionalPrincipal`. A link naming a category outside
+  the caller's current scope is dropped, not surfaced unresolved, exactly as on
+  the list.
+
+  Covered by `tests/test_category_assignment.py::test_get_object_includes_existing_category_assignments`,
+  which files an object into a nested category and asserts the served `path`
+  resolves through its parent.
+
+---
+
 ## [2.1.0] — 2026-08-30 · release-notes completeness
 
 **No runtime change.** No source, dependency floor, lock, image pin, contract or

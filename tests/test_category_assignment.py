@@ -338,6 +338,25 @@ def test_complete_of_a_session_predating_the_column_files_nothing(
 # ── PATCH /media/v1/objects/{id} ─────────────────────────────────────────────
 
 
+def test_get_object_includes_existing_category_assignments(
+    client: TestClient, session: Session, current_user
+):
+    obj = _make_object(session, current_user.id)
+    parent = _make_category(session, current_user.id, "Documents")
+    child = _make_category(
+        session, current_user.id, "Invoices", parent_id=parent.id
+    )
+    session.add(MediaObjectCategoryLink(media_object_id=obj.id, category_id=child.id))
+    session.commit()
+
+    resp = client.get(f"/media/v1/objects/{obj.id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["categories"] == [
+        {"id": child.id, "name": "Invoices", "path": "documents/invoices"}
+    ]
+
+
 def test_patch_category_ids_replaces_prior_assignments(
     client: TestClient, session: Session, current_user
 ):
