@@ -449,7 +449,10 @@ class ObjectsController:
     ) -> MediaObjectPublic:
         """Return public metadata for a media object."""
         obj = _load_object_for_read(session, current_user, object_id)
-        return MediaObjectPublic.model_validate(obj)
+        refs_by_object = category_refs_by_object(session, current_user, [obj.id])
+        return MediaObjectPublic.model_validate(
+            obj, update={"categories": refs_by_object.get(obj.id, [])}
+        )
 
     @staticmethod
     def download_url(
