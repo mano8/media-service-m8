@@ -1,6 +1,6 @@
-"""Tests for media_service/main.py — minio_health_check + metrics endpoint."""
+"""Tests for media_service/main.py — object_storage_health_check + metrics endpoint."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import APIRouter, FastAPI
@@ -8,35 +8,33 @@ from fastapi.testclient import TestClient
 
 from fastapi_m8 import HealthStatus
 
-from media_service.main import _register_metrics_endpoint, minio_health_check
+from media_service.main import _register_metrics_endpoint, object_storage_health_check
 
 _SCRAPE_CRED = "test-scrape-credential-ABC"
 
 
 @pytest.mark.anyio
-async def test_minio_health_check_ok():
-    mock_client = MagicMock()
-    mock_client.bucket_exists = AsyncMock(return_value=True)
-    mock_minio_cls = MagicMock(return_value=mock_client)
+async def test_object_storage_health_check_ok():
+    mock_storage = MagicMock()
+    mock_storage.bucket_exists.return_value = True
 
-    with patch.dict("sys.modules", {"miniopy_async": MagicMock(Minio=mock_minio_cls)}):
-        result = await minio_health_check()
+    with patch("media_service.main.ObjectStorage", return_value=mock_storage):
+        result = await object_storage_health_check()
 
     assert result.status == HealthStatus.OK
-    assert result.name == "minio"
+    assert result.name == "object_storage"
 
 
 @pytest.mark.anyio
-async def test_minio_health_check_degraded_on_error():
-    mock_client = MagicMock()
-    mock_client.bucket_exists = AsyncMock(side_effect=ConnectionError("refused"))
-    mock_minio_cls = MagicMock(return_value=mock_client)
+async def test_object_storage_health_check_degraded_on_error():
+    mock_storage = MagicMock()
+    mock_storage.bucket_exists.side_effect = ConnectionError("refused")
 
-    with patch.dict("sys.modules", {"miniopy_async": MagicMock(Minio=mock_minio_cls)}):
-        result = await minio_health_check()
+    with patch("media_service.main.ObjectStorage", return_value=mock_storage):
+        result = await object_storage_health_check()
 
     assert result.status == HealthStatus.DEGRADED
-    assert result.name == "minio"
+    assert result.name == "object_storage"
     assert "refused" in (result.error or "")
 
 

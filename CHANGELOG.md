@@ -11,6 +11,23 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Storage health check dropped the second MinIO client library**
+  (`T7-drop-miniopy-async`, object-storage backend migration plan). The
+  readiness check at `/{prefix}/health/` previously built its own
+  `miniopy_async.Minio` client and awaited `bucket_exists` directly, making
+  `miniopy-async` a second, single-maintainer MinIO client alongside the
+  shared `media_sdk_m8.ObjectStorage` used everywhere else in the service.
+  It now reuses that same synchronous, boto3-backed `ObjectStorage` (via
+  `get_storage_config()`) and runs the blocking call through
+  `anyio.to_thread.run_sync`. The check's reported `name` changes from
+  `minio` to `object_storage`; DEGRADED-not-FAIL semantics on a storage
+  outage are unchanged. `miniopy-async` was not declared in any requirements
+  file or lock in this repository, so no dependency removal was needed there.
+
 ## [2.1.1] — 2026-09-01 · single-object reads carry their filing
 
 **Bug fix.** `GET /media/v1/objects/{id}` answered `categories: []` for an

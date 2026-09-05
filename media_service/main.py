@@ -7,6 +7,7 @@ media-owned counters and the ``/metrics`` endpoint (guarded by an optional
 scrape credential via ``METRICS_SCRAPE_CREDENTIAL``).
 """
 
+import anyio
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
@@ -23,6 +24,7 @@ from media_service.app.main import api_router as domain_router
 from media_service.core.config import settings
 from media_service.core.deps import auth, engine
 from media_service.core.events import make_lifespan_extras
+from media_service.storage.client import ObjectStorage, get_storage_config
 
 # Register media-owned counters against the shared REGISTRY. The shared HTTP
 # collectors are registered by create_app — registering them here too would
@@ -30,26 +32,24 @@ from media_service.core.events import make_lifespan_extras
 _media_metrics.setup(enabled=settings.METRICS_ENABLED, api_prefix=settings.API_PREFIX)
 
 
-async def minio_health_check() -> HealthCheckResult:
-    """Check MinIO reachability.
+async def object_storage_health_check() -> HealthCheckResult:
+    """Check object-storage reachability.
 
+    ``ObjectStorage`` (media-sdk-m8) is a synchronous boto3 client, so the
+    blocking call runs off the event loop via ``anyio.to_thread.run_sync``
+    rather than through a second, MinIO-specific async client library.
     Returns DEGRADED (not FAIL) on connection errors so a brief storage
     outage doesn't 503 the whole service under LENIENT policy.
     """
     try:
-        from miniopy_async import Minio  # noqa: PLC0415
-
-        client = Minio(
-            f"{settings.MINIO_HOST}:{settings.MINIO_PORT}",
-            access_key=settings.MINIO_ACCESS_KEY,
-            secret_key=settings.MINIO_SECRET_KEY,
-            secure=settings.MINIO_USE_SSL,
+        storage = ObjectStorage(get_storage_config())
+        await anyio.to_thread.run_sync(
+            lambda: storage.bucket_exists(bucket=settings.MINIO_BUCKET_PUBLIC)
         )
-        await client.bucket_exists(settings.MINIO_BUCKET_PUBLIC)
-        return HealthCheckResult(name="minio", status=HealthStatus.OK)
+        return HealthCheckResult(name="object_storage", status=HealthStatus.OK)
     except Exception as exc:
         return HealthCheckResult(
-            name="minio",
+            name="object_storage",
             status=HealthStatus.DEGRADED,
             error=str(exc),
             meta={"host": settings.MINIO_HOST},
@@ -97,7 +97,7 @@ app = create_app(
     api_router,
     service_name="media-service-m8",
     service_version=settings.SERVICE_VERSION,
-    health=HealthConfig(checks=[minio_health_check]),
+    health=HealthConfig(checks=[object_storage_health_check]),
     lifecycle=AppLifecycle(
         auth_deps=auth,
         db_engine=engine,
