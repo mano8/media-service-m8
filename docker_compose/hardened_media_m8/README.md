@@ -2,9 +2,9 @@
 
 Local hardened stack for `auth_user_service` + `media_service`.
 
-Includes PostgreSQL 18, two Redis instances (auth + media), MinIO, Traefik,
-Prometheus, Grafana, RS256/JWKS auth integration, hardened containers, and
-network segmentation.
+Includes PostgreSQL 18, two Redis instances (auth + media), SeaweedFS S3
+storage, Traefik, Prometheus, Grafana, RS256/JWKS auth integration, hardened
+containers, and network segmentation.
 
 Use this example while developing the media microservice. Other compose examples
 are intentionally not aligned until this one is working.
@@ -24,11 +24,11 @@ Browser / Frontend
        +--> PostgreSQL on data_net
        +--> auth_user_service private API (HTTP introspection) for token revocation
        +--> Media Redis on data_net for media queues/rate limits/cache
-       +--> MinIO on data_net
+       +--> Object storage (SeaweedFS S3) on data_net
 ```
 
 `app_net` is external-facing for Traefik, app services, and observability.
-`data_net` is internal and has no gateway; DB, Redis, and MinIO are not exposed
+`data_net` is internal and has no gateway; DB, Redis, and storage are not exposed
 through that network.
 
 > **Token revocation:** the media service does **not** connect to the auth
@@ -49,7 +49,7 @@ through that network.
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
-| minio | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772` | internal data network — **no host port** |
+| storage | `chrislusf/seaweedfs:4.45` | S3 object storage — internal data network, **no host port** |
 | minio-init | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` | one-shot: buckets + `media-rw` policy |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
@@ -94,7 +94,7 @@ Edit `media.env` so it matches the `MEDIA_DB_*` triplet in `.env`:
 DB_DATABASE=media_db
 DB_USER=<same-as-MEDIA_DB_USER>
 DB_PASSWORD=<same-as-MEDIA_DB_PASSWORD>
-S3_ENDPOINT=minio:9000
+S3_ENDPOINT=storage:8333
 S3_ACCESS_KEY=<media-rw-user>
 S3_SECRET_KEY=<media-rw-password>
 MEDIA_REDIS_HOST=media_redis_cache
@@ -209,8 +209,10 @@ controlled by `grafana/config.monitoring`.
 
 - `.env` is infrastructure/bootstrap config. It provisions `AUTH_DB_*` and
   `MEDIA_DB_*` through `../shared/db_init/init-db.sh`, and supplies the Redis and
-  MinIO root passwords used by the `redis_cache`, `media_redis_cache`, and
-  `minio` services via Compose interpolation.
+  storage root passwords used by the `redis_cache`, `media_redis_cache`, and
+  storage-bootstrap services via Compose interpolation. The `storage` service
+  itself takes its identities from the static `-s3.config` file, not from the
+  environment.
 - `auth.env` and `media.env` are runtime application configs consumed by
   `auth-sdk-m8`. They use generic `DB_DATABASE`, `DB_USER`, `DB_PASSWORD` — do
   **not** replace those with the `MEDIA_DB_*` / `AUTH_DB_*` names.
@@ -261,8 +263,8 @@ needed on WSL2/Linux bind mounts. On every run `init.sh` also enforces
 Set them (identically across auth + media), or set `EVENT_SIGNING_ENABLED=false`
 / `TOKEN_STRICT_VALIDATION=false` for local-only runs.
 
-**Media service cannot connect to MinIO**: inside Docker, use `S3_ENDPOINT=minio:9000`.
-The hardened stack does not publish MinIO to the host, so
+**Media service cannot connect to object storage**: inside Docker, use
+`S3_ENDPOINT=storage:8333`. The hardened stack does not publish it to the host, so
 debug from inside the network (`docker compose exec`) rather than via a host
 port.
 
