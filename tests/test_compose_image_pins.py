@@ -75,8 +75,8 @@ class TestHardenedImagePins:
         "service,expected_prefix",
         [
             ("cert-init", "alpine:"),
-            ("minio", "quay.io/minio/minio:RELEASE."),
-            ("minio-init", "quay.io/minio/mc:RELEASE."),
+            ("storage", "chrislusf/seaweedfs:4.45"),
+            ("storage-init", "amazon/aws-cli:2.36.40"),
         ],
     )
     def test_previously_bare_images_are_pinned(
