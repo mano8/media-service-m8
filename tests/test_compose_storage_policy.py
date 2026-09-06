@@ -29,18 +29,22 @@ Policy:
                        wildcard origin (S3).
                      — media.env.example must declare S3_PUBLIC_ENDPOINT
                        starting with https://.
-  dev_media_m8       — backend is still MinIO (`T20` migrates the dev stacks;
-                       out of scope here). MinIO ports must be loopback-bound
-                       only (no 0.0.0.0 bind); MINIO_API_CORS_ALLOW_ORIGIN must
-                       be set and must NOT be *; media.env.example must declare
-                       S3_PUBLIC_ENDPOINT starting with loopback.
-  worspace_dev_media_m8 — same MinIO CORS + env.example assertions as dev.
+  dev_media_m8, dev_local_media_m8, worspace_dev_media_m8 — backend is
+                       SeaweedFS too (`T20-dev-stacks-port`, applying
+                       `T15`-`T17` to the three dev stacks). The `storage`
+                       service must publish exactly one loopback-bound host
+                       port for the S3 gateway (never 0.0.0.0) and no other
+                       port — the admin/filer surfaces are loopback-bound
+                       inside the container, same as hardened, and are never
+                       published even in dev. S3_CORS_ALLOW_ORIGIN (.env) must
+                       be set and must NOT be a wildcard; media.env.example
+                       must declare S3_PUBLIC_ENDPOINT starting with loopback.
 
 Only the env-var lookups this file asserts on for the *application* side moved
 to `S3_*` (T10-T12) before this step; `hardened_media_m8`'s own storage
-container/bootstrap vocabulary moves to SeaweedFS terms here (T18), while
-`dev_media_m8`/`worspace_dev_media_m8` stay on MinIO/`minio`/
-`MINIO_API_CORS_ALLOW_ORIGIN` literals until `T20`.
+container/bootstrap vocabulary moved to SeaweedFS terms in `T18`, and the dev
+stacks follow here in `T20` — MinIO/`minio`/`MINIO_API_CORS_ALLOW_ORIGIN`
+literals are gone from every stack this suite covers.
 """
 
 from __future__ import annotations
@@ -58,8 +62,13 @@ _HARDENED_ENV = _COMPOSE_DIR / "hardened_media_m8" / "media.env.example"
 _HARDENED_DOTENV = _COMPOSE_DIR / "hardened_media_m8" / ".env.example"
 _DEV = _COMPOSE_DIR / "dev_media_m8" / "docker-compose.yml"
 _DEV_ENV = _COMPOSE_DIR / "dev_media_m8" / "media.env.example"
+_DEV_DOTENV = _COMPOSE_DIR / "dev_media_m8" / ".env.example"
+_DEV_LOCAL = _COMPOSE_DIR / "dev_local_media_m8" / "docker-compose.yml"
+_DEV_LOCAL_ENV = _COMPOSE_DIR / "dev_local_media_m8" / "media.env.example"
+_DEV_LOCAL_DOTENV = _COMPOSE_DIR / "dev_local_media_m8" / ".env.example"
 _WORSPACE = _COMPOSE_DIR / "worspace_dev_media_m8" / "docker-compose.yml"
 _WORSPACE_ENV = _COMPOSE_DIR / "worspace_dev_media_m8" / "media.env.example"
+_WORSPACE_DOTENV = _COMPOSE_DIR / "worspace_dev_media_m8" / ".env.example"
 
 _LOOPBACK_RE = re.compile(r"^127\.")
 
@@ -295,42 +304,66 @@ class TestHardenedStorageServiceHardening:
 
 
 # ---------------------------------------------------------------------------
-# CORS policy — dev / worspace stacks, still MinIO (T20 migrates these)
+# CORS policy — dev stacks (SeaweedFS, T20)
 # ---------------------------------------------------------------------------
 
 
-class TestMinioCorsNotWildcard:
-    """Every still-MinIO dev stack must set MINIO_API_CORS_ALLOW_ORIGIN and
-    it must NOT be the wildcard '*'. hardened_media_m8 no longer has a minio
-    service — its CORS bootstrap is TestHardenedStorageCorsBootstrap below."""
+class TestDevStorageCorsBootstrap:
+    """Every dev stack's storage-init bootstrap must read S3_CORS_ALLOW_ORIGIN
+    (.env) and it must NOT be the wildcard '*' — same contract as
+    TestHardenedStorageCorsBootstrap, applied to the three dev stacks."""
 
     @pytest.mark.parametrize(
-        "stack_name,compose_path",
+        "stack_name,dotenv_path",
         [
-            ("dev_media_m8", _DEV),
-            ("worspace_dev_media_m8", _WORSPACE),
+            ("dev_media_m8", _DEV_DOTENV),
+            ("dev_local_media_m8", _DEV_LOCAL_DOTENV),
+            ("worspace_dev_media_m8", _WORSPACE_DOTENV),
         ],
     )
-    def test_cors_origin_is_set(self, stack_name: str, compose_path: Path):
-        minio_env = _load(compose_path)["services"]["minio"].get("environment", {})
-        assert "MINIO_API_CORS_ALLOW_ORIGIN" in minio_env, (
-            f"{stack_name}: minio must set MINIO_API_CORS_ALLOW_ORIGIN "
+    def test_cors_origin_is_set(self, stack_name: str, dotenv_path: Path):
+        env = _env_vars(dotenv_path)
+        assert env.get("S3_CORS_ALLOW_ORIGIN"), (
+            f"{stack_name}: .env.example must declare S3_CORS_ALLOW_ORIGIN "
             "(scoped to the UI origin, never *)."
+        )
+
+    @pytest.mark.parametrize(
+        "stack_name,dotenv_path",
+        [
+            ("dev_media_m8", _DEV_DOTENV),
+            ("dev_local_media_m8", _DEV_LOCAL_DOTENV),
+            ("worspace_dev_media_m8", _WORSPACE_DOTENV),
+        ],
+    )
+    def test_cors_origin_is_not_wildcard(self, stack_name: str, dotenv_path: Path):
+        value = _env_vars(dotenv_path).get("S3_CORS_ALLOW_ORIGIN", "")
+        assert "*" not in value, (
+            f"{stack_name}: S3_CORS_ALLOW_ORIGIN must NOT contain '*' — "
+            f"scope it to the specific UI origin(s). Got: {value!r}"
         )
 
     @pytest.mark.parametrize(
         "stack_name,compose_path",
         [
             ("dev_media_m8", _DEV),
+            ("dev_local_media_m8", _DEV_LOCAL),
             ("worspace_dev_media_m8", _WORSPACE),
         ],
     )
-    def test_cors_origin_is_not_wildcard(self, stack_name: str, compose_path: Path):
-        minio_env = _load(compose_path)["services"]["minio"].get("environment", {})
-        value = str(minio_env.get("MINIO_API_CORS_ALLOW_ORIGIN", ""))
-        assert value != "*", (
-            f"{stack_name}: MINIO_API_CORS_ALLOW_ORIGIN must NOT be '*' — "
-            "scope it to the specific UI origin."
+    def test_storage_init_guards_wildcard_origin(
+        self, stack_name: str, compose_path: Path
+    ):
+        entrypoint = _load(compose_path)["services"]["storage-init"]["entrypoint"]
+        script = entrypoint[-1]
+        assert "S3_CORS_ALLOW_ORIGIN" in script and "*" in script, (
+            f"{stack_name}: storage-init must still refuse to apply a "
+            "wildcard S3_CORS_ALLOW_ORIGIN at bootstrap time — this guard is "
+            "the last line of defense if the .env value is ever misconfigured."
+        )
+        assert "exit 1" in script, (
+            f"{stack_name}: storage-init's wildcard-origin guard must abort "
+            "the bootstrap (exit 1), not merely warn."
         )
 
 
@@ -429,45 +462,77 @@ class TestStoragePublicEndpointEnvExample:
             f"for the dev stack. Got: {value!r}"
         )
 
-
-# ---------------------------------------------------------------------------
-# dev_media_m8 — host-port policy (unchanged)
-# ---------------------------------------------------------------------------
-
-
-class TestDevMinioLoopbackOnly:
-    """In the dev stack MinIO ports must be loopback-bound (127.0.0.1), never 0.0.0.0."""
-
-    def _minio_ports(self) -> list[str]:
-        compose = _load(_DEV)
-        return compose["services"]["minio"].get("ports", [])
-
-    def test_minio_has_ports_block(self):
-        """Dev stack must still expose MinIO for local tooling."""
-        assert self._minio_ports(), (
-            "dev_media_m8: minio has no `ports:` block — "
-            "the dev stack should expose MinIO on loopback for local mc/dashboard access."
+    def test_dev_local_declares_public_endpoint(self):
+        env = _env_vars(_DEV_LOCAL_ENV)
+        assert "S3_PUBLIC_ENDPOINT" in env, (
+            "dev_local_media_m8: media.env.example must declare S3_PUBLIC_ENDPOINT."
         )
 
-    @pytest.mark.parametrize("mapping", ["127.0.0.1:9005:9000", "127.0.0.1:9006:9001"])
-    def test_minio_port_is_loopback_bound(self, mapping: str):
-        ports = self._minio_ports()
-        assert mapping in ports, (
-            f"dev_media_m8: expected loopback port mapping {mapping!r} not found. "
+    def test_dev_local_public_endpoint_is_loopback(self):
+        env = _env_vars(_DEV_LOCAL_ENV)
+        value = env.get("S3_PUBLIC_ENDPOINT", "")
+        assert "127." in value, (
+            "dev_local_media_m8: S3_PUBLIC_ENDPOINT must point at loopback (127.x.x.x) "
+            f"for the dev stack. Got: {value!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# dev stacks — storage host-port policy (T20)
+# ---------------------------------------------------------------------------
+
+_DEV_STACKS = [
+    ("dev_media_m8", _DEV),
+    ("dev_local_media_m8", _DEV_LOCAL),
+    ("worspace_dev_media_m8", _WORSPACE),
+]
+
+
+class TestDevStorageLoopbackOnly:
+    """In every dev stack the storage backend must publish exactly one
+    loopback-bound (127.0.0.1) host port — the S3 gateway — never 0.0.0.0, and
+    never a second port for the admin/filer surfaces (those are loopback-bound
+    *inside* the container by the boot command, same as hardened_media_m8)."""
+
+    def _storage_ports(self, compose_path: Path) -> list[str]:
+        return _load(compose_path)["services"]["storage"].get("ports", [])
+
+    @pytest.mark.parametrize("stack_name,compose_path", _DEV_STACKS)
+    def test_storage_has_ports_block(self, stack_name: str, compose_path: Path):
+        """Dev stacks must still expose the S3 gateway for local tooling."""
+        assert self._storage_ports(compose_path), (
+            f"{stack_name}: storage has no `ports:` block — the dev stack "
+            "should expose the S3 gateway on loopback for local mc/aws-cli access."
+        )
+
+    @pytest.mark.parametrize("stack_name,compose_path", _DEV_STACKS)
+    def test_storage_publishes_only_the_s3_gateway(
+        self, stack_name: str, compose_path: Path
+    ):
+        ports = self._storage_ports(compose_path)
+        assert ports == ["127.0.0.1:9005:8333"], (
+            f"{stack_name}: storage must publish exactly the loopback S3 "
+            f"gateway mapping '127.0.0.1:9005:8333' and nothing else — the "
+            f"admin/filer surfaces must never be published, even in dev. "
             f"Got: {ports}"
         )
 
-    def test_no_minio_port_on_all_interfaces(self):
-        for mapping in self._minio_ports():
+    @pytest.mark.parametrize("stack_name,compose_path", _DEV_STACKS)
+    def test_no_storage_port_on_all_interfaces(
+        self, stack_name: str, compose_path: Path
+    ):
+        for mapping in self._storage_ports(compose_path):
             parts = str(mapping).split(":")
             if len(parts) == 3:
                 host_ip = parts[0]
                 assert _LOOPBACK_RE.match(host_ip), (
-                    f"dev_media_m8: minio port {mapping!r} binds on {host_ip!r}, "
-                    "not loopback — change to 127.0.0.1:<host>:<container>."
+                    f"{stack_name}: storage port {mapping!r} binds on "
+                    f"{host_ip!r}, not loopback — change to "
+                    "127.0.0.1:<host>:<container>."
                 )
             elif len(parts) == 2:
                 pytest.fail(
-                    f"dev_media_m8: minio port {mapping!r} has no explicit host IP "
-                    "(defaults to 0.0.0.0). Change to 127.0.0.1:<host>:<container>."
+                    f"{stack_name}: storage port {mapping!r} has no explicit "
+                    "host IP (defaults to 0.0.0.0). Change to "
+                    "127.0.0.1:<host>:<container>."
                 )

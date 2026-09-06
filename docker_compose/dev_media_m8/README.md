@@ -3,13 +3,16 @@
 Local dev stack for `auth_user_service` + `media_service`.
 
 Same hardened posture as `hardened_media_m8` (PostgreSQL 18, two Redis instances
-(auth + media), MinIO, Traefik, Prometheus, Grafana, RS256/JWKS auth, container
-hardening, network segmentation), with two developer conveniences:
+(auth + media), SeaweedFS S3 storage, Traefik, Prometheus, Grafana, RS256/JWKS
+auth, container hardening, network segmentation), with two developer
+conveniences:
 
 - **`media_service` and `media_service_worker` are built from local source**
   (`../../media_service`) instead of pulling the published image.
-- **MinIO is published on loopback** (`127.0.0.1:9005`/`9006`) so you can reach
-  the API/console from the host while iterating.
+- **The storage backend's S3 gateway is published on loopback**
+  (`127.0.0.1:9005`) so you can reach it from the host while iterating. Unlike
+  the old MinIO block, there is no console port — SeaweedFS's admin/filer
+  surfaces are loopback-bound *inside* the container and are never published.
 
 `auth_user_service` and `media_worker` still use the published Docker Hub images.
 
@@ -28,13 +31,13 @@ Browser / Frontend
        +--> PostgreSQL on data_net
        +--> auth_user_service private API (HTTP introspection) for token revocation
        +--> Media Redis on data_net for media queues/rate limits/cache
-       +--> MinIO on data_net
+       +--> Object storage (SeaweedFS S3) on data_net
 ```
 
 `app_net` is external-facing for Traefik, app services, and observability.
-`data_net` is internal and has no gateway; DB, Redis, and MinIO are not exposed
-through that network (MinIO additionally publishes loopback-only host ports for
-dev convenience).
+`data_net` is internal and has no gateway; DB, Redis, and storage are not
+exposed through that network (the storage backend additionally publishes one
+loopback-only S3 gateway port for dev convenience).
 
 > **Token revocation:** the media service does **not** connect to the auth
 > Redis. In `stateful` mode it queries the auth service's private introspection
@@ -54,8 +57,9 @@ dev convenience).
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
-| minio | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772` | `127.0.0.1:9005` API, `127.0.0.1:9006` console |
-| minio-init | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` | one-shot: buckets + `media-rw` policy |
+| storage | `chrislusf/seaweedfs:4.45` | `127.0.0.1:9005` S3 gateway — admin/filer surfaces loopback-bound inside the container |
+| storage-config | `alpine:3.21.3` | one-shot: writes the backend's static identity table before it boots |
+| storage-init | `amazon/aws-cli:2.36.40` | one-shot: creates the five buckets + pins per-bucket CORS |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 
@@ -85,8 +89,9 @@ MEDIA_DB_PASSWORD=<media-db-password>
 MEDIA_DB_NAME=media_db
 REDIS_PASSWORD=<auth-redis-password>
 MEDIA_REDIS_PASSWORD=<media-redis-password>
-MINIO_ROOT_USER=<minio-root-user>
-MINIO_ROOT_PASSWORD=<minio-root-password>
+S3_ROOT_USER=<storage-admin-access-key>
+S3_ROOT_PASSWORD=<storage-admin-secret>
+S3_CORS_ALLOW_ORIGIN=http://localhost:5173,http://localhost:9000
 ```
 
 Edit `auth.env` so its generic runtime DB values match the `AUTH_DB_*` triplet in
@@ -99,7 +104,7 @@ Edit `media.env` so it matches the `MEDIA_DB_*` triplet in `.env`:
 DB_DATABASE=media_db
 DB_USER=<same-as-MEDIA_DB_USER>
 DB_PASSWORD=<same-as-MEDIA_DB_PASSWORD>
-S3_ENDPOINT=minio:9000
+S3_ENDPOINT=storage:8333
 S3_ACCESS_KEY=<media-rw-user>
 S3_SECRET_KEY=<media-rw-password>
 MEDIA_REDIS_HOST=media_redis_cache
@@ -110,9 +115,10 @@ MEDIA_REDIS_PASSWORD=<same-as-MEDIA_REDIS_PASSWORD-in-.env>
 cache keys under the `media:*` namespace. `media.env` has **no** `REDIS_*`
 (auth Redis) settings — revocation goes through HTTP introspection.
 
-The `minio-init` one-shot provisions a MinIO user from `media.env`'s
-`S3_ACCESS_KEY` / `S3_SECRET_KEY`, so set those to the media-rw credentials
-you want (not the MinIO root user).
+The `storage-config` one-shot writes the backend's identity table from these
+credentials **before** the backend boots — SeaweedFS has no bootstrap-time
+user-creation API, so `S3_ACCESS_KEY` / `S3_SECRET_KEY` here become the scoped
+`media-rw` identity, not the storage admin user (`S3_ROOT_USER` in `.env`).
 
 ### Secure-by-default settings (auth-sdk-m8 ≥ 1.0.0)
 
@@ -146,16 +152,17 @@ docker-compose up -d --build
 If your Docker install supports Compose v2, `docker compose up -d --build` is
 equivalent.
 
-## MinIO
+## Object storage
 
-MinIO is exposed only on loopback for local development:
+The storage backend's S3 gateway is exposed only on loopback for local
+development; its admin/filer surfaces are loopback-bound *inside* the
+container and are never published:
 
 | Endpoint | URL |
 | --- | --- |
-| API | `http://127.0.0.1:9005` |
-| Console | `http://127.0.0.1:9006` |
+| S3 gateway | `http://127.0.0.1:9005` |
 
-The `minio-init` one-shot service creates these logical buckets:
+The `storage-init` one-shot service creates these logical buckets:
 
 ```text
 public-media
@@ -165,10 +172,12 @@ temp-media
 archive-media
 ```
 
-It also creates and attaches a scoped `media-rw` policy/user for the media
-service credentials from `media.env`. `media_service` waits for `minio-init` to
-complete before starting and uses `S3_ACCESS_KEY` / `S3_SECRET_KEY`, not
-the MinIO root credentials.
+CORS on each bucket is scoped to `S3_CORS_ALLOW_ORIGIN` (`.env`) — never a
+wildcard. The scoped `media-rw` identity itself is declared up front by
+`storage-config` (SeaweedFS reads its identities once at startup, so there is
+no bootstrap-time user-creation call to make). `media_service` waits for
+`storage-init` to complete before starting and uses `S3_ACCESS_KEY` /
+`S3_SECRET_KEY`, not the storage admin credentials.
 
 ## URLs
 
@@ -181,7 +190,7 @@ the MinIO root credentials.
 | Traefik dashboard | `http://localhost:8080` |
 | Prometheus | `http://localhost:9090` |
 | Grafana | `http://localhost:3000` |
-| MinIO console | `http://127.0.0.1:9006` |
+| Storage S3 gateway | `http://127.0.0.1:9005` |
 
 ## Observability
 
@@ -200,8 +209,11 @@ controlled by `grafana/config.monitoring`.
 
 - `.env` is infrastructure/bootstrap config. It provisions `AUTH_DB_*` and
   `MEDIA_DB_*` through `../shared/db_init/init-db.sh`, and supplies the Redis and
-  MinIO root passwords used by the `redis_cache`, `media_redis_cache`, and
-  `minio` services via Compose interpolation.
+  storage admin credentials used by the `redis_cache`, `media_redis_cache`, and
+  storage-bootstrap services. The `storage` service itself takes its identities
+  from the static `-s3.config` file, which `storage-config` generates into
+  `seaweedfs/config/s3.json` (gitignored — it carries both credentials
+  verbatim).
 - `auth.env` and `media.env` are runtime application configs consumed by
   `auth-sdk-m8`. They use generic `DB_DATABASE`, `DB_USER`, `DB_PASSWORD` — do
   **not** replace those with the `MEDIA_DB_*` / `AUTH_DB_*` names.
@@ -228,7 +240,7 @@ docker-compose config
 docker-compose up -d --build
 docker-compose ps
 docker-compose logs -f media_service
-docker-compose logs -f minio-init
+docker-compose logs -f storage-init
 docker-compose down
 ```
 
@@ -253,15 +265,22 @@ needed on WSL2/Linux bind mounts. On every run `init.sh` also enforces
 Set them (identically across auth + media), or set `EVENT_SIGNING_ENABLED=false`
 / `TOKEN_STRICT_VALIDATION=false` for local-only runs.
 
-**Media service cannot connect to MinIO**: inside Docker, use `S3_ENDPOINT=minio:9000`.
-The **browser**, however, uses `S3_PUBLIC_ENDPOINT`
-(`http://127.0.0.1:9005`) to reach MinIO directly for presigned uploads/downloads;
-this is distinct from the internal `minio:9000` endpoint. This separation
-enables browser-direct Option A uploads (presigned POSTs and GETs), which
-requires the public endpoint for the signatures to validate correctly.
+**Media service cannot connect to object storage**: inside Docker, use
+`S3_ENDPOINT=storage:8333`. The **browser**, however, uses
+`S3_PUBLIC_ENDPOINT` (`http://127.0.0.1:9005`) to reach the storage backend
+directly for presigned uploads/downloads; this is distinct from the internal
+`storage:8333` endpoint. This separation enables browser-direct Option A
+uploads (presigned POSTs and GETs), which requires the public endpoint for the
+signatures to validate correctly.
 
-**`minio-init` fails or buckets are missing**: check `docker-compose logs minio-init`.
-It waits for MinIO to be healthy, then creates buckets and the `media-rw` user.
+**`storage-init` fails or buckets are missing**: check
+`docker-compose logs storage-init`. It waits for `storage` to be healthy, then
+creates buckets and pins CORS.
+
+**`storage` never starts and `storage-config` exited non-zero**: the identity
+table was refused. `docker-compose logs storage-config` names which credential
+was empty, still `changethis`, contained a character it will not embed in JSON
+verbatim, or (`S3_ROOT_USER == S3_ACCESS_KEY`) collided with the app identity.
 
 **DB user authentication fails**: confirm `media.env` `DB_USER` / `DB_PASSWORD`
 match `.env` `MEDIA_DB_USER` / `MEDIA_DB_PASSWORD`. If `db_data/` already exists,
