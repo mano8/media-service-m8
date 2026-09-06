@@ -119,6 +119,18 @@ stays `>=2.0.0 <3.0.0` — the served HTTP contract is untouched by this release
   renaming those is `T15`–`T18`'s job when the backend itself swaps. Both
   repos' policy suites are green: `media-service-m8` 26 passed, `fa-ui-m8`
   37 passed.
+- **POST-policy doc drift fixed** (`T14-readme-post-policy-fix`,
+  object-storage backend migration plan, Wave 2). This README's Uploads
+  section previously said "presigned PUT flow"; the flow has always been an
+  S3 **POST policy** (`upload_url` + `upload_fields`, a multipart POST — not
+  a bare PUT), and it now says so, plus states that the size cap and
+  `Content-Type` are **server-enforced** by the signed policy conditions, not
+  just checked client-side at `complete`. `media-sdk-m8`'s
+  `set_object_content_type` docstring (`storage/client.py`) is corrected the
+  same way — upload is a POST policy, and this method's copy is a distinct,
+  narrower post-write correction, not the upload path's own Content-Type
+  control (see `media-sdk-m8`'s own `CHANGELOG.md`). Docs-only in this repo:
+  full suite 1182 passed, 100% coverage; ruff format/check clean.
 - **Storage health check dropped the second MinIO client library**
   (`T7-drop-miniopy-async`, object-storage backend migration plan). The
   readiness check at `/{prefix}/health/` previously built its own

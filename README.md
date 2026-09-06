@@ -67,17 +67,24 @@ probes at `/{prefix}/ping`, and **readiness** probes at `/{prefix}/health/`.
 The `/meta` values come from `Settings` (`SERVICE_VERSION` tracks the package version),
 so the service fails closed at boot if its identity is undeclared.
 
-### Uploads — `/{prefix}/v1/uploads` (presigned PUT flow)
+### Uploads — `/{prefix}/v1/uploads` (presigned POST-policy flow)
 
 | Method | Path | Auth | Rate limit | Purpose |
 | --- | --- | --- | --- | --- |
-| POST | `/v1/uploads/initiate` | writer | 20/min | Create an upload session + presigned PUT URL |
-| POST | `/v1/uploads/{session_id}/complete` | writer | 20/min | Finalize after the client PUTs to MinIO |
+| POST | `/v1/uploads/initiate` | writer | 20/min | Create an upload session + presigned S3 POST policy |
+| POST | `/v1/uploads/{session_id}/complete` | writer | 20/min | Finalize after the client POSTs to storage |
 | POST | `/v1/uploads/{session_id}/abort` | writer | — | Abort an in-progress session |
 
-Flow: `initiate` returns a presigned `PUT` URL and a session id → client uploads
-bytes directly to MinIO → `complete` runs three integrity checks then promotes
-the `MediaObject` from `PENDING_UPLOAD` to `UPLOADED`:
+Flow: `initiate` returns an S3 **POST policy** — `upload_url` plus
+`upload_fields`, not a bare presigned `PUT` — and a session id → the client
+sends a multipart `POST` containing every `upload_fields` entry followed by
+the file, directly to storage → `complete` runs three integrity checks then
+promotes the `MediaObject` from `PENDING_UPLOAD` to `UPLOADED`. The POST
+policy's signed conditions make the size cap and `Content-Type`
+**server-enforced** at upload time — storage itself rejects an oversized or
+wrong-type object — rather than relying solely on the client-side checks
+below, which catch what the signed conditions can't (declared vs. actual
+sniffed MIME, integrity hash):
 
 1. **Size** — `stat.size` must not exceed `MEDIA_MAX_UPLOAD_SIZE_BYTES` (or the
    per-category override from `MEDIA_MAX_UPLOAD_SIZE_BYTES_PER_CATEGORY`).
