@@ -1,26 +1,46 @@
-"""Static compose-policy tests for MinIO host-port exposure (item 0.2) and the
-browser-direct presigned upload/download ingress (Phase 4).
+"""Static compose-policy tests for the storage backend's host-port exposure
+(item 0.2), the browser-direct presigned upload/download ingress (Phase 4),
+and the SeaweedFS hardening/bootstrap invariants closed in Wave 3
+(`T15`-`T18`).
 
-These tests parse the YAML files directly — no running Docker required.
+These tests parse the YAML files directly — no running Docker required. Each
+test named after a contract invariant id (`media-sdk-m8/tests/conformance/
+CONTRACT.md`) is that invariant's proof for this suite: delete the setting it
+checks and the test must fail, per that contract's own acceptance rule.
 
 Policy:
-  hardened_media_m8  — MinIO must have NO `ports:` block at all (internal-only).
-                     — Traefik storage router must be on websecure (TLS) with tls:{},
-                       route by Host (not bare /), exclude /minio paths, and use a
-                       minio-storage backend with passHostHeader:true at http://minio:9000.
-                     — MINIO_API_CORS_ALLOW_ORIGIN must be set and must NOT be *.
-                     — media.env.example must declare S3_PUBLIC_ENDPOINT starting with https://.
-  dev_media_m8       — MinIO ports must be loopback-bound only (no 0.0.0.0 bind).
-                     — MINIO_API_CORS_ALLOW_ORIGIN must be set and must NOT be *.
-                     — media.env.example must declare S3_PUBLIC_ENDPOINT starting with loopback.
-  worspace_dev_media_m8 — same CORS + env.example assertions as dev.
+  hardened_media_m8  — backend is SeaweedFS (`T15`-`T17`). The `storage`
+                       service must have NO `ports:` block at all
+                       (internal-only, S1) and must carry the same hardening
+                       as every other service in the stack — no-new-privileges,
+                       cap_drop: ALL, read_only, deploy.resources.limits (S15).
+                       Its boot command must bind every admin surface
+                       (master/volume/filer/webdav) to loopback and advertise
+                       loopback too, leaving only the S3 gateway reachable from
+                       siblings.
+                     — Traefik storage router must be on websecure (TLS) with
+                       tls:{}, route by Host (not bare /), exclude the two
+                       non-S3 liveness paths SeaweedFS serves on the S3 port
+                       (`/healthz`, `/status`), and use a media-storage backend
+                       with passHostHeader:true at http://storage:8333 (S6).
+                     — S3_CORS_ALLOW_ORIGIN (root .env, read by storage-init)
+                       must be set and must NOT be a wildcard, and the
+                       bootstrap script itself must still refuse to apply a
+                       wildcard origin (S3).
+                     — media.env.example must declare S3_PUBLIC_ENDPOINT
+                       starting with https://.
+  dev_media_m8       — backend is still MinIO (`T20` migrates the dev stacks;
+                       out of scope here). MinIO ports must be loopback-bound
+                       only (no 0.0.0.0 bind); MINIO_API_CORS_ALLOW_ORIGIN must
+                       be set and must NOT be *; media.env.example must declare
+                       S3_PUBLIC_ENDPOINT starting with loopback.
+  worspace_dev_media_m8 — same MinIO CORS + env.example assertions as dev.
 
-The backend is still MinIO in this wave (Wave 3 owns the actual swap); class
-names below and the `minio`/`MINIO_API_CORS_ALLOW_ORIGIN` literals they check
-still name the real container and env vars. Only the env-var lookups this file
-asserts on for the *application* side moved to `S3_*` (T10-T12); the storage
-container's own bootstrap/CORS vocabulary is renamed in Wave 3 alongside the
-backend swap (T15-T18).
+Only the env-var lookups this file asserts on for the *application* side moved
+to `S3_*` (T10-T12) before this step; `hardened_media_m8`'s own storage
+container/bootstrap vocabulary moves to SeaweedFS terms here (T18), while
+`dev_media_m8`/`worspace_dev_media_m8` stay on MinIO/`minio`/
+`MINIO_API_CORS_ALLOW_ORIGIN` literals until `T20`.
 """
 
 from __future__ import annotations
@@ -35,6 +55,7 @@ _COMPOSE_DIR = Path(__file__).parent.parent / "docker_compose"
 _HARDENED = _COMPOSE_DIR / "hardened_media_m8" / "docker-compose.yml"
 _HARDENED_TRAEFIK = _COMPOSE_DIR / "hardened_media_m8" / "traefik" / "dynamic_conf.yml"
 _HARDENED_ENV = _COMPOSE_DIR / "hardened_media_m8" / "media.env.example"
+_HARDENED_DOTENV = _COMPOSE_DIR / "hardened_media_m8" / ".env.example"
 _DEV = _COMPOSE_DIR / "dev_media_m8" / "docker-compose.yml"
 _DEV_ENV = _COMPOSE_DIR / "dev_media_m8" / "media.env.example"
 _WORSPACE = _COMPOSE_DIR / "worspace_dev_media_m8" / "docker-compose.yml"
@@ -61,36 +82,87 @@ def _env_vars(path: Path) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# hardened_media_m8 — host-port policy
+# hardened_media_m8 — host-port policy (S1)
 # ---------------------------------------------------------------------------
 
 
-class TestHardenedMinioNoHostPorts:
-    """In the hardened stack MinIO must not publish any host port."""
+class TestHardenedStorageNoHostPorts:
+    """In the hardened stack the storage backend must not publish any host
+    port — it is reachable only on the Docker network (S1)."""
 
-    def test_minio_has_no_ports_block(self):
+    def test_hardened_storage_publishes_no_host_ports(self):
         compose = _load(_HARDENED)
-        minio = compose["services"]["minio"]
-        assert "ports" not in minio, (
-            "hardened_media_m8: minio must not have a `ports:` block — "
-            "it must be reachable only on the Docker network (minio:9000). "
-            f"Got: {minio.get('ports')}"
+        storage = compose["services"]["storage"]
+        assert "ports" not in storage, (
+            "hardened_media_m8: storage must not have a `ports:` block — "
+            "it must be reachable only on the Docker network (storage:8333). "
+            f"Got: {storage.get('ports')}"
         )
 
 
 # ---------------------------------------------------------------------------
-# hardened_media_m8 — Traefik storage router (Phase 4)
+# hardened_media_m8 — storage backend admin-surface binding (input to S2,
+# proved live against a real container by T3-run-seaweedfs / T1-conformance-
+# harness; this is the static half — the boot command itself must still ask
+# for loopback binding)
+# ---------------------------------------------------------------------------
+
+
+class TestHardenedStorageAdminSurfaceLoopbackOnly:
+    """The storage service's boot command must bind every admin surface
+    (master/volume/filer/webdav) to loopback and advertise loopback too,
+    leaving only the S3 gateway reachable from sibling containers."""
+
+    def _command(self) -> list[str]:
+        compose = _load(_HARDENED)
+        return compose["services"]["storage"].get("command", [])
+
+    def test_storage_command_binds_admin_surfaces_to_loopback(self):
+        command = self._command()
+        assert "-ip.bind=127.0.0.1" in command, (
+            "hardened_media_m8: storage command must include "
+            f"'-ip.bind=127.0.0.1' to bind master/volume/filer/webdav to the "
+            f"container's own loopback. Got: {command!r}"
+        )
+
+    def test_storage_command_advertises_loopback(self):
+        command = self._command()
+        assert "-ip=localhost" in command, (
+            "hardened_media_m8: storage command must include '-ip=localhost' "
+            "so the address components advertise agrees with -ip.bind — "
+            "without it the filer's own chunk upload to the volume server "
+            "dials the routable address and every write fails (measured as "
+            f"D1 in the migration matrix). Got: {command!r}"
+        )
+
+    def test_storage_command_exposes_only_s3_gateway_to_siblings(self):
+        command = self._command()
+        assert "-s3.ip.bind=0.0.0.0" in command, (
+            "hardened_media_m8: storage command must include "
+            f"'-s3.ip.bind=0.0.0.0' — the S3 gateway is the only surface "
+            f"siblings (Traefik included) may reach. Got: {command!r}"
+        )
+        assert "-ip.bind=0.0.0.0" not in command, (
+            "hardened_media_m8: storage command must not bind the admin "
+            f"address components to 0.0.0.0. Got: {command!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# hardened_media_m8 — Traefik storage router (Phase 4 / S6)
 # ---------------------------------------------------------------------------
 
 
 class TestHardenedTraefikStorageRouter:
-    """The hardened stack must expose the S3 data path via a Traefik storage router
-    that is TLS-only, Host-pinned, and explicitly excludes admin/console paths."""
+    """The hardened stack must expose the S3 data path via a Traefik storage
+    router that is TLS-only, Host-pinned, forwards the original Host, and
+    explicitly excludes the two non-S3 liveness paths SeaweedFS serves on the
+    S3 gateway port (S6)."""
 
     def _traefik(self) -> dict:
         return _load(_HARDENED_TRAEFIK)
 
-    def test_minio_storage_router_exists(self):
+    def test_media_storage_router_exists(self):
         routers = self._traefik()["http"]["routers"]
         assert "media-storage-router" in routers, (
             "hardened_media_m8: traefik/dynamic_conf.yml must define a "
@@ -110,7 +182,7 @@ class TestHardenedTraefikStorageRouter:
         router = self._traefik()["http"]["routers"]["media-storage-router"]
         assert "tls" in router, (
             "hardened_media_m8: media-storage-router must carry 'tls: {}' — "
-            "MINIO_PUBLIC_ENDPOINT is https:// and the route must be TLS-only."
+            "S3_PUBLIC_ENDPOINT is https:// and the route must be TLS-only."
         )
 
     def test_storage_router_rule_uses_host(self):
@@ -121,59 +193,120 @@ class TestHardenedTraefikStorageRouter:
             f"not a bare PathPrefix. Got: {rule!r}"
         )
 
-    def test_storage_router_excludes_minio_admin_paths(self):
+    def test_storage_router_excludes_non_s3_liveness_paths(self):
         router = self._traefik()["http"]["routers"]["media-storage-router"]
         rule = router.get("rule", "")
-        assert "!PathPrefix(`/minio`)" in rule, (
-            "hardened_media_m8: media-storage-router rule must include "
-            "'!PathPrefix(`/minio`)' to block admin API and console access. "
-            f"Got: {rule!r}"
+        assert "PathPrefix(`/healthz`)" in rule and "PathPrefix(`/status`)" in rule, (
+            "hardened_media_m8: media-storage-router rule must exclude the two "
+            "non-S3 liveness paths SeaweedFS serves unauthenticated on the S3 "
+            f"gateway port (`/healthz`, `/status`). Got: {rule!r}"
+        )
+        assert re.search(r"!\s*\(", rule), (
+            "hardened_media_m8: the liveness-path exclusion must be a negated "
+            f"group, not merely mentioned in the rule. Got: {rule!r}"
         )
 
-    def test_minio_storage_service_exists(self):
+    def test_media_storage_service_exists(self):
         services = self._traefik()["http"]["services"]
-        assert "minio-storage" in services, (
+        assert "media-storage" in services, (
             "hardened_media_m8: traefik/dynamic_conf.yml must define a "
-            "'minio-storage' Traefik service."
+            "'media-storage' Traefik service."
         )
 
-    def test_minio_storage_backend_url(self):
-        lb = self._traefik()["http"]["services"]["minio-storage"]["loadBalancer"]
+    def test_media_storage_backend_url(self):
+        lb = self._traefik()["http"]["services"]["media-storage"]["loadBalancer"]
         urls = [s["url"] for s in lb.get("servers", [])]
-        assert "http://minio:9000" in urls, (
-            "hardened_media_m8: minio-storage backend must point to "
-            f"'http://minio:9000'. Got: {urls!r}"
+        assert "http://storage:8333" in urls, (
+            "hardened_media_m8: media-storage backend must point to the S3 "
+            f"gateway 'http://storage:8333'. Got: {urls!r}"
         )
 
-    def test_minio_storage_pass_host_header(self):
-        lb = self._traefik()["http"]["services"]["minio-storage"]["loadBalancer"]
+    def test_media_storage_pass_host_header(self):
+        lb = self._traefik()["http"]["services"]["media-storage"]["loadBalancer"]
         assert lb.get("passHostHeader") is True, (
-            "hardened_media_m8: minio-storage loadBalancer must set "
+            "hardened_media_m8: media-storage loadBalancer must set "
             "'passHostHeader: true' — GET SigV4 signatures bind the Host header "
             "and the proxy must forward it unchanged for signatures to validate."
         )
 
-    def test_storage_router_service_is_minio_storage(self):
+    def test_storage_router_service_is_media_storage(self):
         router = self._traefik()["http"]["routers"]["media-storage-router"]
-        assert router.get("service") == "minio-storage", (
+        assert router.get("service") == "media-storage", (
             "hardened_media_m8: media-storage-router must route to the "
-            f"'minio-storage' service. Got: {router.get('service')!r}"
+            f"'media-storage' service. Got: {router.get('service')!r}"
+        )
+
+    def test_public_storage_route_is_tls_and_host_pinned(self):
+        """Contract id S6, proved in one place: the route is TLS-only,
+        Host-pinned, and forwards the Host unchanged to the backend. Deleting
+        any one of `tls`, the `Host()` rule term, or `passHostHeader: true`
+        must fail this test."""
+        traefik = self._traefik()
+        router = traefik["http"]["routers"]["media-storage-router"]
+        service = traefik["http"]["services"][router.get("service", "")]
+        lb = service["loadBalancer"]
+        rule = router.get("rule", "")
+        assert "websecure" in router.get("entryPoints", [])
+        assert "tls" in router
+        assert "Host(" in rule
+        assert lb.get("passHostHeader") is True
+
+
+# ---------------------------------------------------------------------------
+# hardened_media_m8 — storage container hardening (S15)
+# ---------------------------------------------------------------------------
+
+
+class TestHardenedStorageServiceHardening:
+    """The storage container must carry the same hardening as every other
+    service in the hardened stack: no-new-privileges, cap_drop: ALL,
+    read_only, and deploy.resources.limits (S15) — a gap that was open before
+    this migration."""
+
+    def _storage(self) -> dict:
+        compose = _load(_HARDENED)
+        return compose["services"]["storage"]
+
+    def test_storage_service_carries_standard_hardening(self):
+        storage = self._storage()
+
+        security_opt = storage.get("security_opt", [])
+        assert "no-new-privileges:true" in security_opt, (
+            "hardened_media_m8: storage must set "
+            f"'security_opt: [no-new-privileges:true]'. Got: {security_opt!r}"
+        )
+
+        assert storage.get("cap_drop") == ["ALL"], (
+            "hardened_media_m8: storage must set 'cap_drop: [ALL]'. "
+            f"Got: {storage.get('cap_drop')!r}"
+        )
+
+        assert storage.get("read_only") is True, (
+            "hardened_media_m8: storage must set 'read_only: true'. "
+            f"Got: {storage.get('read_only')!r}"
+        )
+
+        limits = storage.get("deploy", {}).get("resources", {}).get("limits", {})
+        assert limits.get("cpus") and limits.get("memory"), (
+            "hardened_media_m8: storage must set "
+            "'deploy.resources.limits.{cpus,memory}'. "
+            f"Got: {limits!r}"
         )
 
 
 # ---------------------------------------------------------------------------
-# CORS policy — all stacks (Phase 4)
+# CORS policy — dev / worspace stacks, still MinIO (T20 migrates these)
 # ---------------------------------------------------------------------------
 
 
 class TestMinioCorsNotWildcard:
-    """Every stack's minio service must set MINIO_API_CORS_ALLOW_ORIGIN and
-    it must NOT be the wildcard '*'."""
+    """Every still-MinIO dev stack must set MINIO_API_CORS_ALLOW_ORIGIN and
+    it must NOT be the wildcard '*'. hardened_media_m8 no longer has a minio
+    service — its CORS bootstrap is TestHardenedStorageCorsBootstrap below."""
 
     @pytest.mark.parametrize(
         "stack_name,compose_path",
         [
-            ("hardened_media_m8", _HARDENED),
             ("dev_media_m8", _DEV),
             ("worspace_dev_media_m8", _WORSPACE),
         ],
@@ -188,7 +321,6 @@ class TestMinioCorsNotWildcard:
     @pytest.mark.parametrize(
         "stack_name,compose_path",
         [
-            ("hardened_media_m8", _HARDENED),
             ("dev_media_m8", _DEV),
             ("worspace_dev_media_m8", _WORSPACE),
         ],
@@ -199,6 +331,50 @@ class TestMinioCorsNotWildcard:
         assert value != "*", (
             f"{stack_name}: MINIO_API_CORS_ALLOW_ORIGIN must NOT be '*' — "
             "scope it to the specific UI origin."
+        )
+
+
+# ---------------------------------------------------------------------------
+# hardened_media_m8 — storage-init CORS bootstrap (S3)
+# ---------------------------------------------------------------------------
+
+
+class TestHardenedStorageCorsBootstrap:
+    """SeaweedFS has no MINIO_API_CORS_ALLOW_ORIGIN equivalent — CORS is a
+    per-bucket PutBucketCors call the storage-init one-shot issues from
+    S3_CORS_ALLOW_ORIGIN (root .env). It must be set, scoped to the UI
+    origin, never a wildcard, and the bootstrap script itself must still
+    refuse to apply a wildcard origin even if the .env value is ever
+    misconfigured (S3)."""
+
+    def _storage_init_script(self) -> str:
+        compose = _load(_HARDENED)
+        entrypoint = compose["services"]["storage-init"]["entrypoint"]
+        # ["/bin/sh", "-c", "<script>"] — the script is the last element.
+        return entrypoint[-1]
+
+    def test_storage_cors_is_scoped_to_ui_origin(self):
+        env = _env_vars(_HARDENED_DOTENV)
+        value = env.get("S3_CORS_ALLOW_ORIGIN", "")
+        assert value, (
+            "hardened_media_m8: .env.example must declare "
+            "S3_CORS_ALLOW_ORIGIN, scoped to the UI origin(s) allowed on the "
+            "presigned data path."
+        )
+        assert "*" not in value, (
+            "hardened_media_m8: S3_CORS_ALLOW_ORIGIN must NOT contain '*' — "
+            f"scope it to the specific UI origin(s). Got: {value!r}"
+        )
+
+        script = self._storage_init_script()
+        assert "S3_CORS_ALLOW_ORIGIN" in script and "*" in script, (
+            "hardened_media_m8: storage-init must still refuse to apply a "
+            "wildcard S3_CORS_ALLOW_ORIGIN at bootstrap time — this guard is "
+            "the last line of defense if the .env value is ever misconfigured."
+        )
+        assert "exit 1" in script, (
+            "hardened_media_m8: storage-init's wildcard-origin guard must "
+            "abort the bootstrap (exit 1), not merely warn."
         )
 
 
