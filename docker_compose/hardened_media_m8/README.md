@@ -50,7 +50,8 @@ through that network.
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
 | storage | `chrislusf/seaweedfs:4.45` | S3 object storage — internal data network, **no host port** |
-| minio-init | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` | one-shot: buckets + `media-rw` policy |
+| storage-config | `alpine:3.21.3` | one-shot: writes the backend's static identity table before it boots |
+| storage-init | `amazon/aws-cli:2.36.40` | one-shot: creates the five buckets + pins per-bucket CORS |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 
@@ -80,8 +81,9 @@ MEDIA_DB_PASSWORD=<media-db-password>
 MEDIA_DB_NAME=media_db
 REDIS_PASSWORD=<auth-redis-password>
 MEDIA_REDIS_PASSWORD=<media-redis-password>
-MINIO_ROOT_USER=<minio-root-user>
-MINIO_ROOT_PASSWORD=<minio-root-password>
+S3_ROOT_USER=<storage-admin-access-key>
+S3_ROOT_PASSWORD=<storage-admin-secret>
+S3_CORS_ALLOW_ORIGIN=https://localhost:4430
 ```
 
 Edit `auth.env` so its generic runtime DB values match the `AUTH_DB_*` triplet in
@@ -105,9 +107,13 @@ MEDIA_REDIS_PASSWORD=<same-as-MEDIA_REDIS_PASSWORD-in-.env>
 cache keys under the `media:*` namespace. `media.env` has **no** `REDIS_*`
 (auth Redis) settings — revocation goes through HTTP introspection.
 
-The `minio-init` one-shot provisions a MinIO user from `media.env`'s
-`S3_ACCESS_KEY` / `S3_SECRET_KEY`, so set those to the media-rw credentials
-you want (not the MinIO root user).
+The `storage-config` one-shot writes the backend's identity table from these
+two files: the admin identity from `.env`'s `S3_ROOT_USER` / `S3_ROOT_PASSWORD`,
+and the scoped `media-rw` identity from `media.env`'s `S3_ACCESS_KEY` /
+`S3_SECRET_KEY`. Set the latter to the media-rw credentials you want — never to
+the admin pair; the generator refuses to start if the two access keys match, if
+either is still `changethis`, or if a value carries a character it will not
+embed in JSON verbatim (allowed: `A-Z a-z 0-9 . _ ~ + / = -`).
 
 ### Secure-by-default settings (auth-sdk-m8 ≥ 1.0.0)
 
@@ -157,7 +163,11 @@ explicitly excludes `/minio/*` paths to prevent access to the admin API or conso
 Configuration:
 
 - `S3_PUBLIC_ENDPOINT=https://storage.localhost` in `media.env`
-- `MINIO_API_CORS_ALLOW_ORIGIN: "https://localhost:4430"` in minio environment (edit for your FQDN)
+- `S3_CORS_ALLOW_ORIGIN=https://localhost:4430` in `.env` (edit for your FQDN).
+  SeaweedFS has no CORS environment variable, so `storage-init` applies the rule
+  set with one `PutBucketCors` call per bucket: exactly these origins (comma-
+  separate for more than one), methods `GET`/`HEAD`/`POST`, and an enumerated
+  header list — never `*`. A wildcard or empty value aborts the one-shot.
 - Traefik router uses `passHostHeader: true` — **required** for presigned GET signatures
   to validate correctly (SigV4 binds the Host header).
 
@@ -165,7 +175,7 @@ For debugging, reach the console/API via `docker compose exec` or by temporarily
 adding a loopback `ports:` mapping; the dev stack (`dev_media_m8`) keeps the
 loopback ports for convenience.
 
-The `minio-init` one-shot service creates these logical buckets:
+The `storage-init` one-shot service creates these logical buckets:
 
 ```text
 public-media
@@ -175,10 +185,14 @@ temp-media
 archive-media
 ```
 
-It also creates and attaches a scoped `media-rw` policy/user for the media
-service credentials from `media.env`. `media_service` waits for `minio-init` to
-complete before starting and uses `S3_ACCESS_KEY` / `S3_SECRET_KEY`, not
-the MinIO root credentials.
+and pins CORS on each of them. The scoped `media-rw` identity itself is
+declared earlier, by `storage-config`, because SeaweedFS reads its identities
+from a static file at startup rather than from a bootstrap-time admin API —
+`Read`/`Write`/`List` on exactly these five buckets and nothing else. It has no
+separate delete verb, so deletes are covered by `Write` over the same bucket
+set. `media_service` waits for `storage-init` to complete before starting and
+uses `S3_ACCESS_KEY` / `S3_SECRET_KEY`, never the admin credentials, which no
+application container is given.
 
 ## URLs
 
@@ -209,10 +223,11 @@ controlled by `grafana/config.monitoring`.
 
 - `.env` is infrastructure/bootstrap config. It provisions `AUTH_DB_*` and
   `MEDIA_DB_*` through `../shared/db_init/init-db.sh`, and supplies the Redis and
-  storage root passwords used by the `redis_cache`, `media_redis_cache`, and
-  storage-bootstrap services via Compose interpolation. The `storage` service
-  itself takes its identities from the static `-s3.config` file, not from the
-  environment.
+  storage admin credentials used by the `redis_cache`, `media_redis_cache`, and
+  storage-bootstrap services. The `storage` service itself takes its identities
+  from the static `-s3.config` file, which `storage-config` generates into
+  `seaweedfs/config/s3.json` (gitignored — it carries both credentials
+  verbatim).
 - `auth.env` and `media.env` are runtime application configs consumed by
   `auth-sdk-m8`. They use generic `DB_DATABASE`, `DB_USER`, `DB_PASSWORD` — do
   **not** replace those with the `MEDIA_DB_*` / `AUTH_DB_*` names.
@@ -238,7 +253,7 @@ docker-compose config
 docker-compose up -d --build
 docker-compose ps
 docker-compose logs -f media_service
-docker-compose logs -f minio-init
+docker-compose logs -f storage-init
 docker-compose down
 ```
 
@@ -268,8 +283,17 @@ Set them (identically across auth + media), or set `EVENT_SIGNING_ENABLED=false`
 debug from inside the network (`docker compose exec`) rather than via a host
 port.
 
-**`minio-init` fails or buckets are missing**: check `docker-compose logs minio-init`.
-It waits for MinIO to be healthy, then creates buckets and the `media-rw` user.
+**`storage-init` fails or buckets are missing**: check
+`docker-compose logs storage-init`. It waits for `storage` to be healthy, then
+creates the five buckets and pins CORS on each. If it aborts before the first
+bucket, the message names the cause — an empty or wildcard `S3_CORS_ALLOW_ORIGIN`.
+
+**`storage` never starts and `storage-config` exited non-zero**: the identity
+table was refused. `docker-compose logs storage-config` names which credential
+was empty, still `changethis`, duplicated between the admin and app identities,
+or carried an unembeddable character. Nothing boots until `.env` and `media.env`
+are filled in — by design; a backend that came up with placeholder identities
+would 403 every application request instead.
 
 **DB user authentication fails**: confirm `media.env` `DB_USER` / `DB_PASSWORD`
 match `.env` `MEDIA_DB_USER` / `MEDIA_DB_PASSWORD`. If `db_data/` already exists,

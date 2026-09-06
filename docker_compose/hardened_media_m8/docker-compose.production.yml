@@ -35,6 +35,7 @@
 #      media_redis_password.txt     media_internal_service_token.txt
 #      media_share_signing_secret.txt   minio_access_key.txt
 #      minio_secret_key.txt         private_api_secret.txt
+#      s3_root_user.txt             s3_root_password.txt
 #      refresh_secret_key.txt       event_signing_key.txt
 #      session_secret.txt           tokens_encryption_key.txt
 # 3. Copy / fill *.env.production.example → *.env.production (non-secret fields).
@@ -84,6 +85,40 @@ services:
 
   redis_cache:
     ports: !reset []
+
+  # ── storage bootstrap ─────────────────────────────────────────────────────────
+  # storage-config bakes the backend's identity table and storage-init creates
+  # the buckets, so both must read the SAME credentials the apps authenticate
+  # with. Left on the dev env files they would provision the placeholder values
+  # from media.env while media_service signs with /run/secrets/* — a stack that
+  # comes up and then 403s on every object. The admin identity has its own two
+  # secrets and is never handed to an application container.
+  storage-config:
+    env_file: !override
+      - ./.env
+      - ./media.env.production
+    secrets:
+      - s3_root_user
+      - s3_root_password
+      - minio_access_key
+      - minio_secret_key
+    environment:
+      S3_ROOT_USER_FILE: /run/secrets/s3_root_user
+      S3_ROOT_PASSWORD_FILE: /run/secrets/s3_root_password
+      S3_ACCESS_KEY_FILE: /run/secrets/minio_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+
+  # Bucket creation + per-bucket CORS run as the admin identity only.
+  storage-init:
+    env_file: !override
+      - ./.env
+      - ./media.env.production
+    secrets:
+      - s3_root_user
+      - s3_root_password
+    environment:
+      S3_ROOT_USER_FILE: /run/secrets/s3_root_user
+      S3_ROOT_PASSWORD_FILE: /run/secrets/s3_root_password
 
   # ── auth_user_service ────────────────────────────────────────────────────────
   # Secrets NOT in env file — they arrive via _FILE env vars from /run/secrets/.
@@ -209,6 +244,12 @@ secrets:
     file: ./secrets/minio_access_key.txt
   minio_secret_key:
     file: ./secrets/minio_secret_key.txt
+  # Storage admin identity — read ONLY by storage-config/storage-init and by the
+  # backend's own identity table. Never mounted into an application container.
+  s3_root_user:
+    file: ./secrets/s3_root_user.txt
+  s3_root_password:
+    file: ./secrets/s3_root_password.txt
   private_api_secret:
     file: ./secrets/private_api_secret.txt
   refresh_secret_key:
