@@ -44,7 +44,7 @@ async def object_storage_health_check() -> HealthCheckResult:
     try:
         storage = ObjectStorage(get_storage_config())
         await anyio.to_thread.run_sync(
-            lambda: storage.bucket_exists(bucket=settings.MINIO_BUCKET_PUBLIC)
+            lambda: storage.bucket_exists(bucket=settings.S3_BUCKET_PUBLIC)
         )
         return HealthCheckResult(name="object_storage", status=HealthStatus.OK)
     except Exception as exc:
@@ -52,7 +52,7 @@ async def object_storage_health_check() -> HealthCheckResult:
             name="object_storage",
             status=HealthStatus.DEGRADED,
             error=str(exc),
-            meta={"host": settings.MINIO_HOST},
+            meta={"endpoint": settings.S3_ENDPOINT},
         )
 
 

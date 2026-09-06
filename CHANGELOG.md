@@ -11,9 +11,51 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
-## [Unreleased]
+## [2.2.0] — 2026-09-06 · S3-neutral storage configuration vocabulary
+
+**Minor, additive-with-deprecation.** The storage settings are renamed after
+the protocol they speak instead of after one implementation of it; every old
+name still loads for one deprecation cycle, so an existing deployment upgrades
+without touching its `.env`. `CONTRACT_VERSION` stays `1.1` and `CONTRACT_RANGE`
+stays `>=2.0.0 <3.0.0` — the served HTTP contract is untouched by this release.
 
 ### Changed
+
+- **`MINIO_*` storage settings renamed to `S3_*`** (`T10-settings-s3-rename`,
+  object-storage backend migration plan, Wave 2). `media_service/core/config.py`
+  now declares `S3_ENDPOINT`, `S3_USE_SSL`, `S3_REGION`, `S3_PUBLIC_ENDPOINT`,
+  `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET_{PUBLIC,PRIVATE,SENSITIVE,TEMP,
+  ARCHIVE}` and `S3_PRESIGNED_URL_EXPIRE_SECONDS`; every call site in the
+  service (`storage/client.py`, `storage/buckets.py`, `main.py`,
+  `maintenance_worker.py`, `app/routes/admin.py` and the object/share/upload/
+  transfer controllers) reads the new names. The backend is still MinIO in this
+  wave — this is vocabulary only, no behaviour change at the storage boundary.
+  - `S3_SECRET_KEY` is in `secret_fields`, so the renamed secret keeps the
+    placeholder/strength guards the old name had (the deprecated
+    `MINIO_SECRET_KEY` stays listed there until the shim goes).
+  - `_validate_minio_public_endpoint` → `_validate_s3_public_endpoint`, with
+    its four rules unchanged: empty allowed, bare hostname rejected, non-http(s)
+    scheme rejected, and `http://` to a non-loopback host rejected under
+    production/strict. The browser-facing presign endpoint is exactly as
+    constrained as it was.
+  - **`MINIO_HOST` + `MINIO_PORT` collapse into one `S3_ENDPOINT`** — a
+    scheme-less `host[:port]` netloc, which is what the SDK's
+    `ObjectStorageConfig.endpoint` always wanted. A new field validator keeps
+    the port-range guarantee the separate `MINIO_PORT: int` field gave, and
+    rejects a value carrying a scheme rather than letting the client build a
+    doubled URL at the first request. The default, `minio:9000`, is exactly
+    what the two old defaults resolved to.
+  - The degraded storage health payload reports `meta={"endpoint": …}` where it
+    previously reported `meta={"host": …}` — the same fact, under the name the
+    setting now has.
+  - The hardened stacks' Docker-secret path is untouched:
+    `MINIO_ACCESS_KEY_FILE`/`MINIO_SECRET_KEY_FILE` still resolve — the
+    `*_FILE` settings source fills the legacy field and the shim carries it to
+    the new one — and `S3_ACCESS_KEY_FILE`/`S3_SECRET_KEY_FILE` already work
+    for when `T12` moves the compose files. Both paths have a regression test.
+  - `media_service/.example_env` moves to the new names. The seven stack env
+    files and their READMEs are `T12-env-docs-sweep`'s scope and still carry
+    the old vocabulary, which the shim keeps working.
 
 - **Storage health check dropped the second MinIO client library**
   (`T7-drop-miniopy-async`, object-storage backend migration plan). The
@@ -59,6 +101,28 @@ All notable changes to `media-service-m8` are documented here.
   files were proven correct in the interim by installing them in an isolated
   venv against a locally built `0.8.0` wheel via `--find-links`. The window
   closes on publish and nothing else here needs to change afterward.
+
+### Deprecated
+
+- **`MINIO_*` settings — removed in `3.0.0`.** A before-model-validator shim
+  reads every old name, translates it into its `S3_*` replacement and drops it,
+  emitting one `DeprecationWarning` naming each rename it applied. Precedence
+  is explicit: an `S3_*` value supplied alongside its legacy twin always wins,
+  and the legacy field is cleared on the instance either way, so no value — the
+  storage secret least of all — survives on a name the service no longer reads.
+  The old names are still *declared* as optional fields only because
+  `extra="forbid"` makes the dotenv source reject any key that matches no
+  field; without the declaration an unmigrated `.env` would fail to load
+  outright instead of warning.
+  - **Removal is scheduled for `3.0.0`**, one minor cycle, per the migration
+    plan's §9.3 assumption. The plan's step line calls for a breaking bump here;
+    this release takes a **minor** one instead, and the difference is recorded
+    rather than smoothed over: the shim means nothing breaks for a deployment
+    that upgrades without editing its `.env`, and a `3.0.0` service version
+    would be refused on sight by the published `astro-media-m8`, whose
+    `MEDIA_SERVICE_M8_MAX_SERVICE_VERSION_EXCLUSIVE` is `3.0.0` — Wave 2 routes
+    no client repository, so the major bump cannot be coordinated from here. It
+    belongs with the shim removal, together with the client's range move.
 
 ## [2.1.1] — 2026-09-01 · single-object reads carry their filing
 

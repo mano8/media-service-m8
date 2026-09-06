@@ -356,32 +356,39 @@ Tenancy is taken from the caller's `tenant_id` claim (surfaced on `UserModel` by
 upload — never from the request body. Objects created by an untenanted caller
 stay `tenant_id IS NULL`, for which `TENANT` resolves as owner/superuser-only.
 
-## MinIO — browser-direct uploads/downloads via presigned URLs
+## Object storage — browser-direct uploads/downloads via presigned URLs
 
 The **browser-direct upload/download** flow (Option A) routes file I/O through
-MinIO presigned URLs rather than the media-service proxy. This requires a
-browser-reachable MinIO endpoint:
+presigned S3 URLs rather than the media-service proxy. This requires a
+browser-reachable storage endpoint:
 
-By default every presigned URL is built from the internal `MINIO_HOST:MINIO_PORT`
+By default every presigned URL is built from the internal `S3_ENDPOINT`
 address, which the browser cannot reach in most deployments. Set
-`MINIO_PUBLIC_ENDPOINT` to the **full URL** the browser can reach:
+`S3_PUBLIC_ENDPOINT` to the **full URL** the browser can reach:
 
 ```text
-# dev / loopback (MinIO already bound to 127.0.0.1:9005 in dev stacks)
-MINIO_PUBLIC_ENDPOINT=http://127.0.0.1:9005
+# dev / loopback (storage already bound to 127.0.0.1:9005 in dev stacks)
+S3_PUBLIC_ENDPOINT=http://127.0.0.1:9005
 
 # hardened / production (Traefik storage router + TLS)
-MINIO_PUBLIC_ENDPOINT=https://storage.example.com
+S3_PUBLIC_ENDPOINT=https://storage.example.com
 ```
 
 When set, presigned upload POST URLs and presigned GET download URLs are
 signed for the public endpoint; all internal operations (health, stat, copy,
-verify) continue to use `MINIO_HOST:MINIO_PORT`. An empty value (the default)
+verify) continue to use `S3_ENDPOINT`. An empty value (the default)
 preserves the existing behaviour and is appropriate for proxy-through
 deployments where the service streams bytes on behalf of the browser.
 
-**Ingress:** The hardened stacks expose MinIO's data path (buckets only, not
-admin or console) via a dedicated Traefik router on `websecure` (TLS) — see
+The storage settings are named after the S3 protocol, not after one server:
+`S3_ENDPOINT` (scheme-less `host[:port]`; TLS via `S3_USE_SSL`), `S3_REGION`,
+`S3_ACCESS_KEY`, `S3_SECRET_KEY`, the five `S3_BUCKET_*` names and
+`S3_PRESIGNED_URL_EXPIRE_SECONDS`. The former `MINIO_*` names still load and
+warn — `MINIO_HOST`/`MINIO_PORT` collapse into `S3_ENDPOINT` — and are removed
+in `3.0.0`.
+
+**Ingress:** The hardened stacks expose the storage data path (buckets only,
+not admin or console) via a dedicated Traefik router on `websecure` (TLS) — see
 [hardened_media_m8/README.md](docker_compose/hardened_media_m8/README.md) for
 the storage ingress setup and CORS configuration.
 
@@ -389,13 +396,13 @@ the storage ingress setup and CORS configuration.
 
 | Visibility | Bucket setting |
 | --- | --- |
-| `PUBLIC` | `MINIO_BUCKET_PUBLIC` (`public-media`) |
-| `PRIVATE` | `MINIO_BUCKET_PRIVATE` (`private-media`) |
-| `TENANT` | `MINIO_BUCKET_PRIVATE` (`private-media`) |
-| `SENSITIVE` | `MINIO_BUCKET_SENSITIVE` (`sensitive-media`) |
+| `PUBLIC` | `S3_BUCKET_PUBLIC` (`public-media`) |
+| `PRIVATE` | `S3_BUCKET_PRIVATE` (`private-media`) |
+| `TENANT` | `S3_BUCKET_PRIVATE` (`private-media`) |
+| `SENSITIVE` | `S3_BUCKET_SENSITIVE` (`sensitive-media`) |
 
-Lifecycle storage classes map to `MINIO_BUCKET_TEMP` (`temp-media`) and
-`MINIO_BUCKET_ARCHIVE` (`archive-media`).
+Lifecycle storage classes map to `S3_BUCKET_TEMP` (`temp-media`) and
+`S3_BUCKET_ARCHIVE` (`archive-media`).
 
 ## Auth modes
 

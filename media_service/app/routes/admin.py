@@ -28,11 +28,11 @@ from media_service.schemas.maintenance import HardPurgeResponse, OrphanReport
 def _all_buckets() -> list[str]:
     """Every configured bucket the reconciler must sweep for orphan bytes."""
     return [
-        settings.MINIO_BUCKET_PUBLIC,
-        settings.MINIO_BUCKET_PRIVATE,
-        settings.MINIO_BUCKET_SENSITIVE,
-        settings.MINIO_BUCKET_TEMP,
-        settings.MINIO_BUCKET_ARCHIVE,
+        settings.S3_BUCKET_PUBLIC,
+        settings.S3_BUCKET_PRIVATE,
+        settings.S3_BUCKET_SENSITIVE,
+        settings.S3_BUCKET_TEMP,
+        settings.S3_BUCKET_ARCHIVE,
     ]
 
 

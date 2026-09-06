@@ -1,5 +1,5 @@
 """media_service fastapi app"""
 
-__version__ = "2.1.1"
+__version__ = "2.2.0"
 
 __all__ = ["__version__"]

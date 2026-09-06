@@ -1,4 +1,4 @@
-"""MinIO client configuration boundary — thin shim over media-sdk-m8.
+"""Object-storage client configuration boundary — thin shim over media-sdk-m8.
 
 The reusable ``ObjectStorage`` wrapper and its config/client factory now live in
 ``media_sdk_m8`` (shared by media-service and media-worker). This module keeps a
@@ -25,18 +25,18 @@ def get_storage_config() -> ObjectStorageConfig:
     """Build the shared SDK storage config from media-service settings."""
     public_endpoint: str | None = None
     public_secure: bool | None = None
-    if settings.MINIO_PUBLIC_ENDPOINT:
-        parsed = urlparse(settings.MINIO_PUBLIC_ENDPOINT)
+    if settings.S3_PUBLIC_ENDPOINT:
+        parsed = urlparse(settings.S3_PUBLIC_ENDPOINT)
         public_endpoint = parsed.netloc
         public_secure = parsed.scheme == "https"
 
     return ObjectStorageConfig(
-        endpoint=f"{settings.MINIO_HOST}:{settings.MINIO_PORT}",
-        access_key=settings.MINIO_ACCESS_KEY,
-        secret_key=settings.MINIO_SECRET_KEY,
-        secure=settings.MINIO_USE_SSL,
-        region=settings.MINIO_REGION,
-        presigned_expire_seconds=settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS,
+        endpoint=settings.S3_ENDPOINT,
+        access_key=settings.S3_ACCESS_KEY,
+        secret_key=settings.S3_SECRET_KEY,
+        secure=settings.S3_USE_SSL,
+        region=settings.S3_REGION,
+        presigned_expire_seconds=settings.S3_PRESIGNED_URL_EXPIRE_SECONDS,
         public_endpoint=public_endpoint,
         public_secure=public_secure,
     )

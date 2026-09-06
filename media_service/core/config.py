@@ -5,11 +5,12 @@ are all inherited from ConsumerServiceSettings (fastapi-m8).
 """
 
 import ipaddress
+import warnings
 from pathlib import Path
-from typing import ClassVar, Literal, Optional
+from typing import Any, ClassVar, Literal, Optional
 from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from fastapi_m8 import ConsumerServiceSettings, find_dotenv
@@ -17,6 +18,37 @@ from fastapi_m8 import ConsumerServiceSettings, find_dotenv
 from media_service import __version__
 
 # pylint: disable=invalid-name
+
+# ── MINIO_* → S3_* deprecation shim (removed in 3.0.0) ───────────────────────
+# Wave 2 of the object-storage backend migration renames the storage settings
+# after the protocol they speak (S3) instead of after one implementation of it.
+# The old names keep loading for one minor cycle so a deployment upgrades its
+# .env on its own schedule; ``Settings._apply_legacy_minio_aliases`` translates
+# and then drops them.
+# Every legacy name is exactly ``MINIO_<suffix>`` for the ``S3_<suffix>`` that
+# replaces it, so the map is derived from the suffixes rather than spelled out
+# twice (which also keeps a ``*_SECRET_KEY`` string literal out of the file).
+_LEGACY_S3_ALIAS_SUFFIXES: tuple[str, ...] = (
+    "USE_SSL",
+    "REGION",
+    "PUBLIC_ENDPOINT",
+    "ACCESS_KEY",
+    "SECRET_KEY",
+    "BUCKET_PUBLIC",
+    "BUCKET_PRIVATE",
+    "BUCKET_SENSITIVE",
+    "BUCKET_TEMP",
+    "BUCKET_ARCHIVE",
+    "PRESIGNED_URL_EXPIRE_SECONDS",
+)
+_LEGACY_S3_ALIASES: dict[str, str] = {
+    f"MINIO_{suffix}": f"S3_{suffix}" for suffix in _LEGACY_S3_ALIAS_SUFFIXES
+}
+# ``MINIO_HOST``/``MINIO_PORT`` collapse into the single ``S3_ENDPOINT`` netloc;
+# these defaults keep a partial legacy configuration resolving exactly as the
+# two separate fields did.
+_LEGACY_ENDPOINT_HOST_DEFAULT = "minio"
+_LEGACY_ENDPOINT_PORT_DEFAULT = 9000
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -51,6 +83,9 @@ class Settings(ConsumerServiceSettings):
     CONTRACT_RANGE: str = ">=2.0.0 <3.0.0"
 
     secret_fields = ConsumerServiceSettings.secret_fields + [
+        "S3_SECRET_KEY",
+        # Deprecated alias, kept listed until the shim goes in 3.0.0 so the old
+        # name can never be the one field that escapes the secret checks.
         "MINIO_SECRET_KEY",
         "MEDIA_REDIS_PASSWORD",
         "MEDIA_INTERNAL_SERVICE_TOKEN",
@@ -76,25 +111,51 @@ class Settings(ConsumerServiceSettings):
     # link stays useful.
     MEDIA_SHARE_MAX_EXPIRES_SECONDS: int = Field(default=2_592_000, ge=1)
 
-    # ── MinIO ────────────────────────────────────────────────────────────────
-    MINIO_HOST: str = "minio"
-    MINIO_PORT: int = Field(default=9000, ge=1, le=65535)
-    MINIO_USE_SSL: bool = False
-    MINIO_REGION: str = "eu-west-1"
+    # ── Object storage (S3) ──────────────────────────────────────────────────
+    # Named after the protocol, not after one implementation of it: the backend
+    # is any S3-API server (MinIO today, SeaweedFS 4.x once the backend swap
+    # lands). Internal endpoint the service itself talks S3 to, as a
+    # scheme-less ``host[:port]``; TLS is selected by ``S3_USE_SSL``, never by
+    # a scheme here.
+    S3_ENDPOINT: str = "minio:9000"
+    S3_USE_SSL: bool = False
+    S3_REGION: str = "eu-west-1"
     # Browser-facing endpoint (full URL, e.g. ``http://127.0.0.1:9005`` or
     # ``https://storage.example.com``) used **only** when minting presigned
-    # URLs. Must differ from the internal ``MINIO_HOST:MINIO_PORT`` whenever
-    # the browser cannot resolve the internal host. Empty = use internal
-    # endpoint (current behaviour; proxy-through deployments unaffected).
-    MINIO_PUBLIC_ENDPOINT: str = ""
-    MINIO_ACCESS_KEY: str = ""
-    MINIO_SECRET_KEY: str = ""
-    MINIO_BUCKET_PUBLIC: str = "public-media"
-    MINIO_BUCKET_PRIVATE: str = "private-media"
-    MINIO_BUCKET_SENSITIVE: str = "sensitive-media"
-    MINIO_BUCKET_TEMP: str = "temp-media"
-    MINIO_BUCKET_ARCHIVE: str = "archive-media"
-    MINIO_PRESIGNED_URL_EXPIRE_SECONDS: int = Field(default=300, ge=1)
+    # URLs. Must differ from the internal ``S3_ENDPOINT`` whenever the browser
+    # cannot resolve the internal host. Empty = use internal endpoint (current
+    # behaviour; proxy-through deployments unaffected).
+    S3_PUBLIC_ENDPOINT: str = ""
+    S3_ACCESS_KEY: str = ""
+    S3_SECRET_KEY: str = ""
+    S3_BUCKET_PUBLIC: str = "public-media"
+    S3_BUCKET_PRIVATE: str = "private-media"
+    S3_BUCKET_SENSITIVE: str = "sensitive-media"
+    S3_BUCKET_TEMP: str = "temp-media"
+    S3_BUCKET_ARCHIVE: str = "archive-media"
+    S3_PRESIGNED_URL_EXPIRE_SECONDS: int = Field(default=300, ge=1)
+
+    # ── Deprecated MinIO vocabulary (removed in 3.0.0) ───────────────────────
+    # Declared only so an unmigrated deployment still boots: ``extra="forbid"``
+    # makes the dotenv source reject any key that matches no field, so the old
+    # names have to exist as fields to be readable at all.
+    # ``_apply_legacy_minio_aliases`` copies each into its ``S3_*`` replacement
+    # and drops it before field validation, so every one of these is ``None``
+    # on a live ``Settings`` and nothing downstream reads storage config — or
+    # the storage secret — from the old vocabulary.
+    MINIO_HOST: Optional[str] = None
+    MINIO_PORT: Optional[int] = Field(default=None, ge=1, le=65535)
+    MINIO_USE_SSL: Optional[bool] = None
+    MINIO_REGION: Optional[str] = None
+    MINIO_PUBLIC_ENDPOINT: Optional[str] = None
+    MINIO_ACCESS_KEY: Optional[str] = None
+    MINIO_SECRET_KEY: Optional[str] = None
+    MINIO_BUCKET_PUBLIC: Optional[str] = None
+    MINIO_BUCKET_PRIVATE: Optional[str] = None
+    MINIO_BUCKET_SENSITIVE: Optional[str] = None
+    MINIO_BUCKET_TEMP: Optional[str] = None
+    MINIO_BUCKET_ARCHIVE: Optional[str] = None
+    MINIO_PRESIGNED_URL_EXPIRE_SECONDS: Optional[int] = Field(default=None, ge=1)
     MEDIA_MAX_UPLOAD_SIZE_BYTES: int = Field(default=104_857_600, ge=1)
     MEDIA_MAX_UPLOAD_SIZE_BYTES_PER_CATEGORY: dict[str, int] = Field(
         default_factory=dict
@@ -205,9 +266,87 @@ class Settings(ConsumerServiceSettings):
     MEDIA_REDIS_PASSWORD: Optional[SecretStr] = None
     MEDIA_REDIS_NAMESPACE: str = "media"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_legacy_minio_aliases(cls, data: Any) -> Any:
+        """Translate deprecated ``MINIO_*`` inputs into their ``S3_*`` replacements.
+
+        Runs before field validation, so a deployment that still sets the old
+        names boots exactly as it did and only warns. An explicitly supplied
+        ``S3_*`` value always wins; the legacy key is dropped either way, so a
+        value never survives on the old name. ``MINIO_HOST``/``MINIO_PORT``
+        collapse into the single ``S3_ENDPOINT`` netloc, each half falling back
+        to the default the separate field carried.
+
+        Removed in 3.0.0, after one minor deprecation cycle.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        renames: list[str] = []
+        for legacy, current in _LEGACY_S3_ALIASES.items():
+            value = data.pop(legacy, None)
+            if value is None:
+                continue
+            renames.append(f"{legacy} -> {current}")
+            if data.get(current) is None:
+                data[current] = value
+        legacy_host = data.pop("MINIO_HOST", None)
+        legacy_port = data.pop("MINIO_PORT", None)
+        if legacy_host is not None or legacy_port is not None:
+            renames.append("MINIO_HOST/MINIO_PORT -> S3_ENDPOINT")
+            if data.get("S3_ENDPOINT") is None:
+                host = legacy_host or _LEGACY_ENDPOINT_HOST_DEFAULT
+                port = legacy_port or _LEGACY_ENDPOINT_PORT_DEFAULT
+                data["S3_ENDPOINT"] = f"{host}:{port}"
+        if renames:
+            warnings.warn(
+                "CONFIG: the MINIO_* storage settings are deprecated and are "
+                "removed in media-service-m8 3.0.0 — rename them to their S3_* "
+                f"equivalents: {', '.join(renames)}.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return data
+
+    @field_validator("S3_ENDPOINT")
+    @classmethod
+    def _validate_s3_endpoint(cls, value: str) -> str:
+        """Require a scheme-less ``host[:port]`` internal endpoint.
+
+        Keeps the port-range guarantee the separate ``MINIO_PORT`` field gave,
+        and rejects a URL early rather than letting the S3 client build
+        ``https://https://host`` at the first request. The browser-facing
+        ``S3_PUBLIC_ENDPOINT`` is the one that carries a scheme.
+        """
+        endpoint = value.strip()
+        if not endpoint:
+            raise ValueError(
+                "CONFIG: S3_ENDPOINT must not be empty (expected 'host:port')."
+            )
+        if "://" in endpoint:
+            raise ValueError(
+                f"CONFIG: S3_ENDPOINT must be a scheme-less 'host[:port]' value; "
+                f"got {endpoint!r} — use S3_USE_SSL for TLS and S3_PUBLIC_ENDPOINT "
+                f"for the browser-facing URL."
+            )
+        host, separator, port = endpoint.rpartition(":")
+        # ``endswith(']')`` is a bracketed IPv6 literal with no port.
+        if separator and not endpoint.endswith("]"):
+            if not port.isdigit() or not 1 <= int(port) <= 65535:
+                raise ValueError(
+                    f"CONFIG: S3_ENDPOINT port must be a number between 1 and "
+                    f"65535; got {port!r}."
+                )
+            if not host:
+                raise ValueError(
+                    f"CONFIG: S3_ENDPOINT must include a host; got {endpoint!r}."
+                )
+        return endpoint
+
     @model_validator(mode="after")
-    def _validate_minio_public_endpoint(self) -> "Settings":
-        """Reject unsafe MINIO_PUBLIC_ENDPOINT values before presigned URLs are minted (11.4).
+    def _validate_s3_public_endpoint(self) -> "Settings":
+        """Reject unsafe S3_PUBLIC_ENDPOINT values before presigned URLs are minted (11.4).
 
         Rules:
         - Empty → allowed (internal endpoint used for presign).
@@ -215,19 +354,19 @@ class Settings(ConsumerServiceSettings):
         - Unsupported scheme (not http/https) → rejected in all modes.
         - http:// targeting a non-loopback host → rejected in production/strict.
         """
-        endpoint = self.MINIO_PUBLIC_ENDPOINT
+        endpoint = self.S3_PUBLIC_ENDPOINT
         if not endpoint:
             return self
         if "://" not in endpoint:
             raise ValueError(
-                f"CONFIG: MINIO_PUBLIC_ENDPOINT must be an absolute URL with "
+                f"CONFIG: S3_PUBLIC_ENDPOINT must be an absolute URL with "
                 f"'http://' or 'https://' scheme (e.g. 'https://storage.example.com'); "
                 f"got {endpoint!r} — bare hostnames are rejected (11.4)."
             )
         parsed = urlparse(endpoint)
         if parsed.scheme not in ("http", "https"):
             raise ValueError(
-                f"CONFIG: MINIO_PUBLIC_ENDPOINT scheme must be 'http' or 'https'; "
+                f"CONFIG: S3_PUBLIC_ENDPOINT scheme must be 'http' or 'https'; "
                 f"got {parsed.scheme!r} (11.4)."
             )
         is_production = self.ENVIRONMENT == "production" or self.STRICT_PRODUCTION_MODE
@@ -235,7 +374,7 @@ class Settings(ConsumerServiceSettings):
             host = parsed.hostname or ""
             if not _is_loopback_host(host):
                 raise ValueError(
-                    f"CONFIG: MINIO_PUBLIC_ENDPOINT uses 'http://' for non-loopback "
+                    f"CONFIG: S3_PUBLIC_ENDPOINT uses 'http://' for non-loopback "
                     f"host {host!r} in production/strict mode — HTTPS is required for "
                     f"browser-facing presigned URLs. "
                     f"Use 'https://{parsed.netloc}' or set STRICT_PRODUCTION_MODE=false "

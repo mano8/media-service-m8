@@ -261,7 +261,7 @@ class UploadsController:
     ) -> UploadInitiateResponse:
         """Create an UploadSession and return a presigned PUT URL."""
         staged = stage_upload(session=session, current_user=current_user, req=req)
-        expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
+        expires = settings.S3_PRESIGNED_URL_EXPIRE_SECONDS
         # Sign the POST policy for the lower of the declared size and the
         # category cap, never the full category maximum: a caller that declares
         # a small object cannot then push a much larger one through the same

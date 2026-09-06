@@ -823,9 +823,7 @@ def _import_one_file(
             ),
             None,
         )
-    expires_at = utcnow() + timedelta(
-        seconds=settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
-    )
+    expires_at = utcnow() + timedelta(seconds=settings.S3_PRESIGNED_URL_EXPIRE_SECONDS)
     record_upload_session(
         session=session, staged=staged, req=req, expires_at=expires_at
     )

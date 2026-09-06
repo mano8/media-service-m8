@@ -142,20 +142,22 @@ REVOCATION_CACHE_TTL_SECONDS=30
 #EVENT_STREAM_CONNECT_TIMEOUT=5.0   # seconds to wait for initial connection
 #EVENT_STREAM_READ_TIMEOUT=60.0     # seconds between SSE frames (keep > heartbeat)
 
-# ── MinIO object storage ──────────────────────────────────────────────────────
-MINIO_HOST=127.0.0.1
-MINIO_PORT=9000
-MINIO_USE_SSL=false
-MINIO_REGION=eu-west-1
-# MinIO credentials: access key >= 3 chars, secret key >= 8 chars.
-MINIO_ACCESS_KEY=changethis
-MINIO_SECRET_KEY=changethis
-MINIO_BUCKET_PUBLIC=public-media
-MINIO_BUCKET_PRIVATE=private-media
-MINIO_BUCKET_SENSITIVE=sensitive-media
-MINIO_BUCKET_TEMP=temp-media
-MINIO_BUCKET_ARCHIVE=archive-media
-MINIO_PRESIGNED_URL_EXPIRE_SECONDS=300
+# ── S3 object storage ─────────────────────────────────────────────────────────
+# Internal endpoint as a scheme-less host[:port]; TLS is chosen by S3_USE_SSL.
+# The deprecated MINIO_HOST/MINIO_PORT pair still loads (it collapses into this
+# one value) and warns, until it is removed in 3.0.0.
+S3_ENDPOINT=127.0.0.1:9000
+S3_USE_SSL=false
+S3_REGION=eu-west-1
+# Storage credentials: access key >= 3 chars, secret key >= 8 chars.
+S3_ACCESS_KEY=changethis
+S3_SECRET_KEY=changethis
+S3_BUCKET_PUBLIC=public-media
+S3_BUCKET_PRIVATE=private-media
+S3_BUCKET_SENSITIVE=sensitive-media
+S3_BUCKET_TEMP=temp-media
+S3_BUCKET_ARCHIVE=archive-media
+S3_PRESIGNED_URL_EXPIRE_SECONDS=300
 MEDIA_MAX_UPLOAD_SIZE_BYTES=104857600
 # Optional per-category overrides of the global max (bytes), as a JSON object
 # keyed by category; a category absent here falls back to the global value above.

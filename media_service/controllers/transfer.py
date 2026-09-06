@@ -351,7 +351,7 @@ def _archive_payload(
             tenant_id=job.tenant_id,
         ),
         stream_chunk_size=settings.MEDIA_EXPORT_STREAM_CHUNK_SIZE,
-        presigned_expire_seconds=settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS,
+        presigned_expire_seconds=settings.S3_PRESIGNED_URL_EXPIRE_SECONDS,
     )
 
 
@@ -537,7 +537,7 @@ class TransferController:
             storage=storage,
             bucket=bucket,
             object_key=str(object_key),
-            expires_seconds=settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS,
+            expires_seconds=settings.S3_PRESIGNED_URL_EXPIRE_SECONDS,
             filename=f"export-{job.id}.zip",
         )
         return public

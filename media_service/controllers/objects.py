@@ -475,7 +475,7 @@ class ObjectsController:
                 status_code=status.HTTP_409_CONFLICT,
                 detail=detail.model_dump(mode="json"),
             )
-        expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
+        expires = settings.S3_PRESIGNED_URL_EXPIRE_SECONDS
         url = create_download_url(
             storage=storage,
             bucket=obj.storage_bucket,
