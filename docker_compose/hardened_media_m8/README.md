@@ -94,10 +94,9 @@ Edit `media.env` so it matches the `MEDIA_DB_*` triplet in `.env`:
 DB_DATABASE=media_db
 DB_USER=<same-as-MEDIA_DB_USER>
 DB_PASSWORD=<same-as-MEDIA_DB_PASSWORD>
-MINIO_HOST=minio
-MINIO_PORT=9000
-MINIO_ACCESS_KEY=<media-rw-user>
-MINIO_SECRET_KEY=<media-rw-password>
+S3_ENDPOINT=minio:9000
+S3_ACCESS_KEY=<media-rw-user>
+S3_SECRET_KEY=<media-rw-password>
 MEDIA_REDIS_HOST=media_redis_cache
 MEDIA_REDIS_PASSWORD=<same-as-MEDIA_REDIS_PASSWORD-in-.env>
 ```
@@ -107,7 +106,7 @@ cache keys under the `media:*` namespace. `media.env` has **no** `REDIS_*`
 (auth Redis) settings — revocation goes through HTTP introspection.
 
 The `minio-init` one-shot provisions a MinIO user from `media.env`'s
-`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`, so set those to the media-rw credentials
+`S3_ACCESS_KEY` / `S3_SECRET_KEY`, so set those to the media-rw credentials
 you want (not the MinIO root user).
 
 ### Secure-by-default settings (auth-sdk-m8 ≥ 1.0.0)
@@ -157,7 +156,7 @@ explicitly excludes `/minio/*` paths to prevent access to the admin API or conso
 
 Configuration:
 
-- `MINIO_PUBLIC_ENDPOINT=https://storage.localhost` in `media.env`
+- `S3_PUBLIC_ENDPOINT=https://storage.localhost` in `media.env`
 - `MINIO_API_CORS_ALLOW_ORIGIN: "https://localhost:4430"` in minio environment (edit for your FQDN)
 - Traefik router uses `passHostHeader: true` — **required** for presigned GET signatures
   to validate correctly (SigV4 binds the Host header).
@@ -178,7 +177,7 @@ archive-media
 
 It also creates and attaches a scoped `media-rw` policy/user for the media
 service credentials from `media.env`. `media_service` waits for `minio-init` to
-complete before starting and uses `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`, not
+complete before starting and uses `S3_ACCESS_KEY` / `S3_SECRET_KEY`, not
 the MinIO root credentials.
 
 ## URLs
@@ -262,8 +261,8 @@ needed on WSL2/Linux bind mounts. On every run `init.sh` also enforces
 Set them (identically across auth + media), or set `EVENT_SIGNING_ENABLED=false`
 / `TOKEN_STRICT_VALIDATION=false` for local-only runs.
 
-**Media service cannot connect to MinIO**: inside Docker, use `MINIO_HOST=minio`
-and `MINIO_PORT=9000`. The hardened stack does not publish MinIO to the host, so
+**Media service cannot connect to MinIO**: inside Docker, use `S3_ENDPOINT=minio:9000`.
+The hardened stack does not publish MinIO to the host, so
 debug from inside the network (`docker compose exec`) rather than via a host
 port.
 

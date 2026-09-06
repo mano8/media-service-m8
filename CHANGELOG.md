@@ -57,6 +57,54 @@ stays `>=2.0.0 <3.0.0` — the served HTTP contract is untouched by this release
     files and their READMEs are `T12-env-docs-sweep`'s scope and still carry
     the old vocabulary, which the shim keeps working.
 
+- **`MINIO_*` → `S3_*` propagated across all four `docker_compose` stacks**
+  (`T12-env-docs-sweep`, object-storage backend migration plan, Wave 2).
+  `dev_local_media_m8`, `dev_media_m8`, `hardened_media_m8` and
+  `worspace_dev_media_m8` each move `media.env.example` (and, for
+  `hardened_media_m8`, `media.env.production.example`) plus `worker.env.example`
+  (and `worker.env.production.example`) and their stack `README.md` to the
+  `S3_*` names; `MINIO_HOST`/`MINIO_PORT` collapse into a single `S3_ENDPOINT`
+  netloc exactly as `T10` did in code. Top-level `.env.example`'s
+  `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` and every stack's
+  `MINIO_API_CORS_ALLOW_ORIGIN` are **left untouched** — these name the MinIO
+  container's own bootstrap/CORS vocabulary, not application settings, and stay
+  in scope for the Wave 3 backend swap (`T15`–`T17`), not this rename.
+  `hardened_media_m8/docker-compose.yml`'s `minio-init` one-shot and all three
+  dev stacks' equivalent blocks read the scoped media-rw credentials and bucket
+  names from `media.env` at `$$MINIO_ACCESS_KEY`/`$$MINIO_SECRET_KEY`/
+  `$$MINIO_BUCKET_*` — those shell-script variable references move to
+  `$$S3_ACCESS_KEY`/`$$S3_SECRET_KEY`/`$$S3_BUCKET_*` in the same commit, since
+  they are sourced from the very file this step renames and would otherwise
+  read empty values. `hardened_media_m8/docker-compose.production.yml`'s
+  `MINIO_ACCESS_KEY_FILE`/`MINIO_SECRET_KEY_FILE` env-var keys move to
+  `S3_ACCESS_KEY_FILE`/`S3_SECRET_KEY_FILE` (the underlying
+  `/run/secrets/minio_access_key` file path and the `minio_access_key` Docker
+  secret id are unchanged — arbitrary identifiers, not settings the app reads)
+  — `T10`'s note that "`S3_ACCESS_KEY_FILE`/`S3_SECRET_KEY_FILE` already work
+  for when `T12` moves the compose files" is exercised here.
+  **Kept the suite green rather than deferring to `T13`:** renaming
+  `media.env.example`'s `MINIO_PUBLIC_ENDPOINT` broke six assertions in
+  `tests/test_compose_minio_policy.py` (`TestMinioPublicEndpointEnvExample`)
+  and renaming the two `_FILE` compose keys broke six more in
+  `tests/test_compose_secrets_policy.py` (`TestFileMountEnvVars`, plus the
+  `_SECRET_FIELDS_ABSENT_IN_{MEDIA,WORKER}` plaintext-absence sets), so their
+  env-var lookups were updated to `S3_*` in this commit. `T13-policy-tests-rename`
+  still owns the broader pass this wave defers — the file rename to
+  `test_compose_storage_policy.py`, the `TestMinioPublicEndpointEnvExample`
+  class/docstring rename, and the docker-compose-level `MINIO_API_CORS_ALLOW_ORIGIN`/
+  `test_minio_*` naming — only the lookups this step's own rename forced were
+  touched here, each flagged with an inline note.
+  Full suite 1182 passed (unchanged — this step touches no application source),
+  100% coverage; ruff format/check and mypy clean on the two touched test
+  files; `pytest tests/test_compose_minio_policy.py` and
+  `tests/test_compose_secrets_policy.py` both green; markdownlint clean on all
+  four stack READMEs. Grep confirms zero `MINIO_` occurrences remain in any of
+  the fourteen swept files (four `media.env.example`, one
+  `media.env.production.example`, four `worker.env.example`, one
+  `worker.env.production.example`, four `README.md`) outside the excluded
+  container-native names; the four top-level `.env.example` files needed no
+  change (they only ever declared `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`).
+
 - **Storage health check dropped the second MinIO client library**
   (`T7-drop-miniopy-async`, object-storage backend migration plan). The
   readiness check at `/{prefix}/health/` previously built its own

@@ -187,18 +187,18 @@ services:
         until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
           echo "minio-init: waiting for minio..."; sleep 1
         done
-        for b in "$$MINIO_BUCKET_PUBLIC" "$$MINIO_BUCKET_PRIVATE" "$$MINIO_BUCKET_SENSITIVE" "$$MINIO_BUCKET_TEMP" "$$MINIO_BUCKET_ARCHIVE"; do
+        for b in "$$S3_BUCKET_PUBLIC" "$$S3_BUCKET_PRIVATE" "$$S3_BUCKET_SENSITIVE" "$$S3_BUCKET_TEMP" "$$S3_BUCKET_ARCHIVE"; do
           mc mb --ignore-existing "local/$$b"
         done
         printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"],"Resource":["arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*"]}]}' \
-          "$$MINIO_BUCKET_PUBLIC" "$$MINIO_BUCKET_PUBLIC" \
-          "$$MINIO_BUCKET_PRIVATE" "$$MINIO_BUCKET_PRIVATE" \
-          "$$MINIO_BUCKET_SENSITIVE" "$$MINIO_BUCKET_SENSITIVE" \
-          "$$MINIO_BUCKET_TEMP" "$$MINIO_BUCKET_TEMP" \
-          "$$MINIO_BUCKET_ARCHIVE" "$$MINIO_BUCKET_ARCHIVE" > /tmp/media-rw.json
+          "$$S3_BUCKET_PUBLIC" "$$S3_BUCKET_PUBLIC" \
+          "$$S3_BUCKET_PRIVATE" "$$S3_BUCKET_PRIVATE" \
+          "$$S3_BUCKET_SENSITIVE" "$$S3_BUCKET_SENSITIVE" \
+          "$$S3_BUCKET_TEMP" "$$S3_BUCKET_TEMP" \
+          "$$S3_BUCKET_ARCHIVE" "$$S3_BUCKET_ARCHIVE" > /tmp/media-rw.json
         mc admin policy create local media-rw /tmp/media-rw.json || true
-        mc admin user add local "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY" || true
-        mc admin policy attach local media-rw --user "$$MINIO_ACCESS_KEY" || true
+        mc admin user add local "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" || true
+        mc admin policy attach local media-rw --user "$$S3_ACCESS_KEY" || true
         echo "minio-init: buckets and media-rw policy ready"
     restart: "no"
     networks:

@@ -10,7 +10,7 @@ Validates:
 - The production overlay declares all five _FILE categories called out in plan 6.1:
     DB_PASSWORD_FILE, REDIS_PASSWORD_FILE (MEDIA_REDIS_PASSWORD_FILE),
     MEDIA_INTERNAL_SERVICE_TOKEN_FILE, MEDIA_SHARE_SIGNING_SECRET_FILE,
-    and MinIO credential files (MINIO_ACCESS_KEY_FILE / MINIO_SECRET_KEY_FILE).
+    and S3 credential files (S3_ACCESS_KEY_FILE / S3_SECRET_KEY_FILE).
 - No literal `changethis` placeholder appears in the overlay YAML itself.
 - Production env examples omit the plaintext secret fields that are _FILE-sourced
   (the values must not appear as uncommented KEY=VALUE lines).
@@ -91,9 +91,10 @@ _TOKEN_FILE_VAR = "MEDIA_INTERNAL_SERVICE_TOKEN_FILE"
 # MEDIA_SHARE_SIGNING_SECRET_FILE
 _SHARE_FILE_VAR = "MEDIA_SHARE_SIGNING_SECRET_FILE"
 
-# MinIO credential files
-_MINIO_KEY_FILE_VAR = "MINIO_ACCESS_KEY_FILE"
-_MINIO_SECRET_FILE_VAR = "MINIO_SECRET_KEY_FILE"
+# S3 credential files (docker secret ids stay `minio_*`; only the env var name
+# the app reads moved to S3_* in T12-env-docs-sweep)
+_MINIO_KEY_FILE_VAR = "S3_ACCESS_KEY_FILE"
+_MINIO_SECRET_FILE_VAR = "S3_SECRET_KEY_FILE"
 
 # Plaintext secret keys that must NOT be set in production env examples.
 # Each value is the env var name that should be absent / commented out.
@@ -112,8 +113,8 @@ _SECRET_FIELDS_ABSENT_IN_MEDIA = {
     "MEDIA_REDIS_PASSWORD",
     "MEDIA_INTERNAL_SERVICE_TOKEN",
     "MEDIA_SHARE_SIGNING_SECRET",
-    "MINIO_ACCESS_KEY",
-    "MINIO_SECRET_KEY",
+    "S3_ACCESS_KEY",
+    "S3_SECRET_KEY",
     "PRIVATE_API_SECRET",
     "REFRESH_SECRET_KEY",
     "EVENT_SIGNING_KEY",
@@ -122,8 +123,8 @@ _SECRET_FIELDS_ABSENT_IN_MEDIA = {
 _SECRET_FIELDS_ABSENT_IN_WORKER = {
     "MEDIA_INTERNAL_SERVICE_TOKEN",
     "MEDIA_REDIS_PASSWORD",
-    "MINIO_ACCESS_KEY",
-    "MINIO_SECRET_KEY",
+    "S3_ACCESS_KEY",
+    "S3_SECRET_KEY",
 }
 
 

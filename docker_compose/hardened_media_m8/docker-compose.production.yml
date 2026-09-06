@@ -133,8 +133,8 @@ services:
       MEDIA_REDIS_PASSWORD_FILE: /run/secrets/media_redis_password
       MEDIA_INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/media_internal_service_token
       MEDIA_SHARE_SIGNING_SECRET_FILE: /run/secrets/media_share_signing_secret
-      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
-      MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      S3_ACCESS_KEY_FILE: /run/secrets/minio_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/minio_secret_key
       PRIVATE_API_SECRET_FILE: /run/secrets/private_api_secret
       REFRESH_SECRET_KEY_FILE: /run/secrets/refresh_secret_key
       EVENT_SIGNING_KEY_FILE: /run/secrets/event_signing_key
@@ -162,8 +162,8 @@ services:
       MEDIA_REDIS_PASSWORD_FILE: /run/secrets/media_redis_password
       MEDIA_INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/media_internal_service_token
       MEDIA_SHARE_SIGNING_SECRET_FILE: /run/secrets/media_share_signing_secret
-      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
-      MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      S3_ACCESS_KEY_FILE: /run/secrets/minio_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/minio_secret_key
       PRIVATE_API_SECRET_FILE: /run/secrets/private_api_secret
       REFRESH_SECRET_KEY_FILE: /run/secrets/refresh_secret_key
       EVENT_SIGNING_KEY_FILE: /run/secrets/event_signing_key
@@ -182,8 +182,8 @@ services:
     environment:
       MEDIA_INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/media_internal_service_token
       MEDIA_REDIS_PASSWORD_FILE: /run/secrets/media_redis_password
-      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
-      MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      S3_ACCESS_KEY_FILE: /run/secrets/minio_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/minio_secret_key
     volumes: !override
       - ./worker.env.production:/opt/worker/.env:ro
 
