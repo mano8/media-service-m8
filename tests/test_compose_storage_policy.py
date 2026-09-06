@@ -9,11 +9,18 @@ Policy:
                        route by Host (not bare /), exclude /minio paths, and use a
                        minio-storage backend with passHostHeader:true at http://minio:9000.
                      — MINIO_API_CORS_ALLOW_ORIGIN must be set and must NOT be *.
-                     — media.env.example must declare MINIO_PUBLIC_ENDPOINT starting with https://.
+                     — media.env.example must declare S3_PUBLIC_ENDPOINT starting with https://.
   dev_media_m8       — MinIO ports must be loopback-bound only (no 0.0.0.0 bind).
                      — MINIO_API_CORS_ALLOW_ORIGIN must be set and must NOT be *.
-                     — media.env.example must declare MINIO_PUBLIC_ENDPOINT starting with loopback.
+                     — media.env.example must declare S3_PUBLIC_ENDPOINT starting with loopback.
   worspace_dev_media_m8 — same CORS + env.example assertions as dev.
+
+The backend is still MinIO in this wave (Wave 3 owns the actual swap); class
+names below and the `minio`/`MINIO_API_CORS_ALLOW_ORIGIN` literals they check
+still name the real container and env vars. Only the env-var lookups this file
+asserts on for the *application* side moved to `S3_*` (T10-T12); the storage
+container's own bootstrap/CORS vocabulary is renamed in Wave 3 alongside the
+backend swap (T15-T18).
 """
 
 from __future__ import annotations
@@ -198,13 +205,9 @@ class TestMinioCorsNotWildcard:
 # ---------------------------------------------------------------------------
 # S3_PUBLIC_ENDPOINT in env.example — all stacks (Phase 4)
 # ---------------------------------------------------------------------------
-# NOTE: this class/file still carries its pre-T13 MINIO_* name
-# (T13-policy-tests-rename owns the file rename to test_compose_storage_policy.py
-# and the class/docstring vocabulary pass); only the env-var lookups below moved
-# to S3_PUBLIC_ENDPOINT, forced by T12-env-docs-sweep's media.env.example rename.
 
 
-class TestMinioPublicEndpointEnvExample:
+class TestStoragePublicEndpointEnvExample:
     """Every stack's media.env.example must declare S3_PUBLIC_ENDPOINT.
     Dev/worspace stacks must point at loopback; hardened must use https://."""
 

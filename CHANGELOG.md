@@ -105,6 +105,20 @@ stays `>=2.0.0 <3.0.0` — the served HTTP contract is untouched by this release
   container-native names; the four top-level `.env.example` files needed no
   change (they only ever declared `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`).
 
+- **Policy-test vocabulary pass** (`T13-policy-tests-rename`, object-storage
+  backend migration plan, Wave 2). `tests/test_compose_minio_policy.py` is
+  renamed to `tests/test_compose_storage_policy.py` (mirrored in `fa-ui-m8` at
+  `docker_compose/compose_policy_tests/`); `TestMinioPublicEndpointEnvExample`
+  is renamed to `TestStoragePublicEndpointEnvExample` and the stale
+  `MINIO_PUBLIC_ENDPOINT` mentions in both files' docstrings are corrected to
+  `S3_PUBLIC_ENDPOINT`, closing out the inline notes `T12` left. Behaviour
+  assertions are unchanged this wave, by design: the backend is still MinIO,
+  so the literal `minio` service key, `minio-storage` Traefik service name and
+  `MINIO_API_CORS_ALLOW_ORIGIN` env var — the container's own bootstrap/CORS
+  vocabulary, not application settings — still name what is actually there;
+  renaming those is `T15`–`T18`'s job when the backend itself swaps. Both
+  repos' policy suites are green: `media-service-m8` 26 passed, `fa-ui-m8`
+  37 passed.
 - **Storage health check dropped the second MinIO client library**
   (`T7-drop-miniopy-async`, object-storage backend migration plan). The
   readiness check at `/{prefix}/health/` previously built its own
