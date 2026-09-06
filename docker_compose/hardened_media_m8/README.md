@@ -147,18 +147,29 @@ docker-compose up -d --build
 If your Docker install supports Compose v2, `docker compose up -d --build` is
 equivalent.
 
-## MinIO
+## Object storage
 
-In the hardened stack MinIO is **not** published to the host — it has no
-`ports:` mapping and is reachable only by the application services on the
+In the hardened stack the `storage` service is **not** published to the host — it
+has no `ports:` mapping and is reachable only by the application services on the
 internal `data_net` (security item 0.2 removed the public host-port exposure).
 
-However, the browser accesses MinIO **indirectly** via a dedicated Traefik router
+However, the browser accesses storage **indirectly** via a dedicated Traefik router
 for presigned uploads/downloads. The storage router is configured on the
 **`websecure`** (TLS) entrypoint, published as `https://storage.localhost` (mapped
-to Traefik host port `4430`; use your FQDN in staging/production). The route
-explicitly excludes `/minio/*` paths to prevent access to the admin API or console
-(`:9001`); only the S3 data path (`/{bucket}/{key}`) is exposed.
+to Traefik host port `4430`; use your FQDN in staging/production). It forwards to
+the S3 gateway (`http://storage:8333`) and to nothing else: the backend's admin
+surfaces — master `9333`, volume `8080`, filer `8888`, webdav `7333` — are bound
+to the storage container's own loopback by `-ip.bind=127.0.0.1`, so no sibling
+container can reach them at all. That binding is what replaced the old
+`!PathPrefix(/minio)` rule; the isolation now lives in the storage process rather
+than in a proxy rule.
+
+The S3 port itself serves exactly two non-S3 paths — `/healthz` and `/status`,
+bare liveness probes that answer `200` with an empty body — and the router denies
+both, so only the data path (`/{bucket}/{key}`) is publicly advertised. The
+container healthchecks itself on `127.0.0.1:8333/healthz` and does not need the
+route. Addressing is path-style, so if you ever name a bucket `healthz` or
+`status` that exclusion would shadow it; no bucket in this stack does.
 
 Configuration:
 
@@ -168,12 +179,17 @@ Configuration:
   set with one `PutBucketCors` call per bucket: exactly these origins (comma-
   separate for more than one), methods `GET`/`HEAD`/`POST`, and an enumerated
   header list — never `*`. A wildcard or empty value aborts the one-shot.
-- Traefik router uses `passHostHeader: true` — **required** for presigned GET signatures
-  to validate correctly (SigV4 binds the Host header).
+- Traefik router uses `passHostHeader: true` — presigned GET signatures bind the
+  Host header, so the proxy must forward the original Host unchanged. (SeaweedFS
+  also accepts `X-Forwarded-Host`, which Traefik always sets, so a stack with this
+  flag off happens not to break on this backend — do not rely on that: the flag is
+  the portable, backend-independent contract and the security invariant.)
 
-For debugging, reach the console/API via `docker compose exec` or by temporarily
-adding a loopback `ports:` mapping; the dev stack (`dev_media_m8`) keeps the
-loopback ports for convenience.
+For debugging, reach the S3 API via `docker compose exec` or by temporarily adding
+a loopback `ports:` mapping; the dev stack (`dev_media_m8`) keeps the loopback
+ports for convenience. The admin surfaces are loopback-bound *inside* the
+container, so they are reachable only from `docker compose exec storage` — a host
+port mapping alone will not expose them.
 
 The `storage-init` one-shot service creates these logical buckets:
 
