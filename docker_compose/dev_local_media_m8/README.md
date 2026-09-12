@@ -231,6 +231,15 @@ controlled by `grafana/config.monitoring`.
 - The media service base path is `/media`.
 - This dev stack builds `media_service` from source; the published-image
   equivalent is `hardened_media_m8`.
+- `app_net` / `scan_net` / `clamav_egress` carry **no** explicit `name:` —
+  Compose project-prefixes each one, so this stack never shares a network
+  with another project. Two compose projects must never declare the same
+  literal `networks.*.name`: an explicit name is external and Docker treats
+  it as shared, so whichever project boots first "owns" it and the second
+  silently attaches, letting Docker DNS resolve a service name (e.g.
+  `auth_user_service`) to **either** stack's container. See
+  `.workspace/plans/stack/analysis/audit-fa-auth-jwks-kid-key-binding-2026-09-08.md`
+  §0.2 for the measured collision this caused.
 
 ## Common Commands
 

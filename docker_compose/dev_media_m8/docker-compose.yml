@@ -299,7 +299,6 @@ services:
   # `chown -R 1000:1000 seaweedfs/data`).
   storage:
     image: chrislusf/seaweedfs:4.45
-    container_name: storage
     user: "1000:1000"
     security_opt:
       - no-new-privileges:true
@@ -677,7 +676,10 @@ volumes:
 networks:
   app_net:
     driver: bridge
-    name: hardened_m8_app_net   # explicit name so Traefik's network: setting can reference it
+    # No explicit `name:` — Compose project-prefixes the network (e.g.
+    # dev_media_m8_app_net), keeping it isolated from every other stack. Two
+    # projects must never share an app network name (see
+    # .workspace/plans/stack/analysis/audit-fa-auth-jwks-kid-key-binding-2026-09-08.md §0.2).
     # Pinned, deterministic subnet so the bridge gateway IP is stable and the
     # allowlists in traefik/dynamic_conf.yml can trust it. 172.16.0.0/16 is RFC1918
     # private space Docker allocates per-bridge on ANY host, independent of the
@@ -698,9 +700,8 @@ networks:
   scan_net:
     driver: bridge
     internal: true
-    name: hardened_media_m8_scan_net
+    # No explicit `name:` — project-prefixed, same isolation reasoning as app_net.
   # clamav-ONLY outbound network so freshclam can fetch signature DB updates. No
   # other container attaches here, so this egress path is never shared.
   clamav_egress:
     driver: bridge
-    name: hardened_media_m8_clamav_egress

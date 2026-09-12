@@ -240,6 +240,15 @@ controlled by `grafana/config.monitoring`.
 - This stack builds from sibling working copies; for the pinned, CI-checked
   stacks use `dev_media_m8` (source `media_service`) or `hardened_media_m8`
   (published images).
+- `app_net` / `scan_net` / `clamav_egress` carry **no** explicit `name:` —
+  Compose project-prefixes each one, so this stack never shares a network
+  with another project. Two compose projects must never declare the same
+  literal `networks.*.name`: an explicit name is external and Docker treats
+  it as shared, so whichever project boots first "owns" it and the second
+  silently attaches, letting Docker DNS resolve a service name (e.g.
+  `auth_user_service`) to **either** stack's container. See
+  `.workspace/plans/stack/analysis/audit-fa-auth-jwks-kid-key-binding-2026-09-08.md`
+  §0.2 for the measured collision this caused.
 
 ## Common Commands
 
