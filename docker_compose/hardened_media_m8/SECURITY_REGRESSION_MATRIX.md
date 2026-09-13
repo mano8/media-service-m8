@@ -45,7 +45,7 @@ files; "conformance" means `pytest -m conformance --backend=seaweedfs` in
 | # | Invariant | Verdict | Evidence |
 | --- | --- | --- | --- |
 | S1 | Storage publishes **no host port** in hardened; loopback-only in dev | ✅ | **Live:** `docker inspect storage` → `HostConfig.PortBindings = {}`, no entry in `NetworkSettings.Ports` carries a host binding. **Static:** `tests/test_compose_storage_policy.py:102` `TestHardenedStorageNoHostPorts::test_hardened_storage_publishes_no_host_ports`; dev stacks `:491` `TestDevStorageLoopbackOnly` (exactly one `127.0.0.1:`-bound S3 port, never `0.0.0.0`); `fa-ui-m8` mirror `docker_compose/compose_policy_tests/test_compose_storage_policy.py:134`. |
-| S2 | Admin/console/filer surface unreachable from Traefik and from any sibling on `app_net` | ✅ | **Live:** a fresh `busybox:1.36` on each of the storage container's networks (`hardened_m8_app_net`, `hardened_media_m8_data_net`) ran `nc -z storage <port>`: `9333`, `8080`, `8888`, `7333`, `18080`, `18888`, `19333` all **refused**, `8333` **open** (so the probe itself is not blind). **Static:** `docker-compose.yml:328-330` `-ip=localhost -ip.bind=127.0.0.1 -s3.ip.bind=0.0.0.0`, asserted by `tests/test_compose_storage_policy.py:120` `TestHardenedStorageAdminSurfaceLoopbackOnly` (3 tests); the only Traefik backend URL naming storage is `http://storage:8333` (`traefik/dynamic_conf.yml`). **Conformance:** `test_security_invariants.py:40` `test_storage_admin_surface_unreachable_from_siblings` pass. |
+| S2 | Admin/console/filer surface unreachable from Traefik and from any sibling on `app_net` | ✅ | **Re-measured 2026-09-13 after finding F2 (below) — the original walk of this row was incomplete and this row was briefly wrong.** **Live:** a fresh `busybox:1.37.0` on each of the storage container's networks (`hardened_m8_app_net`, `hardened_media_m8_data_net`) ran `nc -z storage <port>`: `9333`, `8080`, `8888`, `7333`, `18080`, `18888`, `19333`, **and now `8181` (Iceberg REST catalog) and `9101` (Lance namespace)** all **refused**, `8333` **open** (so the probe itself is not blind). `18333` (the S3 component’s gRPC port) still accepts TCP — `-s3.ip.bind` binds it with the gateway and offers no way to separate them — but an unauthenticated `PutIdentity` against it now fails to dial (`[grpc.s3]` mTLS, `seaweedfs/security.toml`); before the fix it returned `{}` and minted a working `Admin` credential. **Static:** `docker-compose.yml` `-ip=localhost -ip.bind=127.0.0.1 -s3.ip.bind=0.0.0.0 -s3.port.iceberg=0 -s3.port.lance=0`, asserted by `tests/test_compose_storage_policy.py` `TestHardenedStorageAdminSurfaceLoopbackOnly` (3 tests) and `TestStorageExtraListenersClosed` (6 tests × 4 stacks); the only Traefik backend URL naming storage is `http://storage:8333` (`traefik/dynamic_conf.yml`). **Conformance:** `test_security_invariants.py` `test_storage_admin_surface_unreachable_from_siblings` pass. **Live, durable:** `shared_live_tests/tests/live_storage/test_storage_admin_surface_live.py`, 11 passed (and 3 failed against a deliberately unfixed node, so it is not vacuous). |
 | S3 | CORS scoped to the UI origin, never `*` | ✅ | **Live:** `GetBucketCors` (media-rw credential) on each of the five buckets → `AllowedOrigins=['https://localhost:4430']`, `AllowedMethods=['GET','HEAD','POST']`; an `OPTIONS` preflight through Traefik from `Origin: https://evil.example` → **403**, no `Access-Control-Allow-Origin`; from the configured origin → **200** with `Access-Control-Allow-Origin: https://localhost:4430`. **Static:** `tests/test_compose_storage_policy.py:375` `TestHardenedStorageCorsBootstrap::test_storage_cors_is_scoped_to_ui_origin` (also asserts the bootstrap script refuses a wildcard); dev stacks `:311`; `fa-ui-m8` mirror `:355` (×2 env files). |
 | S4 | App holds a **scoped** credential (5 buckets, Get/Put/Delete/List); root creds only in the one-shot init | ✅ | **Live:** media-rw `HeadBucket` → 200 on all five buckets; `CreateBucket`, `PutObject` and `ListObjectsV2` on `t24-unlisted-bucket` → **403 `AccessDenied`** each; identity table (`/etc/seaweedfs/config/s3.json` inside the container) holds exactly `admin` and `media-rw`, media-rw actions = `Read/Write/List` × exactly the five buckets; `S3_ROOT_USER`/`S3_ROOT_PASSWORD` absent by name **and** by value from `media_service`'s and `media_worker`'s environment (values compared in memory, never printed). **Conformance:** `test_security_invariants.py:69` `test_scoped_credential_denies_unlisted_bucket` pass. Verb mapping (no distinct delete verb — `Write` covers it, bucket scope unchanged) is documented in `README.md` § Object storage and `MATRIX.md` D2. |
 | S5 | Data path is presigned-only; no anonymous access | ✅ | **Live:** unsigned `GET /{bucket}/{existing key}` and unsigned `GET /{bucket}/` (list) through Traefik → **403 `AccessDenied`** on every one of the five buckets; unsigned `GET /` (ListBuckets) → 403. **Conformance:** `test_security_invariants.py:125` `test_unsigned_object_request_is_denied` pass. No bucket policy / anonymous grant exists (`FORBIDDEN_OPERATIONS`, `test_forbidden_operations_are_never_issued`). |
@@ -116,6 +116,76 @@ walk found it and it affects the same data path.
   admits (`x'.html; X-Injected=1 100%.png`) and still proves the header sink
   on its own. Keys already stored under such names are not rewritten —
   `DATA_MIGRATION_RUNBOOK.md` step 1.4 counts them before a migration.
+
+### F2 — unauthenticated S3 IAM gRPC on 18333 minted an `Admin` credential (fixed)
+
+**This one was an S-row after all.** It is recorded here because it was found
+*after* the original walk signed S2 green, and it shows how that walk was
+wrong: it probed only the ports the MinIO-era topology had. S2 above is
+re-measured and now covers these three.
+
+* **Root cause.** `-s3.ip.bind=0.0.0.0` is what makes the S3 gateway (8333)
+  reachable from Traefik and the app containers. It also binds the S3
+  component's **gRPC** port (`8333 + 10000 = 18333`), and SeaweedFS has no flag
+  to separate the two — `weed server -h` offers `-s3.ip.bind` as the only S3
+  bind option, and `-s3.port.grpc=0` silently falls back to the default rather
+  than disabling the listener (both measured).
+* **Observed (live, before the fix).** From an ordinary sibling container on
+  `hardened_media_m8_data_net`, with no credential of any kind:
+
+  ```text
+  grpcurl -plaintext storage:18333 list
+    grpc.reflection.v1.ServerReflection
+    messaging_pb.SeaweedS3IamCache
+    s3_lifecycle_pb.SeaweedS3LifecycleInternal
+
+  grpcurl -plaintext -d '{"identity":{"name":"pwn",
+      "credentials":[{"access_key":"…","secret_key":"…"}],
+      "actions":["Admin","Read","Write","List"]}}' \
+    storage:18333 messaging_pb.SeaweedS3IamCache/PutIdentity
+    {}                       ← accepted
+  ```
+
+  The minted credential then worked over the ordinary S3 API on 8333:
+  `create-bucket` → `{"Location": "/pwned-by-grpc"}`, `list-buckets` → the new
+  bucket with `"Owner": {"ID": "pwn"}`, `put-object` → an ETag. That is a
+  complete escape from the scoped `media-rw` grant **S4** exists to enforce,
+  available to every service on `app_net` or `data_net` — which includes
+  `prometheus` and `grafana`, neither of which is on the media data path.
+* **Levers that did *not* close it**, each measured rather than assumed:
+  `-s3.iam=false` (the gRPC service is still registered and still answers);
+  `-s3.iam.readOnly=true` (already the default, and `PutIdentity` still
+  succeeded); `WEED_JWT_FILER_SIGNING_KEY` (gates the *filer's* IAM gRPC on
+  18888, which `-ip.bind=127.0.0.1` already keeps on loopback — not this one).
+* **Also exposed by the same flag, and also never probed:** the **Iceberg REST
+  Catalog** (8181) and **Lance Namespace** (9101) servers, which SeaweedFS 4.x
+  starts by default and binds to `0.0.0.0`. Both were reachable from a
+  sibling; `GET /v1/config` on 8181 answered `200 {"defaults":{},"overrides":{}}`
+  unauthenticated. This fleet uses neither.
+* **Fix.** `-s3.port.iceberg=0` and `-s3.port.lance=0` remove those two
+  listeners outright (measured: the sockets are gone, and the S3 data path is
+  unaffected). The gRPC port is closed with mTLS on the S3 component only —
+  `seaweedfs/security.toml` `[grpc.s3]`, with the keypair minted by a new
+  `storage-tls-init` one-shot that **destroys the CA private key after
+  signing**, so no client certificate the port would accept can ever be issued.
+  Nothing in these stacks is a legitimate client of that port. master, volume,
+  filer and webdav need no certificate — `-ip.bind=127.0.0.1` already keeps
+  them and their gRPC siblings on the container's own loopback.
+* **Verified after the fix, on this same live stack:** 8181 and 9101 refused
+  from a sibling; the same unauthenticated `PutIdentity` now fails to dial; the
+  S3 data path unchanged — the T24 live invariants module **42 passed** and the
+  T23 workflow module passed end to end.
+* **Applied to all 7 stacks** (`media-service-m8`: `hardened_media_m8`,
+  `dev_media_m8`, `dev_local_media_m8`, `worspace_dev_media_m8`; `fa-ui-m8`:
+  `hardened_ui_m8`, `dev_ui_m8`, `dev_local_full_ui_m8`), guarded by
+  `TestStorageExtraListenersClosed` in both repos' compose-policy suites and by
+  the new live probe
+  `shared_live_tests/tests/live_storage/test_storage_admin_surface_live.py`
+  (11 passed against the fixed stack; **3 failed against a deliberately
+  unfixed node**, so the probe is not vacuous).
+* **Garage alternate profile checked the same way and already clean:** booted
+  from the shipped `garage/garage.toml`, only 8333 was reachable from a
+  sibling — RPC is loopback-bound and no admin API is enabled.
 
 ## How to re-run
 

@@ -50,6 +50,7 @@ through that network.
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
 | storage | `chrislusf/seaweedfs:4.45` | S3 object storage — internal data network, **no host port** |
+| storage-tls-init | `alpine:3.21.3` | one-shot: mints the certificate that locks the S3 gRPC port, then destroys the CA key |
 | storage-config | `alpine:3.21.3` | one-shot: writes the backend's static identity table before it boots |
 | storage-init | `amazon/aws-cli:2.36.40` | one-shot: creates the five buckets + pins per-bucket CORS |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
@@ -163,6 +164,29 @@ to the storage container's own loopback by `-ip.bind=127.0.0.1`, so no sibling
 container can reach them at all. That binding is what replaced the old
 `!PathPrefix(/minio)` rule; the isolation now lives in the storage process rather
 than in a proxy rule.
+
+`-ip.bind` is not the whole story, and the difference matters. `-s3.ip.bind=0.0.0.0`
+— the flag that makes the gateway reachable at all — also publishes three surfaces
+it does not name:
+
+- the S3 component's **gRPC** port (`8333 + 10000 = 18333`), which serves an IAM
+  service whose `PutIdentity` RPC creates S3 identities. Measured on this pinned
+  image, an **unauthenticated** call from an ordinary sibling container minted an
+  identity with `Admin` rights that then worked over the normal S3 API — a full
+  escape from the scoped `media-rw` credential. SeaweedFS offers no flag to bind
+  this port separately (`-s3.port.grpc=0` falls back to the default), and neither
+  `-s3.iam=false` nor `-s3.iam.readOnly=true` nor `jwt.filer_signing.key` refuses
+  the call. It is closed instead with **gRPC mTLS on the S3 component only**
+  (`seaweedfs/security.toml`, `[grpc.s3]`). The `storage-tls-init` one-shot mints
+  a throwaway CA, signs one server certificate and then **deletes the CA private
+  key**, so no client certificate that port would accept can ever be issued —
+  which is the intent, since nothing here is a legitimate client of it.
+- the **Iceberg REST Catalog** (`8181`) and **Lance Namespace** (`9101`) servers,
+  which SeaweedFS 4.x starts by default. This stack uses neither, and both are
+  switched off at the listener with `-s3.port.iceberg=0` / `-s3.port.lance=0`.
+
+`docker_compose/shared_live_tests/tests/live_storage/test_storage_admin_surface_live.py`
+re-proves all of this from a sibling container against any running stack.
 
 The S3 port itself serves exactly two non-S3 paths — `/healthz` and `/status`,
 bare liveness probes that answer `200` with an empty body — and the router denies

@@ -64,6 +64,58 @@ All notable changes to `media-service-m8` are documented here.
   fails if any bootstrap or service path starts issuing these operations while
   the recommendation stands.
 
+### Security
+
+- **Closed an unauthenticated privilege escalation at the storage backend's
+  gRPC port, and two undeclared HTTP listeners beside it** (all 7 compose
+  stacks across `media-service-m8` and `fa-ui-m8`; object-storage backend
+  migration plan, follow-up to `T24-security-regression-matrix`).
+
+  `-s3.ip.bind=0.0.0.0` is what makes the S3 gateway (8333) reachable from
+  Traefik and the app containers. It also binds the S3 component's **gRPC**
+  port (8333 + 10000 = 18333), and SeaweedFS offers no flag to separate the
+  two (`-s3.port.grpc=0` falls back to the default). That port serves
+  `messaging_pb.SeaweedS3IamCache`, whose `PutIdentity` RPC creates S3
+  identities. Measured against the pinned `chrislusf/seaweedfs:4.45`: an
+  **unauthenticated** `PutIdentity` issued from an ordinary sibling container
+  minted an identity carrying `["Admin","Read","Write","List"]`, and that
+  credential then created buckets and read and wrote objects over the
+  ordinary S3 API — a complete escape from the scoped `media-rw` grant that
+  invariant **S4** exists to enforce, and a breach of **S2**. Every service on
+  `app_net` or `data_net` could reach it, `prometheus` and `grafana`
+  included. Neither `-s3.iam=false`, nor `-s3.iam.readOnly=true` (already the
+  default), nor `jwt.filer_signing.key` refused the call — each was measured.
+
+  Closed by enabling gRPC mTLS on the S3 component only
+  (`seaweedfs/security.toml`, `[grpc.s3]`), which is the one lever that
+  refuses the dial. A new `storage-tls-init` one-shot mints a throwaway CA,
+  signs one server certificate and then **destroys the CA private key**, so no
+  client certificate that port would accept can ever be issued; nothing in
+  these stacks is a legitimate client of it. The master/volume/filer/webdav
+  gRPC ports need no certificate — `-ip.bind=127.0.0.1` already keeps them on
+  the container's own loopback.
+
+  The same `-s3.ip.bind=0.0.0.0` also published two servers SeaweedFS 4.x
+  starts by default and this fleet does not use: the **Iceberg REST catalog**
+  (8181) and the **Lance namespace server** (9101), both reachable from every
+  sibling. `/v1/config` on the Iceberg port answered `200` unauthenticated.
+  Both are now switched off at the listener with `-s3.port.iceberg=0` and
+  `-s3.port.lance=0`.
+
+  The original `T24` walk of S2 missed all three because it probed only the
+  ports the MinIO-era topology had (`9333`, `8080`, `8888`, `7333` and their
+  `+10000` gRPC siblings); `SECURITY_REGRESSION_MATRIX.md`'s S2 row is
+  re-measured and says so. Guarded going forward by
+  `TestStorageExtraListenersClosed` in both repos' compose-policy suites (6
+  tests × 4 stacks in `media-service-m8`, × 3 in `fa-ui-m8`) and by a new
+  opt-in live probe,
+  `shared_live_tests/tests/live_storage/test_storage_admin_surface_live.py`,
+  which asserts from a sibling container that only 8333 answers and that an
+  unauthenticated `PutIdentity` fails — 11 passed against the fixed stack and
+  3 failed against a deliberately unfixed node, so it is not vacuous. The
+  Garage alternate profile was checked the same way and was already clean
+  (only 8333 reachable; RPC loopback-bound, no admin API enabled).
+
 ---
 
 ## [2.3.0] — 2026-09-13 · MinIO → SeaweedFS backend swap, filename trust boundary (`T26-changelog-release`)
