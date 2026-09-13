@@ -1,0 +1,126 @@
+# Data-migration overlay — MinIO → SeaweedFS (T25-data-migration-runbook).
+#
+# Adds two services, both behind the `migration` profile so a plain
+# `docker compose up` never starts them:
+#
+#   minio-frozen  the pre-migration MinIO, the exact image the stack ran before
+#                 the backend swap, on its old `./minio/data` volume. Internal
+#                 `data_net` only, no host port, no console — it exists to be
+#                 read by rclone and, on rollback, to become `minio` again.
+#   rclone        one-shot copier/verifier with two remotes pre-wired:
+#                 `src:` = minio-frozen, `dst:` = storage (SeaweedFS).
+#                 Run it with `docker compose … run --rm rclone <args>`.
+#
+# Usage (always on top of the base file, plus the production overlay where
+# that is what runs):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.migration.yml \
+#       --profile migration run --rm rclone size src:private-media --json
+#
+# Credentials — nothing new is invented:
+#   MINIO_ROOT_USER / MINIO_ROOT_PASSWORD   the frozen MinIO's *original* root
+#       pair (MinIO encrypts its own `.minio.sys` config with them, so it will
+#       not start under different ones). Keep the two lines in `.env` for the
+#       migration window; they were there before T16 renamed the SeaweedFS
+#       admin pair to S3_ROOT_*. Compose interpolates them from `.env`.
+#   S3_ROOT_USER / S3_ROOT_PASSWORD (or *_FILE under the production overlay)
+#       the SeaweedFS admin identity from `.env`, read by rclone for `dst:`.
+#
+# The procedure, verification queries and rollback triggers are in
+# DATA_MIGRATION_RUNBOOK.md next to this file. Reports land in
+# ./migration-reports/ (gitignored).
+services:
+  minio-frozen:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772
+    container_name: minio-frozen
+    profiles:
+      - migration
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set the frozen MinIO's original root user in .env for the migration window}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set the frozen MinIO's original root password in .env for the migration window}
+      MINIO_BROWSER: "off"                # no console — read via S3 only
+    volumes:
+      - ./minio/data:/data
+    command: server /data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+    restart: "no"
+    networks:
+      - data_net
+
+  rclone:
+    image: rclone/rclone:1.75.1
+    profiles:
+      - migration
+    depends_on:
+      minio-frozen:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    env_file:
+      - ./.env                            # S3_ROOT_* (dst admin), MINIO_ROOT_* (src root)
+      - ./media.env                       # S3_REGION, S3_BUCKET_*
+    environment:
+      RCLONE_CONFIG_SRC_TYPE: s3
+      RCLONE_CONFIG_SRC_PROVIDER: Minio
+      RCLONE_CONFIG_SRC_ENDPOINT: http://minio-frozen:9000
+      RCLONE_CONFIG_SRC_FORCE_PATH_STYLE: "true"
+      RCLONE_CONFIG_DST_TYPE: s3
+      RCLONE_CONFIG_DST_PROVIDER: SeaweedFS
+      RCLONE_CONFIG_DST_ENDPOINT: http://storage:8333
+      RCLONE_CONFIG_DST_FORCE_PATH_STYLE: "true"
+      # Never write a config file, never read one from the image.
+      RCLONE_CONFIG: /dev/null
+    volumes:
+      - ./migration-reports:/reports
+    working_dir: /reports
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+
+        pick() {  # pick <value> <file> <label> — Docker secret wins, as in storage-config
+          if [ -n "$$2" ]; then
+            if [ ! -r "$$2" ]; then
+              echo "rclone: $$3_FILE=$$2 is not readable" >&2; exit 1
+            fi
+            cat "$$2"
+          else
+            printf '%s' "$$1"
+          fi
+        }
+
+        RCLONE_CONFIG_SRC_ACCESS_KEY_ID=$$(pick "$${MINIO_ROOT_USER:-}" "$${MINIO_ROOT_USER_FILE:-}" MINIO_ROOT_USER)
+        RCLONE_CONFIG_SRC_SECRET_ACCESS_KEY=$$(pick "$${MINIO_ROOT_PASSWORD:-}" "$${MINIO_ROOT_PASSWORD_FILE:-}" MINIO_ROOT_PASSWORD)
+        RCLONE_CONFIG_DST_ACCESS_KEY_ID=$$(pick "$${S3_ROOT_USER:-}" "$${S3_ROOT_USER_FILE:-}" S3_ROOT_USER)
+        RCLONE_CONFIG_DST_SECRET_ACCESS_KEY=$$(pick "$${S3_ROOT_PASSWORD:-}" "$${S3_ROOT_PASSWORD_FILE:-}" S3_ROOT_PASSWORD)
+        for v in "$$RCLONE_CONFIG_SRC_ACCESS_KEY_ID" "$$RCLONE_CONFIG_SRC_SECRET_ACCESS_KEY" \
+                 "$$RCLONE_CONFIG_DST_ACCESS_KEY_ID" "$$RCLONE_CONFIG_DST_SECRET_ACCESS_KEY"; do
+          if [ -z "$$v" ]; then
+            echo "rclone: a src/dst credential is empty — MINIO_ROOT_* and S3_ROOT_* must both be set (or *_FILE)" >&2
+            exit 1
+          fi
+        done
+        RCLONE_CONFIG_SRC_REGION="$${S3_REGION:-us-east-1}"
+        RCLONE_CONFIG_DST_REGION="$${S3_REGION:-us-east-1}"
+        export RCLONE_CONFIG_SRC_ACCESS_KEY_ID RCLONE_CONFIG_SRC_SECRET_ACCESS_KEY \
+               RCLONE_CONFIG_DST_ACCESS_KEY_ID RCLONE_CONFIG_DST_SECRET_ACCESS_KEY \
+               RCLONE_CONFIG_SRC_REGION RCLONE_CONFIG_DST_REGION
+        exec rclone "$$@"
+      - --
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+    networks:
+      - data_net

@@ -218,6 +218,15 @@ walked with evidence in [`SECURITY_REGRESSION_MATRIX.md`](SECURITY_REGRESSION_MA
 the wire-level rows re-run against any live stack via
 `../shared_live_tests/tests/live_storage/test_storage_invariants_live.py`.
 
+**Carrying existing objects over from a MinIO-era deployment** (not needed
+for a clean start) is a separate, reversible procedure:
+[`DATA_MIGRATION_RUNBOOK.md`](DATA_MIGRATION_RUNBOOK.md) — rclone bucket-to-
+bucket through the `docker-compose.migration.yml` overlay (a frozen MinIO and
+an `rclone` one-shot behind the `migration` profile, never started by a plain
+`up`), count/byte and byte-for-byte parity per bucket, a digest join against
+the stored `sha256` column (`verify_migration_digests.py`), a rollback window
+with the exact trigger conditions, and the rollback itself.
+
 ## URLs
 
 | What | URL |
