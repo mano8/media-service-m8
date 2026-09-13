@@ -13,7 +13,82 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
+No pending changes.
+
+---
+
+## [2.3.0] — 2026-09-13 · MinIO → SeaweedFS backend swap, filename trust boundary (`T26-changelog-release`)
+
+**Minor, additive-with-deprecation.** Folds the object-storage backend
+migration's Wave 3 and Wave 4 work into one release record, per the
+workspace's Wave 6c one-bump-per-unpublished-release rule
+(`.workspace/context/version-sources.md`): the working tree already held two
+unpublished versions (`2.1.1`, `2.2.0`) before this cut, and none of
+`T15`-`T25` took a version number of their own (each explicitly deferred to
+this step). `CONTRACT_VERSION` stays `1.1` and `CONTRACT_RANGE` stays
+`>=2.0.0 <3.0.0` — the served HTTP contract is untouched.
+
+### Changed
+
+- **Storage backend swapped from MinIO to `chrislusf/seaweedfs:4.45`**
+  across all four `docker_compose` stacks (`T15-storage-service-block`,
+  `T16-storage-bootstrap`, `T17-traefik-storage-route`,
+  `T18-compose-policy-tests`, `T19-image-pin-allowlist`,
+  `T20-dev-stacks-port`, object-storage backend migration plan, Wave 3). The
+  storage service is loopback-bound on every admin surface, non-root with
+  all capabilities dropped and a read-only root filesystem; bootstrap is
+  `storage-config` + `storage-init` (five buckets, non-wildcard per-bucket
+  `PutBucketCors`); Traefik forwards `Host(storage.*)` to
+  `http://storage:8333` with the two non-S3 paths (`/healthz`, `/status`)
+  denied at the proxy. No client-observable behaviour change at the S3
+  boundary — the SDK's `ObjectStorage` (boto3, since `2.2.0`'s companion
+  `media-sdk-m8@0.8.0`) speaks the same protocol to either backend, proven
+  by the `T1` conformance harness (20/20) against both.
+- **Acceptance proven live end-to-end** (`T23-live-e2e`): browser-direct POST
+  upload, scan gating both ways, variant generation, share links, a
+  cross-bucket visibility move, archive export, orphan reconcile and
+  hard-purge, 40/40 against the migrated `hardened_media_m8` stack, now a
+  durable opt-in pytest module
+  (`docker_compose/shared_live_tests/tests/live_storage/test_storage_workflow_live.py`).
+- **Security regression matrix signed off S1-S15, 15/15 green, no amber**
+  (`T24-security-regression-matrix`), recorded in
+  `docker_compose/hardened_media_m8/SECURITY_REGRESSION_MATRIX.md` against
+  the live migrated stack, with a 34-test opt-in live module re-running the
+  wire-level rows.
+- **Data-migration runbook published** (`T25-data-migration-runbook`):
+  `docker_compose/hardened_media_m8/DATA_MIGRATION_RUNBOOK.md` plus a
+  `docker-compose.migration.yml` overlay and `verify_migration_digests.py`,
+  every command exercised for real against a frozen MinIO and the live
+  SeaweedFS stack. Running the migration remains the operator's own call
+  (§9.1 of the migration plan); nothing in this release runs it
+  automatically.
+
 ### Security
+
+- **Client-supplied filenames are validated at the trust boundary** —
+  `media_service/core/validation.py` gains one portable-filename policy,
+  `validate_filename` / `sanitize_filename`, and every place a name enters
+  the system applies it: `POST /media/v1/uploads/initiate` and
+  `PATCH /media/v1/objects/{id}` **refuse with `422`** a name that is empty
+  or all dots, longer than 255 characters, carries a path separator (`/`
+  `\`), one of `< > : " | ? *`, or any Unicode "Other" code point — C0/DEL
+  controls (NUL, CR/LF: header and key injection), format characters
+  (zero-width joiners and the bidi overrides such as U+202E that make
+  `photo<U+202E>gnp.exe` display as `photo.exe.png`), surrogates, private-use
+  and unassigned — and are NFC-normalised and trimmed otherwise; the archive
+  import path (`POST /media/v1/transfer/import`, whose manifest names are data
+  rather than typed) **normalises** onto the same rules instead of refusing
+  the document (path dropped, forbidden characters → `_`, `file` when nothing
+  is left). `;`, `%`, `#`, spaces, quotes-as-apostrophes and non-ASCII letters
+  stay allowed. The sink encoders are unchanged and stay as defence in depth:
+  `_safe_content_disposition` for the header, `_safe_filename` for zip
+  entries, and the new key rule below for the URL path. **Behaviour change:**
+  a client that previously uploaded `what?.png` or `a:b.pdf` now gets a `422`
+  naming the offending characters; rename and retry. Existing rows are not
+  rewritten. 1304 unit tests, 100% coverage; proven live on the migrated
+  hardened stack (`tests/live_storage/test_storage_invariants_live.py`
+  `test_f1_forbidden_filename_is_refused_at_the_boundary`, 5 cases: traversal,
+  `?`, U+202E, CR/LF, `<>` → all `422` before any presigned URL is minted).
 
 - **Client-supplied filenames are validated at the trust boundary** —
   `media_service/core/validation.py` gains one portable-filename policy,

@@ -529,7 +529,7 @@ services:
   # repo, not under this stack). Only the .env file is mounted, matching the
   # media_service pattern.
   media_worker:
-    image: tepochtli/media-worker-m8:0.4.1
+    image: tepochtli/media-worker-m8:0.5.0
     security_opt:
       - no-new-privileges:true
     cap_drop:
