@@ -25,6 +25,35 @@ def _safe_filename(filename: str) -> str:
     return base
 
 
+#: Characters that never go into an object-key segment, beyond the path
+#: separators :func:`_safe_filename` already strips. The key is a POST form
+#: field on upload, so any name lands in storage — but on every download and
+#: share link it becomes the URL *path* of a presigned GET, where the S3
+#: client percent-encodes each of these (``%3B`` ``%25`` ``%3F`` ``%23``,
+#: ``%00`` for NUL), and the hardened stack's Traefik ``encodedCharacters``
+#: policy (``docker_compose/*/traefik/traefik.yml``:
+#: ``allowEncodedSemicolon/Percent/QuestionMark/Hash/NullCharacter: false``)
+#: answers ``400`` before the request reaches storage. Such an object would
+#: be fail-closed dead through the public route on any backend. The served
+#: filename comes from ``original_filename`` (``storage/presign.py``), never
+#: from the key, so substituting here changes nothing a client sees.
+_KEY_UNSAFE_CHARS = frozenset(";%?#")
+
+
+def _key_segment(filename: str) -> str:
+    """Return the filename as a key segment the public route can carry.
+
+    Path-strips via :func:`_safe_filename`, then replaces every character in
+    :data:`_KEY_UNSAFE_CHARS` and every C0/DEL control character with ``_``
+    (one for one, so the segment stays readable in a bucket listing).
+    """
+    base = _safe_filename(filename)
+    return "".join(
+        "_" if ch in _KEY_UNSAFE_CHARS or ord(ch) < 0x20 or ord(ch) == 0x7F else ch
+        for ch in base
+    )
+
+
 def build_object_key(
     *,
     owner_user_id: UUID,
@@ -36,7 +65,7 @@ def build_object_key(
     """Build a stable object key for an original upload."""
     prefix = _owner_prefix(owner_user_id, tenant_id)
     safe_category = category.strip().lower().replace(" ", "_")
-    return f"{prefix}/{safe_category}/{media_id}/original/{_safe_filename(filename)}"
+    return f"{prefix}/{safe_category}/{media_id}/original/{_key_segment(filename)}"
 
 
 def build_variant_key(
@@ -54,7 +83,7 @@ def build_variant_key(
     safe_variant = variant_name.strip().lower().replace(" ", "_")
     return (
         f"{prefix}/{safe_category}/{media_id}"
-        f"/variants/{safe_variant}/{_safe_filename(filename)}"
+        f"/variants/{safe_variant}/{_key_segment(filename)}"
     )
 
 

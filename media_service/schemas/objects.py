@@ -4,9 +4,10 @@ from datetime import datetime
 from typing import Literal
 import uuid
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from sqlmodel import Field, SQLModel
 
+from media_service.core.validation import validate_filename
 from media_service.db_models.categories import MAX_CATEGORY_ASSIGNMENTS
 from media_service.db_models.media_objects import (
     MediaCategory,
@@ -38,6 +39,13 @@ class MediaObjectUpdate(SQLModel):
         max_length=MAX_CATEGORY_ASSIGNMENTS,
         description="Replaces every user category this object is filed into",
     )
+
+    @field_validator("original_filename")
+    @classmethod
+    def _portable_filename(cls, value: str | None) -> str | None:
+        # A rename is the second way a client-typed name enters the system;
+        # same policy as upload initiate (``core/validation``).
+        return None if value is None else validate_filename(value)
 
 
 class DownloadUrlResponse(SQLModel):

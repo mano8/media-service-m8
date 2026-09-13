@@ -11,6 +11,61 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- **Client-supplied filenames are validated at the trust boundary** —
+  `media_service/core/validation.py` gains one portable-filename policy,
+  `validate_filename` / `sanitize_filename`, and every place a name enters
+  the system applies it: `POST /media/v1/uploads/initiate` and
+  `PATCH /media/v1/objects/{id}` **refuse with `422`** a name that is empty
+  or all dots, longer than 255 characters, carries a path separator (`/`
+  `\`), one of `< > : " | ? *`, or any Unicode "Other" code point — C0/DEL
+  controls (NUL, CR/LF: header and key injection), format characters
+  (zero-width joiners and the bidi overrides such as U+202E that make
+  `photo<U+202E>gnp.exe` display as `photo.exe.png`), surrogates, private-use
+  and unassigned — and are NFC-normalised and trimmed otherwise; the archive
+  import path (`POST /media/v1/transfer/import`, whose manifest names are data
+  rather than typed) **normalises** onto the same rules instead of refusing
+  the document (path dropped, forbidden characters → `_`, `file` when nothing
+  is left). `;`, `%`, `#`, spaces, quotes-as-apostrophes and non-ASCII letters
+  stay allowed. The sink encoders are unchanged and stay as defence in depth:
+  `_safe_content_disposition` for the header, `_safe_filename` for zip
+  entries, and the new key rule below for the URL path. **Behaviour change:**
+  a client that previously uploaded `what?.png` or `a:b.pdf` now gets a `422`
+  naming the offending characters; rename and retry. Existing rows are not
+  rewritten. 1304 unit tests, 100% coverage; proven live on the migrated
+  hardened stack (`tests/live_storage/test_storage_invariants_live.py`
+  `test_f1_forbidden_filename_is_refused_at_the_boundary`, 5 cases: traversal,
+  `?`, U+202E, CR/LF, `<>` → all `422` before any presigned URL is minted).
+
+### Fixed
+
+- **Download and share links were dead for filenames containing `;` `%`
+  `#` (or `?`)** — `T24-security-regression-matrix`'s finding **F1**,
+  pre-existing and backend-independent: `storage/keys.py` embedded the
+  original filename verbatim in the object key, the presigned GET put that
+  key in the URL path percent-encoded (`%3B` `%25` `%23` `%3F`), and every
+  stack's Traefik `encodedCharacters` hardening (on `main` since
+  2026-06-12) answered `400` before storage saw the request, so such an
+  object uploaded fine (the key is a POST form field) but could never be
+  fetched. `build_object_key` / `build_variant_key` now route the name
+  through `_key_segment`, which replaces `;` `%` `?` `#` and any C0/DEL
+  control character with `_` — the served filename comes from
+  `original_filename`, never from the key, so nothing a client sees changes.
+  `tests/test_storage_keys.py` couples the rule to the shipped configs: it
+  parses every `docker_compose/*/traefik/traefik.yml` `encodedCharacters`
+  block and fails if a key could ever carry a character a stack refuses
+  encoded. Proven live: `test_f1_reserved_characters_in_filename_download_
+  through_the_route` uploads `t24;v2.png`, `t24 100%.png`, `t24 #1.png` and
+  fetches each through the real Traefik route over a raw TLS socket → `200`
+  with the original name in `Content-Disposition` (was `400`). Keys already
+  stored under such names are not rewritten; the data-migration runbook's
+  pre-flight query (`DATA_MIGRATION_RUNBOOK.md`, step 1.4) counts them.
+
+---
+
 ## [2.2.0] — 2026-09-06 · S3-neutral storage configuration vocabulary
 
 **Minor, additive-with-deprecation.** The storage settings are renamed after

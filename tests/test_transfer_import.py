@@ -880,6 +880,23 @@ def test_archive_import_files_an_unnamed_object_under_a_stable_key(
     assert stored.object_key.endswith("/original/file")
 
 
+def test_archive_import_normalises_a_hostile_manifest_filename(
+    client: TestClient, session: Session
+):
+    """A manifest name is data, not typed: it is mapped onto the portable-
+    filename policy (``core/validation.sanitize_filename``) rather than
+    refused — the path is dropped, the bidi override and the ``?`` become
+    ``_`` — so a hostile export cannot smuggle a name the upload API would
+    have rejected."""
+    entry = _entry(filename="../evil" + chr(0x202E) + "txt.exe?")
+    files = {f"{FILES_PREFIX}/{entry['id']}/blob": TEXT}
+    report = _post_archive(client, _manifest([entry]), files).json()
+    assert report["objects"][0]["status"] == "created", report
+    stored = session.get(MediaObject, uuid.UUID(entry["id"]))
+    assert stored.original_filename == "evil_txt.exe_"
+    assert stored.object_key.endswith("/original/evil_txt.exe_")
+
+
 # ── unit-level ───────────────────────────────────────────────────────────────
 
 

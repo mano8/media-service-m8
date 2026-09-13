@@ -2,6 +2,7 @@
 
 import hashlib
 import threading
+import unicodedata
 from collections.abc import Iterable
 from typing import Optional
 
@@ -126,3 +127,83 @@ def max_size_for_category(category: str) -> int:
     if override and category in override:
         return override[category]
     return settings.MEDIA_MAX_UPLOAD_SIZE_BYTES
+
+
+# ── filenames ────────────────────────────────────────────────────────────────
+#
+# A client-supplied filename is untrusted input that ends up in five different
+# sinks — the object key (a URL path on every presigned link), the
+# ``Content-Disposition`` header, a zip entry name in an export archive, the
+# listing/search surface, and, on the client's own disk, a filesystem path.
+# Each sink has its own encoder, but the *policy* on what a name may contain
+# is decided once, here, at the trust boundary (``SEC-VALIDATE-UNTRUSTED-INPUT``):
+# the classic portable-filename rule. A name that passes is safe in every sink
+# on every platform; the sink encoders stay as defence in depth.
+
+#: Longest accepted ``original_filename`` — the column width on ``MediaObject``
+#: and ``UploadSession`` and the common filesystem component limit.
+MAX_FILENAME_LENGTH = 255
+
+#: Characters refused outright, beyond the Unicode-category rule below: the
+#: two path separators and the set no mainstream filesystem accepts in a name
+#: (Windows' reserved set, which is the superset). ``;`` ``%`` ``#`` are
+#: allowed here — legitimate and common — and handled by the sink that cares
+#: (``storage/keys.py`` keeps them out of the URL path).
+FORBIDDEN_FILENAME_CHARS: frozenset[str] = frozenset('/\\<>:"|?*')
+
+#: What a name is replaced with when nothing usable is left.
+FALLBACK_FILENAME = "file"
+
+
+def is_forbidden_filename_char(ch: str) -> bool:
+    """Return True for a character no filename may carry.
+
+    Besides :data:`FORBIDDEN_FILENAME_CHARS`, every Unicode "Other" category
+    is refused: ``Cc`` controls (NUL, CR/LF, DEL — header and key injection),
+    ``Cf`` format characters (zero-width joiners and the bidi overrides such
+    as U+202E that reverse the visible extension of ``photo<U+202E>gnp.exe``),
+    ``Cs`` surrogates, ``Co`` private use and ``Cn`` unassigned.
+    """
+    return ch in FORBIDDEN_FILENAME_CHARS or unicodedata.category(ch).startswith("C")
+
+
+def validate_filename(value: str) -> str:
+    """Return the NFC-normalised, trimmed filename or raise ``ValueError``.
+
+    The reject-side of the policy, for the API boundary (upload initiate,
+    metadata update): the caller can rename, so a bad name is a 422 with the
+    offending characters named, never a silent rewrite.
+    """
+    name = unicodedata.normalize("NFC", value).strip()
+    if not name or set(name) <= {"."}:
+        raise ValueError("filename must not be empty or made only of dots")
+    if len(name) > MAX_FILENAME_LENGTH:
+        raise ValueError(f"filename is longer than {MAX_FILENAME_LENGTH} characters")
+    bad = sorted({ch for ch in name if is_forbidden_filename_char(ch)})
+    if bad:
+        shown = " ".join(repr(ch) for ch in bad)
+        raise ValueError(
+            "filename contains characters that are not allowed "
+            f'(path separators, < > : " | ? *, or control/format characters): {shown}'
+        )
+    return name
+
+
+def sanitize_filename(value: str | None) -> str:
+    """Map any string onto a name :func:`validate_filename` accepts.
+
+    The normalise-side of the same policy, for data that is imported rather
+    than typed — a manifest row in a transfer archive — where refusing the
+    whole document over a name is the wrong trade. Path segments before the
+    last separator are dropped (a name is never a path), every forbidden
+    character becomes ``_``, and an empty or all-dots result falls back to
+    :data:`FALLBACK_FILENAME`. The result always satisfies
+    :func:`validate_filename`.
+    """
+    name = unicodedata.normalize("NFC", value or "").strip()
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join("_" if is_forbidden_filename_char(ch) else ch for ch in name)
+    name = name.strip()[:MAX_FILENAME_LENGTH].strip()
+    if not name or set(name) <= {"."}:
+        return FALLBACK_FILENAME
+    return name

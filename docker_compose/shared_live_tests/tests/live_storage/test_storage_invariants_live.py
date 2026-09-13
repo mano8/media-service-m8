@@ -22,6 +22,11 @@ Rows covered, each as its own test named after the invariant id:
     S11  `response-content-disposition: attachment` is honoured on the app's
          download URL — with a negative control, and with a hostile filename
     S12  a ranged GET returns `206 Partial Content`
+    F1   (finding, not an S-row) a filename carrying `;` `%` or `#` is
+         downloadable through the route — the key segment never carries
+         a character Traefik refuses when percent-encoded — and a name
+         outside the portable-filename policy (`?`, separators, bidi
+         overrides, CR/LF, `<>`) is refused with 422 at initiate
 
 S1, S2, S14 and S15 need `docker inspect` / a sibling container and stay in
 the matrix document; S7, S8 and S13 are config/static rows owned by unit
@@ -595,7 +600,17 @@ def test_s11_negative_control_without_override_is_inline(
 
 
 def test_s11_hostile_filename_cannot_inject_headers(token: str) -> None:
-    hostile = 'x".html\r\nX-Injected: 1.png'
+    """The header sink's own defence, on the most hostile name the boundary admits.
+
+    `;` is the Content-Disposition parameter separator and `%` is what the
+    RFC 5987 `filename*` form escapes with, so a name carrying both, plus a
+    fake header spelled out, is the sharpest probe that still passes the
+    portable-filename policy. The pre-policy payload (a double quote and a
+    CR/LF pair) is refused with 422 at initiate now — see
+    `test_f1_forbidden_filename_is_refused_at_the_boundary[crlf]` — so the
+    quoting here is defence in depth behind that gate, not the only gate.
+    """
+    hostile = "x'.html; X-Injected=1 100%.png"
     data = _png_bytes()
     init = _initiate(token, mime="image/png", size=len(data), filename=hostile)
     assert _post_policy(init, data).status_code == 204
@@ -606,12 +621,83 @@ def test_s11_hostile_filename_cannot_inject_headers(token: str) -> None:
         assert status == 200, status
         served = headers.get("content-disposition", "")
         assert served.startswith("attachment;"), served
-        assert "\r" not in served and "\n" not in served, served
+        assert chr(13) not in served and chr(10) not in served, served
         assert "x-injected" not in headers, headers
+        # The `;` inside the name stays inside the quoted parameter value.
+        assert 'filename="' + hostile + '"' in served, served
     finally:
         requests.delete(
             f"{MEDIA_BASE}/v1/objects/{obj['id']}", headers=_auth(token), timeout=15
         )
+
+
+# ── F1 (finding, not an S-row) ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["t24;v2.png", "t24 100%.png", "t24 #1.png"],
+    ids=["semicolon", "percent", "hash"],
+)
+def test_f1_reserved_characters_in_filename_download_through_the_route(
+    token: str, hostile: str
+) -> None:
+    """The matrix's F1: such names uploaded fine but every download link was 400.
+
+    `keys.py` now keeps the characters Traefik refuses when percent-encoded
+    (`encodedCharacters`) out of the key segment; the served
+    `Content-Disposition` still carries the original name. Sent over a raw
+    TLS socket like the S11 probe, so the presigned path reaches the proxy
+    exactly as the app minted it. (`?`, the fourth character F1 listed, is
+    no longer accepted at the boundary at all — see the next test.)
+    """
+    data = _png_bytes()
+    init = _initiate(token, mime="image/png", size=len(data), filename=hostile)
+    assert _post_policy(init, data).status_code == 204
+    obj = _complete(token, init["session_id"])
+    try:
+        _wait_clean(token, obj["id"])
+        url = _download_url(token, obj["id"])
+        status, headers = _raw_get(url)
+        assert status == 200, (status, url)
+        served = headers.get("content-disposition", "")
+        assert served.startswith("attachment;"), served
+        assert hostile.split(" ")[0] in served, served
+    finally:
+        requests.delete(
+            f"{MEDIA_BASE}/v1/objects/{obj['id']}", headers=_auth(token), timeout=15
+        )
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "../t24.png",
+        "t24 what?.png",
+        "t24" + chr(0x202E) + "gnp.exe",
+        "t24" + chr(13) + chr(10) + "X-Injected: 1.png",
+        "<script>.png",
+    ],
+    ids=["traversal", "question-mark", "rtl-override", "crlf", "angle-brackets"],
+)
+def test_f1_forbidden_filename_is_refused_at_the_boundary(
+    token: str, forbidden: str
+) -> None:
+    """Portable-filename policy, observed on the wire: 422 before any URL is minted."""
+    resp = requests.post(
+        f"{MEDIA_BASE}/v1/uploads/initiate",
+        headers=_auth(token),
+        json={
+            "category": "asset",
+            "visibility": "private",
+            "original_filename": forbidden,
+            "mime_type": "image/png",
+            "expected_size_bytes": 64,
+        },
+        timeout=20,
+    )
+    assert resp.status_code == 422, (resp.status_code, resp.text[:300])
+    assert "upload_url" not in resp.text
 
 
 # ── S12 ─────────────────────────────────────────────────────────────────────

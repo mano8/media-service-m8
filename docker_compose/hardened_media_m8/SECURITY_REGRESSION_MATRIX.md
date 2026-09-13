@@ -25,7 +25,7 @@ server's own response — a client-side guard proves nothing (contract rule 2).
 | `fa-ui-m8` | `19f2bf2` (its compose-policy mirror, 66/66) |
 | `security-tests-m8` | `a4f0c0a` (`release_hygiene`, 33 passed / 1 skipped) |
 | Static suites | `media-service-m8`: 169 passed (`test_compose_storage_policy`, `test_compose_image_pins`, `test_compose_traefik_routing`, `test_storage_client`, `test_compose_secrets_policy`); `media-worker-m8/tests/test_config.py`: 37 passed |
-| Live walk | 82/82 S-row observations passed; one non-invariant finding (F1) recorded below |
+| Live walk | 82/82 S-row observations passed; one non-invariant finding (F1) recorded below — resolved on this branch after the walk, see its entry |
 
 Application containers in the measured stack run local-source builds of this
 branch (`media-service-m8:t23-local`, `media-worker-m8:t23-local` via the
@@ -97,6 +97,25 @@ walk found it and it affects the same data path.
   the served filename comes from `original_filename`, not from the key, so
   nothing user-visible changes) and add a live case that uploads such a name
   and fetches it through the route.
+* **Resolved 2026-09-13 (same branch, after this walk):** two layers, both
+  re-measured against this stack. (1) The key sink: `keys.py::_key_segment`
+  maps `;` `%` `?` `#` and C0/DEL controls to `_` before a name enters an
+  object key; `tests/test_storage_keys.py` parses every stack's
+  `encodedCharacters` block so the rule cannot drift from the proxy config.
+  (2) The trust boundary: `core/validation.py`'s portable-filename policy —
+  `POST /uploads/initiate` and `PATCH /objects/{id}` refuse (`422`) path
+  separators, `< > : " | ? *`, control/format code points (CR/LF, NUL, bidi
+  overrides), empty/all-dots and > 255 characters; the archive import
+  normalises onto the same rules. Live, on the wire, through the real route:
+  `t24;v2.png` / `t24 100%.png` / `t24 #1.png` → **200** with the original
+  name in `Content-Disposition` (was 400); `../t24.png`, `t24 what?.png`,
+  `t24<U+202E>gnp.exe`, a CR/LF name, `<script>.png` → **422** at initiate,
+  no URL minted. `test_storage_invariants_live.py` carries both cases
+  (`test_f1_*`, 8 parametrised rows) and now runs **42 passed**; the S11
+  hostile-name probe was re-pointed at the sharpest name the policy still
+  admits (`x'.html; X-Injected=1 100%.png`) and still proves the header sink
+  on its own. Keys already stored under such names are not rewritten —
+  `DATA_MIGRATION_RUNBOOK.md` step 1.4 counts them before a migration.
 
 ## How to re-run
 
