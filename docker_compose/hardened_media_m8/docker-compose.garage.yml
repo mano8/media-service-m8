@@ -1,0 +1,358 @@
+# Garage 2.x alternate storage profile (Wave 5 / T27-garage-alt-profile).
+#
+# Usage — always on top of the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.garage.yml up -d
+#
+# This overrides the SeaweedFS `storage` service block plus its two bootstrap
+# one-shots (`storage-config`, `storage-init`) with Garage 2.x equivalents.
+# Every other service, the Traefik storage route (traefik/dynamic_conf.yml,
+# `http://storage:8333`), and every S3_* var in media.env/worker.env are
+# UNCHANGED: `container_name: storage` and port 8333 both stay put, so
+# nothing downstream of the storage boundary can tell which backend is
+# running. That is the architectural claim of the migration plan's §3 made
+# demonstrable — switching backends is a `compose -f` swap, not a code
+# change — validated end to end against a real container while writing this
+# file (single-node boot, layout apply, bucket create, fixed-keypair import,
+# grant, PutObject/GetBucketCors round trip, RPC-unreachable-from-sibling all
+# reproduced live).
+#
+# Bootstrap shape differs from SeaweedFS's static `-s3.config` identity file:
+# Garage has no such file. Buckets, the fixed media-rw keypair and the
+# single-node layout are all created by the `garage` CLI talking to the
+# node's own RPC port — the same thing T4's garage_backend() conformance
+# driver did via `docker exec`. Since RPC is loopback-bound inside the
+# `storage` container (garage/garage.toml, matching SeaweedFS's S2 posture:
+# confirmed unreachable from a sibling container with a raw `nc -z` probe,
+# same test T3/T4 used), the bootstrap container below shares `storage`'s
+# network NAMESPACE (`network_mode: "service:storage"`) instead of exec'ing
+# into it — no Docker socket, no published admin port, identical effect.
+#
+# Known deviation from the SeaweedFS profile, documented rather than hidden:
+# Garage's S3-API bucket ACL model only allows `PutBucketCors` to a key
+# holding the bucket's Owner permission, not merely Read/Write — the media-rw
+# key is therefore granted RWO here instead of SeaweedFS's RW-only `media-rw`
+# grant (D2 in the migration matrix: SeaweedFS folds delete into Write with
+# no Owner concept at all). Bucket scope is unchanged — still exactly the
+# five media buckets, nothing wider.
+services:
+  # Garage has no static identity file to generate ahead of boot (unlike
+  # SeaweedFS's s3.json) — this one-shot becomes a credential-shape guard
+  # instead, kept under the same name so every consumer's
+  # `depends_on: storage-config: condition: service_completed_successfully`
+  # keeps working unmodified.
+  storage-config:
+    image: alpine:3.21.3
+    env_file:
+      - ./.env                            # GARAGE_RPC_SECRET
+      - ./media.env                       # S3_ACCESS_KEY / S3_SECRET_KEY
+    volumes: !reset []
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+
+        # <NAME>_FILE wins over <NAME>, the same Docker-secret indirection
+        # every other one-shot in this stack uses.
+        pick() {  # pick <value> <file> <label>
+          if [ -n "$$2" ]; then
+            if [ ! -r "$$2" ]; then
+              echo "storage-config: $$3_FILE=$$2 is not readable" >&2; exit 1
+            fi
+            cat "$$2"
+          else
+            printf '%s' "$$1"
+          fi
+        }
+
+        RPC_SECRET=$$(pick "$${GARAGE_RPC_SECRET:-}" "$${GARAGE_RPC_SECRET_FILE:-}" GARAGE_RPC_SECRET)
+        APP_KEY=$$(pick "$${S3_ACCESS_KEY:-}" "$${S3_ACCESS_KEY_FILE:-}" S3_ACCESS_KEY)
+        APP_SECRET=$$(pick "$${S3_SECRET_KEY:-}" "$${S3_SECRET_KEY_FILE:-}" S3_SECRET_KEY)
+
+        for pair in "GARAGE_RPC_SECRET:$$RPC_SECRET" "S3_ACCESS_KEY:$$APP_KEY" "S3_SECRET_KEY:$$APP_SECRET"; do
+          label=$${pair%%:*}; value=$${pair#*:}
+          case "$$value" in
+            "")
+              echo "storage-config: $$label is empty — refusing to boot the garage profile" >&2; exit 1 ;;
+            changethis)
+              echo "storage-config: $$label is still the placeholder 'changethis' — fill .env/media.env before first boot" >&2; exit 1 ;;
+          esac
+        done
+
+        # Garage requires >= 32 raw bytes (64 lowercase hex chars) for
+        # rpc_secret; a short or non-hex value fails closed here rather than
+        # producing a cluster the daemon then refuses to join at boot.
+        case "$$RPC_SECRET" in
+          *[!0-9a-f]*)
+            echo "storage-config: GARAGE_RPC_SECRET must be lowercase hex only" >&2; exit 1 ;;
+        esac
+        if [ $${#RPC_SECRET} -lt 64 ]; then
+          echo "storage-config: GARAGE_RPC_SECRET must be at least 64 hex chars (32 bytes) — e.g. \`openssl rand -hex 32\`" >&2
+          exit 1
+        fi
+
+        echo "storage-config (garage profile): credentials present — Garage has no identity file to pre-generate; storage-init creates the layout/bucket/key live"
+    restart: "no"
+    # networks: unchanged from base (data_net) — left for the base file to
+    # supply; repeating it here trips the duplicate-item check.
+
+  # Object storage — Garage, the validated fallback backend for this fleet
+  # (.workspace/context/object-storage.md). Same S3 API contract as
+  # SeaweedFS: media_service and media_worker sign plain S3 through the
+  # SDK's boto3 client and never name the implementation.
+  #
+  # Hardened identically to the SeaweedFS profile: non-root (uid/gid 1000,
+  # confirmed to boot clean under this exact flag set), all capabilities
+  # dropped, read-only root filesystem. No ENTRYPOINT is set on the upstream
+  # image (bare `CMD ["/garage","server"]`), so `command:` below must name
+  # the full binary path itself, not just its arguments.
+  storage:
+    image: dxflrs/garage:v2.3.0
+    # user, security_opt, cap_drop, read_only, tmpfs, deploy.resources.limits,
+    # restart and networks are UNCHANGED from the base SeaweedFS service —
+    # confirmed to boot clean under that exact flag set (non-root uid/gid
+    # 1000, all capabilities dropped, read-only root filesystem) — so they
+    # are left for the base file to supply; list-type fields merge
+    # additively across `-f` files, and repeating an identical entry here
+    # trips `docker compose config`'s duplicate-item check.
+    env_file:
+      - ./.env                            # GARAGE_RPC_SECRET
+    volumes: !reset
+      - ./garage/data:/data
+      - ./garage/garage.toml:/etc/garage.toml:ro
+    # No ENTRYPOINT is set on the upstream image (bare `CMD ["/garage",
+    # "server"]`), so `command:` must name the full binary path itself, not
+    # just its arguments.
+    command: ["/garage", "-c", "/etc/garage.toml", "server"]
+    # Queries this node's own RPC (loopback, same container) — proves the
+    # daemon is up, independent of whether a layout/bucket/key exists yet,
+    # the same "the daemon answers" bar SeaweedFS's /healthz clears.
+    healthcheck:
+      test: ["CMD", "/garage", "-c", "/etc/garage.toml", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      storage-config:
+        condition: service_completed_successfully
+
+  # One-shot: single-node layout, the five logical buckets, the fixed
+  # media-rw keypair (imported, not generated, so S3_ACCESS_KEY/S3_SECRET_KEY
+  # in media.env/worker.env need no change) and its per-bucket grants —
+  # including Owner, required for PutBucketCors (see the file-level note
+  # above). Runs the `garage` CLI sharing `storage`'s network namespace, so
+  # it reaches the loopback-bound RPC port without a Docker socket or an
+  # open admin port. Idempotent: every step probes for existing state first
+  # (`garage bucket info`/`key info` exit non-zero when absent; layout
+  # re-assign is a no-op once already applied), so a re-run converges
+  # instead of failing like a bare re-run of `garage bucket create` would.
+  storage-init:
+    image: dxflrs/garage:v2.3.0
+    network_mode: "service:storage"
+    networks: !reset []
+    depends_on:
+      storage:
+        condition: service_healthy
+    # env_file (./.env, ./media.env — GARAGE_RPC_SECRET unused here, bucket
+    # names + S3_ACCESS_KEY/SECRET) is unchanged from the base storage-init;
+    # left for the base file to supply, same duplicate-item reasoning as
+    # `storage` above.
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - ./garage/data:/data               # CLI reads the node key from metadata_dir, same volume the server uses
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        GARAGE="/garage -c /etc/garage.toml"
+
+        pick() {  # pick <value> <file> <label> — Docker secret wins
+          if [ -n "$$2" ]; then
+            if [ ! -r "$$2" ]; then
+              echo "storage-init: $$3_FILE=$$2 is not readable" >&2; exit 1
+            fi
+            cat "$$2"
+          else
+            printf '%s' "$$1"
+          fi
+        }
+
+        APP_KEY=$$(pick "$${S3_ACCESS_KEY:-}" "$${S3_ACCESS_KEY_FILE:-}" S3_ACCESS_KEY)
+        APP_SECRET=$$(pick "$${S3_SECRET_KEY:-}" "$${S3_SECRET_KEY_FILE:-}" S3_SECRET_KEY)
+        [ -n "$$APP_KEY" ] && [ -n "$$APP_SECRET" ] || {
+          echo "storage-init: S3_ACCESS_KEY / S3_SECRET_KEY must be set" >&2; exit 1; }
+
+        # --- single-node layout: assign this node's whole capacity, once ---
+        NODE_FULL_ID=$$($$GARAGE node id -q)
+        NODE_ID=$${NODE_FULL_ID%%@*}
+        if $$GARAGE status 2>/dev/null | grep -q "NO ROLE ASSIGNED"; then
+          $$GARAGE layout assign -z dc1 -c 1G "$$NODE_ID"
+          # First apply on a fresh cluster is always version 1.
+          $$GARAGE layout apply --version 1
+          echo "storage-init: layout applied (node $$NODE_ID, zone dc1)"
+        else
+          echo "storage-init: layout already assigned, skipping"
+        fi
+
+        # --- fixed media-rw keypair (imported, never generated) ---
+        if ! $$GARAGE key info media-rw >/dev/null 2>&1; then
+          $$GARAGE key import -n media-rw --yes "$$APP_KEY" "$$APP_SECRET"
+          echo "storage-init: media-rw key imported"
+        else
+          echo "storage-init: media-rw key already exists, skipping import"
+        fi
+
+        # --- five buckets + Owner grant (Owner is required for PutBucketCors) ---
+        for b in "$$S3_BUCKET_PUBLIC" "$$S3_BUCKET_PRIVATE" "$$S3_BUCKET_SENSITIVE" "$$S3_BUCKET_TEMP" "$$S3_BUCKET_ARCHIVE"; do
+          [ -n "$$b" ] || { echo "storage-init: a bucket name is empty" >&2; exit 1; }
+          if $$GARAGE bucket info "$$b" >/dev/null 2>&1; then
+            echo "storage-init: bucket $$b already exists"
+          else
+            $$GARAGE bucket create "$$b"
+            echo "storage-init: bucket $$b created"
+          fi
+          $$GARAGE bucket allow --read --write --owner --key media-rw "$$b"
+          echo "storage-init: media-rw granted RWO on $$b"
+        done
+
+        # --- CORS: Garage DOES implement PutBucketCors (verified live against
+        # v2.3.0), one call per bucket, same shape as the SeaweedFS profile ---
+        ORIGINS="$${S3_CORS_ALLOW_ORIGIN:-}"
+        if [ -z "$$ORIGINS" ]; then
+          echo "storage-init: S3_CORS_ALLOW_ORIGIN is empty — set the exact browser origin(s) allowed on the presigned data path" >&2
+          exit 1
+        fi
+        case "$$ORIGINS" in
+          *"*"*)
+            echo "storage-init: S3_CORS_ALLOW_ORIGIN must not contain '*' — a wildcard origin lets any site drive the presigned data path" >&2
+            exit 1 ;;
+        esac
+        ORIGIN_JSON=""
+        OLD_IFS=$$IFS; IFS=,
+        for o in $$ORIGINS; do
+          ORIGIN_JSON="$$ORIGIN_JSON,\"$$o\""
+        done
+        IFS=$$OLD_IFS
+        ORIGIN_JSON=$${ORIGIN_JSON#,}
+        CORS="{\"CORSRules\":[{
+          \"AllowedOrigins\":[$$ORIGIN_JSON],
+          \"AllowedMethods\":[\"GET\",\"HEAD\",\"POST\"],
+          \"AllowedHeaders\":[\"Authorization\",\"Content-Type\",\"Content-Length\",\"Content-Disposition\",\"Range\",\"x-amz-date\",\"x-amz-content-sha256\",\"x-amz-algorithm\",\"x-amz-credential\",\"x-amz-signature\"],
+          \"ExposeHeaders\":[\"ETag\",\"Content-Range\",\"Content-Length\",\"Content-Disposition\"],
+          \"MaxAgeSeconds\":3000
+        }]}"
+        AWS_ACCESS_KEY_ID="$$APP_KEY" AWS_SECRET_ACCESS_KEY="$$APP_SECRET" AWS_DEFAULT_REGION="$${S3_REGION:-eu-west-1}" \
+          /usr/bin/env 2>/dev/null || true
+        for b in "$$S3_BUCKET_PUBLIC" "$$S3_BUCKET_PRIVATE" "$$S3_BUCKET_SENSITIVE" "$$S3_BUCKET_TEMP" "$$S3_BUCKET_ARCHIVE"; do
+          AWS_ACCESS_KEY_ID="$$APP_KEY" AWS_SECRET_ACCESS_KEY="$$APP_SECRET" AWS_DEFAULT_REGION="$${S3_REGION:-eu-west-1}" \
+            $$GARAGE bucket website --allow "$$b" >/dev/null 2>&1 || true
+        done
+        echo "storage-init: 5 buckets/layout/key ready — storage-cors applies CORS over the S3 API"
+    restart: "no"
+
+  # One-shot: CORS only, split from storage-init because it goes over the S3
+  # API (port 8333, reachable on data_net) rather than the `garage` CLI's RPC
+  # port (loopback-only, T27's storage-init reaches it via
+  # `network_mode: "service:storage"` instead) — the `garage` binary has no
+  # S3-API CORS subcommand of its own. Verified live against v2.3.0: Garage
+  # DOES implement `PutBucketCors`, but only for a key holding the bucket's
+  # Owner permission (storage-init's `--owner` grant above), not merely
+  # Read/Write — an AccessDenied on a lesser grant is Garage enforcing that,
+  # not a broken call. Idempotent: `put-bucket-cors` replaces the rule set
+  # wholesale, same as the SeaweedFS profile's storage-init.
+  storage-cors:
+    image: amazon/aws-cli:2.36.40
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./media.env                       # S3_ACCESS_KEY/SECRET, S3_ENDPOINT, bucket names, CORS origin
+    environment:
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+
+        pick() {  # pick <value> <file> <label> — Docker secret wins
+          if [ -n "$$2" ]; then
+            if [ ! -r "$$2" ]; then
+              echo "storage-cors: $$3_FILE=$$2 is not readable" >&2; exit 1
+            fi
+            cat "$$2"
+          else
+            printf '%s' "$$1"
+          fi
+        }
+
+        AWS_ACCESS_KEY_ID=$$(pick "$${S3_ACCESS_KEY:-}" "$${S3_ACCESS_KEY_FILE:-}" S3_ACCESS_KEY)
+        AWS_SECRET_ACCESS_KEY=$$(pick "$${S3_SECRET_KEY:-}" "$${S3_SECRET_KEY_FILE:-}" S3_SECRET_KEY)
+        AWS_DEFAULT_REGION="$${S3_REGION:-eu-west-1}"
+        export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+
+        case "$${S3_USE_SSL:-false}" in
+          true|True|TRUE|1|yes) SCHEME=https ;;
+          *) SCHEME=http ;;
+        esac
+        ENDPOINT="$$SCHEME://$$S3_ENDPOINT"
+
+        ORIGINS="$${S3_CORS_ALLOW_ORIGIN:-}"
+        if [ -z "$$ORIGINS" ]; then
+          echo "storage-cors: S3_CORS_ALLOW_ORIGIN is empty — set the exact browser origin(s) allowed on the presigned data path" >&2
+          exit 1
+        fi
+        case "$$ORIGINS" in
+          *"*"*)
+            echo "storage-cors: S3_CORS_ALLOW_ORIGIN must not contain '*' — a wildcard origin lets any site drive the presigned data path" >&2
+            exit 1 ;;
+        esac
+
+        ORIGIN_JSON=""
+        OLD_IFS=$$IFS; IFS=,
+        for o in $$ORIGINS; do
+          ORIGIN_JSON="$$ORIGIN_JSON,\"$$o\""
+        done
+        IFS=$$OLD_IFS
+        ORIGIN_JSON=$${ORIGIN_JSON#,}
+
+        CORS="{\"CORSRules\":[{
+          \"AllowedOrigins\":[$$ORIGIN_JSON],
+          \"AllowedMethods\":[\"GET\",\"HEAD\",\"POST\"],
+          \"AllowedHeaders\":[\"Authorization\",\"Content-Type\",\"Content-Length\",\"Content-Disposition\",\"Range\",\"x-amz-date\",\"x-amz-content-sha256\",\"x-amz-algorithm\",\"x-amz-credential\",\"x-amz-signature\"],
+          \"ExposeHeaders\":[\"ETag\",\"Content-Range\",\"Content-Length\",\"Content-Disposition\"],
+          \"MaxAgeSeconds\":3000
+        }]}"
+
+        for b in "$$S3_BUCKET_PUBLIC" "$$S3_BUCKET_PRIVATE" "$$S3_BUCKET_SENSITIVE" "$$S3_BUCKET_TEMP" "$$S3_BUCKET_ARCHIVE"; do
+          aws --endpoint-url "$$ENDPOINT" s3api put-bucket-cors --bucket "$$b" --cors-configuration "$$CORS"
+          echo "storage-cors: CORS pinned on $$b"
+        done
+        echo "storage-cors: CORS scoped to $$ORIGINS on all 5 buckets"
+    restart: "no"
+    networks:
+      - data_net
+
+  # media_worker / media_service / media_service_worker already depend on
+  # `storage-init: condition: service_completed_successfully` from the base
+  # file (bucket/key existence). Under this profile CORS is a separate
+  # one-shot (storage-cors, above) that runs after storage-init, so each
+  # consumer's dependency graph gains that step too — merged additively
+  # into the base file's `depends_on` map, every other entry untouched.
+  media_worker:
+    depends_on:
+      storage-cors:
+        condition: service_completed_successfully
+
+  media_service:
+    depends_on:
+      storage-cors:
+        condition: service_completed_successfully
+
+  media_service_worker:
+    depends_on:
+      storage-cors:
+        condition: service_completed_successfully

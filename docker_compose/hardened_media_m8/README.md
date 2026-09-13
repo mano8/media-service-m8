@@ -227,6 +227,65 @@ an `rclone` one-shot behind the `migration` profile, never started by a plain
 the stored `sha256` column (`verify_migration_digests.py`), a rollback window
 with the exact trigger conditions, and the rollback itself.
 
+### Alternate backend: Garage (`docker-compose.garage.yml`)
+
+`.workspace/context/object-storage.md` ratifies SeaweedFS 4.x as the default
+and Garage 2.x as the validated fallback. `docker-compose.garage.yml` makes
+that swap real instead of theoretical: it overrides `storage`, `storage-config`
+and `storage-init` with Garage 2.x equivalents (plus a new `storage-cors`
+one-shot — see below) and changes nothing else. `container_name: storage` and
+port `8333` are unchanged, so the Traefik route and every `S3_*` variable in
+`media.env`/`worker.env` need no edit.
+
+```bash
+# One extra flag is the whole migration:
+docker compose -f docker-compose.yml -f docker-compose.garage.yml up -d
+```
+
+Before first boot, set `GARAGE_RPC_SECRET` in `.env` (>= 64 lowercase hex
+chars — `openssl rand -hex 32`; see `.env.example`). It authenticates
+cluster-administration RPC calls between `storage` and the bootstrap
+one-shots and is unused under the default SeaweedFS profile.
+
+What differs from the SeaweedFS profile, and why:
+
+- **No static identity file.** SeaweedFS reads its accounts from
+  `-s3.config` at startup; Garage has no equivalent, so `storage-config`
+  becomes a credential-shape guard instead, and `storage-init` creates the
+  single-node layout, the five buckets and the fixed `media-rw` keypair
+  live via the `garage` CLI (imported with `garage key import`, never
+  generated, so `S3_ACCESS_KEY`/`S3_SECRET_KEY` need no change).
+- **Cluster administration (`garage` CLI) needs the RPC port**, which is
+  loopback-bound inside the `storage` container — the same posture as
+  SeaweedFS's master/volume/filer/webdav, confirmed unreachable from a
+  sibling container with the same `nc -z` probe `T3`/`T4` used. `storage-init`
+  reaches it by sharing `storage`'s network **namespace**
+  (`network_mode: "service:storage"`), not by mounting the Docker socket or
+  publishing an admin port.
+- **CORS is a separate one-shot, `storage-cors`.** Garage's S3 API does
+  implement `PutBucketCors` (verified live against v2.3.0) but the `garage`
+  CLI has no S3-API subcommand for it, so this step goes over the S3 port
+  with `aws s3api` — same shape as the SeaweedFS profile's `storage-init`
+  CORS block, just split out because it needs the S3 port (`data_net`)
+  rather than the RPC port (loopback-only, `storage-init`'s namespace).
+- **The `media-rw` grant is `RWO` (Read/Write/**Owner**), not `RW`.** Garage
+  only allows `PutBucketCors` to a key holding the bucket's Owner permission.
+  Bucket scope is unchanged — still exactly the five media buckets.
+- **`s3_api.s3_region` in `garage/garage.toml` is a static file value**
+  (`eu-west-1`, matching `media.env.example`'s `S3_REGION`), not read from
+  `.env` at boot the way SeaweedFS's identity table is. If you change
+  `S3_REGION`, edit `garage/garage.toml` to match — Garage validates the
+  SigV4 region on every request.
+
+Not carried over from the SeaweedFS profile (documented gaps, not silent
+regressions): the `docker-compose.production.yml` `_FILE`-secret wiring
+does not yet cover `GARAGE_RPC_SECRET` (the bootstrap scripts already accept
+`GARAGE_RPC_SECRET_FILE`, so adding the mapping is additive whenever the
+production overlay needs this profile), and `garage/garage.toml`'s region
+is not templated per-deployment the way `media.env` is. Both are follow-on
+work, tracked as Wave 5 in the object-storage migration plan — this profile
+is a documented alternative, not a required cutover path.
+
 ## URLs
 
 | What | URL |

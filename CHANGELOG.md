@@ -13,7 +13,28 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
-No pending changes.
+### Added
+
+- **Garage 2.x alternate storage profile**
+  (`docker_compose/hardened_media_m8/docker-compose.garage.yml`,
+  object-storage backend migration plan, Wave 5 /
+  `T27-garage-alt-profile`). `docker compose -f docker-compose.yml -f
+  docker-compose.garage.yml up -d` swaps the ratified SeaweedFS default for
+  the validated Garage fallback (`.workspace/context/object-storage.md`)
+  without touching the Traefik storage route or any `S3_*` variable —
+  `container_name: storage` and port `8333` are unchanged. Bootstrap
+  (single-node layout, five buckets, the fixed `media-rw` keypair imported
+  rather than generated, per-bucket CORS) runs live via the `garage` CLI and
+  a new `storage-cors` one-shot; the RPC/cluster-administration port stays
+  loopback-bound (S2 parity with SeaweedFS), reached by the bootstrap
+  container sharing `storage`'s network namespace rather than a Docker
+  socket or an open admin port. `media-rw` is granted Owner (not just
+  Read/Write) because Garage requires it for `PutBucketCors`. Validated live
+  against a real `dxflrs/garage:v2.3.0` container while building this
+  profile (hardened boot under non-root/cap-drop-ALL/read-only, layout
+  apply, bucket create, key import, RWO grant, PutObject/GetBucketCors round
+  trip, RPC-unreachable-from-a-sibling). Not a required cutover path — Wave
+  5 is explicitly optional; SeaweedFS remains the default.
 
 ---
 
