@@ -85,10 +85,24 @@ examples/docker_compose/shared_live_tests/
 ├── env.example
 ├── pytest.ini
 ├── README.md
-└── tests/live/
-    ├── conftest.py
-    └── test_full_security.py
+├── tests/live/
+│   ├── conftest.py
+│   └── test_full_security.py
+└── tests/live_storage/
+    └── test_storage_workflow_live.py
 ```
+
+`tests/live_storage/test_storage_workflow_live.py` is a second, independent
+opt-in suite — it proves the storage-migration workflow (browser-direct
+upload, scan gating, variant generation, share links, a visibility move,
+archive export, orphan reconcile, hard-purge) against a running stack, over
+plain HTTP/S3 rather than the auth-security angle above. It needs its own
+`STORAGE_LIVE_TEST_*` env vars (documented in its module docstring) and is
+skipped by default without them. It lives outside `tests/live/` because
+`security-tests-m8`'s pytest plugin runs its own live-stack preflight at
+session start regardless of which files are collected; if that preflight
+isn't satisfied for your stack, run this one standalone:
+`pytest tests/live_storage -p no:security_tests_m8`.
 
 ## Start The Hardened Stack
 
