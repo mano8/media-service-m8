@@ -210,6 +210,14 @@ set. `media_service` waits for `storage-init` to complete before starting and
 uses `S3_ACCESS_KEY` / `S3_SECRET_KEY`, never the admin credentials, which no
 application container is given.
 
+The fifteen security invariants this storage layer must hold (no host port,
+loopback-bound admin surfaces, scoped CORS and credential, presigned-only data
+path, TLS/Host-pinned route, server-side size and `Content-Type` enforcement,
+`attachment` disposition, ranged GET, hygiene, pins, container hardening) are
+walked with evidence in [`SECURITY_REGRESSION_MATRIX.md`](SECURITY_REGRESSION_MATRIX.md);
+the wire-level rows re-run against any live stack via
+`../shared_live_tests/tests/live_storage/test_storage_invariants_live.py`.
+
 ## URLs
 
 | What | URL |
