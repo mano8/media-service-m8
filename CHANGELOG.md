@@ -36,6 +36,34 @@ All notable changes to `media-service-m8` are documented here.
   trip, RPC-unreachable-from-a-sibling). Not a required cutover path — Wave
   5 is explicitly optional; SeaweedFS remains the default.
 
+- **Object versioning / Object Lock evaluation**
+  (`docker_compose/hardened_media_m8/VERSIONING_OBJECTLOCK_EVALUATION.md`,
+  object-storage backend migration plan, Wave 5 /
+  `T28-versioning-objectlock-eval`). A recommendation, not an
+  implementation: **do not enable object versioning or Object Lock** on any
+  media bucket today, measured against a throwaway `chrislusf/seaweedfs:4.45`
+  node (this stack's pin and boot flags) and `dxflrs/garage:v2.3.0`. The
+  conflict the step exists to state runs deeper than expected — the SDK's
+  `remove_object` deletes by key with no version id, so versioning *alone*,
+  with no lock configured, turns every delete this service performs into a
+  delete marker and makes the nightly hard purge report `purged=N` while
+  reclaiming nothing; the orphan reconciler cannot see the difference either,
+  since `ListObjectsV2` lists neither noncurrent versions nor delete-marked
+  keys. COMPLIANCE mode is rejected outright for personal data (measured: the
+  admin credential cannot delete a retained version even with the governance
+  bypass); GOVERNANCE is the only lock mode compatible with erasure (refused
+  to the scoped `media-rw` key, granted to the admin identity). Also recorded:
+  `media-rw` can enable/suspend versioning and release a legal hold (SeaweedFS
+  has no permission verb below `Write`), the `OP-08` `Content-Type` rewrite
+  stops being in-place under versioning, a stored `NoncurrentVersionExpiration`
+  lifecycle rule expires nothing here (no lifecycle worker runs in this stack),
+  Garage 2.3.0 answers `NotImplemented` to all of it (fallback parity would be
+  lost), and both evaluated buckets are empty today — `archive-media` has no
+  producing code path at all. Ships with
+  `tests/test_storage_versioning_policy.py` (6 tests), a static guard that
+  fails if any bootstrap or service path starts issuing these operations while
+  the recommendation stands.
+
 ---
 
 ## [2.3.0] — 2026-09-13 · MinIO → SeaweedFS backend swap, filename trust boundary (`T26-changelog-release`)
