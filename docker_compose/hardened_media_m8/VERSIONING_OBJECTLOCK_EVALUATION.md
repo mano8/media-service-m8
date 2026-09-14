@@ -307,3 +307,16 @@ recommendation stands.
    it gets expensive once the bucket holds data.
 3. **Does failover to Garage have to be semantically identical** to SeaweedFS
    (5.5)? A "yes" closes Option C permanently, without any further analysis.
+
+### Answers (operator decision, 2026-09-14)
+
+1. **No retention or immutability requirement exists.** Option A stands;
+   preconditions 7.x are not revisited.
+2. **`archive-media` keeps its bucket and mapping and gets a writer.** That is
+   feature work outside this evaluation, tracked as its own follow-on step in
+   the migration plan; the bucket stays inside the `media-rw` five-bucket
+   grant and gains no versioning or lock.
+3. **Yes — failover to Garage must be semantically identical.** Option C is
+   closed permanently. `tests/test_storage_versioning_policy.py` is the
+   standing guard, and the fleet policy in the workspace's
+   `.workspace/context/object-storage.md` records the same rule.
