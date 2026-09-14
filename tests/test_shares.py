@@ -215,10 +215,10 @@ def test_resolve_happy(
 ):
     obj = _make_object(session, current_user.id)
     share = _make_share(session, media_object_id=obj.id, owner_id=current_user.id)
-    mock_storage.presigned_get_object.return_value = "https://minio/download"
+    mock_storage.presigned_get_object.return_value = "https://storage/download"
     resp = client.get(f"/media/v1/shares/{_sign(share.id)}")
     assert resp.status_code == 200
-    assert resp.json()["url"] == "https://minio/download"
+    assert resp.json()["url"] == "https://storage/download"
     session.refresh(share)
     assert share.uses == 1
 
@@ -230,7 +230,7 @@ def test_resolve_under_max_uses(
     share = _make_share(
         session, media_object_id=obj.id, owner_id=current_user.id, max_uses=2, uses=0
     )
-    mock_storage.presigned_get_object.return_value = "https://minio/download"
+    mock_storage.presigned_get_object.return_value = "https://storage/download"
     resp = client.get(f"/media/v1/shares/{_sign(share.id)}")
     assert resp.status_code == 200
 
@@ -478,7 +478,7 @@ def test_resolve_valid_share_passes_below_rate_limit(
     """Valid share resolves normally when the rate limit is not exceeded."""
     obj = _make_object(session, current_user.id)
     share = _make_share(session, media_object_id=obj.id, owner_id=current_user.id)
-    mock_storage.presigned_get_object.return_value = "https://minio/download"
+    mock_storage.presigned_get_object.return_value = "https://storage/download"
     resp = client.get(f"/media/v1/shares/{_sign(share.id)}")
     assert resp.status_code == 200
 
@@ -499,7 +499,7 @@ def test_metrics_emitted_on_success(
 ):
     obj = _make_object(session, current_user.id)
     share = _make_share(session, media_object_id=obj.id, owner_id=current_user.id)
-    mock_storage.presigned_get_object.return_value = "https://minio/dl"
+    mock_storage.presigned_get_object.return_value = "https://storage/dl"
     with patch("media_service.controllers.shares._metrics") as m:
         SharesController.resolve(
             session=session, token=_sign(share.id), storage=mock_storage

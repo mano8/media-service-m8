@@ -157,9 +157,29 @@ def test_s3_public_endpoint_http_external_local_allowed():
 # ── S3_ENDPOINT validation (replaces MINIO_PORT's range check) ────────────────
 
 
-def test_s3_endpoint_default_matches_the_legacy_host_port_pair():
-    """The default netloc is exactly what MINIO_HOST/MINIO_PORT defaulted to."""
-    assert _make_settings().S3_ENDPOINT == "minio:9000"
+def test_s3_endpoint_default_is_the_storage_service_not_the_retired_backend():
+    """T30: the field default names the fleet's ``storage`` service on its S3
+    port — the backend the compose stacks actually run — not the retired
+    ``minio:9000`` pair. Every stack sets ``S3_ENDPOINT`` explicitly, so this
+    default is only ever seen by a bare ``Settings()``; it still must not point
+    at a host nothing in the fleet runs."""
+    assert _make_settings().S3_ENDPOINT == "storage:8333"
+
+
+def test_s3_endpoint_default_is_decoupled_from_the_legacy_host_port_pair():
+    """The shim's legacy defaults reproduce the *old* field defaults for a
+    partial ``MINIO_HOST``/``MINIO_PORT`` config and therefore stay ``minio`` /
+    ``9000`` — they legitimately differ from the new field default. Asserting
+    the separation (rather than the equality the pre-T30 test asserted) is
+    what keeps a future "tidy-up" from retargeting the shim constants."""
+    from media_service.core.config import (
+        _LEGACY_ENDPOINT_HOST_DEFAULT,
+        _LEGACY_ENDPOINT_PORT_DEFAULT,
+    )
+
+    legacy = f"{_LEGACY_ENDPOINT_HOST_DEFAULT}:{_LEGACY_ENDPOINT_PORT_DEFAULT}"
+    assert legacy == "minio:9000"
+    assert Settings.model_fields["S3_ENDPOINT"].default != legacy
 
 
 def test_s3_endpoint_with_scheme_rejected():
@@ -213,7 +233,7 @@ def test_legacy_host_alone_keeps_the_default_port():
 def test_legacy_port_alone_keeps_the_default_host():
     with pytest.warns(DeprecationWarning):
         s = _make_settings(MINIO_PORT=9002)
-    assert s.S3_ENDPOINT == "minio:9002"
+    assert s.S3_ENDPOINT == "minio:9002"  # legacy host default, by design (T30)
 
 
 def test_legacy_scalar_aliases_are_applied():
@@ -310,7 +330,7 @@ def test_legacy_secret_file_mount_reaches_the_renamed_field(tmp_path, monkeypatc
     ``MINIO_SECRET_KEY_FILE`` (S4/S8). The ``*_FILE`` settings source fills the
     legacy field and the shim carries it to ``S3_SECRET_KEY``, so the deployed
     credential path survives the rename without touching the compose files."""
-    secret = tmp_path / "minio_secret_key"
+    secret = tmp_path / "legacy_secret_key"
     secret.write_text("FileMounted!Secret1", encoding="utf-8")
     monkeypatch.delenv("S3_SECRET_KEY", raising=False)
     monkeypatch.setenv("MINIO_SECRET_KEY_FILE", str(secret))

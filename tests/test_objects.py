@@ -95,10 +95,10 @@ def test_download_url_returns_presigned_url(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
     obj = _make_object(session, current_user.id)
-    mock_storage.presigned_get_object.return_value = "https://minio/download"
+    mock_storage.presigned_get_object.return_value = "https://storage/download"
     resp = client.get(f"/media/v1/objects/{obj.id}/download-url")
     assert resp.status_code == 200
-    assert resp.json()["url"] == "https://minio/download"
+    assert resp.json()["url"] == "https://storage/download"
     assert "expires_at" in resp.json()
 
 
@@ -159,7 +159,7 @@ def test_update_object_relocation_failure_leaves_metadata_unchanged(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
     obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
-    mock_storage.copy_object.side_effect = RuntimeError("minio down")
+    mock_storage.copy_object.side_effect = RuntimeError("storage down")
     resp = client.patch(
         f"/media/v1/objects/{obj.id}",
         json={"visibility": "public"},

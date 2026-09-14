@@ -163,7 +163,7 @@ def test_hard_purge_swallows_storage_removal_failure(
         status=MediaObjectStatus.DELETED,
         deleted_at=_CUTOFF - timedelta(days=1),
     )
-    mock_storage.remove_object.side_effect = RuntimeError("minio down")
+    mock_storage.remove_object.side_effect = RuntimeError("storage down")
 
     result = MaintenanceController.hard_purge_expired(
         session=session, storage=mock_storage, older_than=_OLDER_THAN, limit=500
@@ -335,7 +335,7 @@ def test_reconcile_repair_is_best_effort_on_delete_failure(
     session: Session, mock_storage: MagicMock
 ):
     mock_storage.list_object_keys.return_value = ["o1"]
-    mock_storage.remove_object.side_effect = RuntimeError("minio down")
+    mock_storage.remove_object.side_effect = RuntimeError("storage down")
 
     report = MaintenanceController.reconcile_orphans(
         session=session,

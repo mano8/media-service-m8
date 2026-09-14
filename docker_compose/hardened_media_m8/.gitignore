@@ -15,8 +15,11 @@ seaweedfs/config/s3.json
 # key. seaweedfs/security.toml points at these and IS tracked (no secret).
 seaweedfs/tls/
 # Garage alt profile (docker-compose.garage.yml, T27) — runtime data only;
-# garage/garage.toml carries no secret and IS tracked.
+# garage/garage.toml.template carries no secret and IS tracked.
 garage/data/*
+# Rendered from garage/garage.toml.template by the profile's storage-config at
+# every boot (S3_REGION substituted, T30). Regenerated, never edited by hand.
+garage/config/*
 # Production overlay secrets (docker-compose.production.yml says to ignore this
 # directory; this is that line).
 secrets/

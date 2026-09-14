@@ -23,7 +23,7 @@ revocation. It does **not** connect to the auth Redis.
 
 The reference deployment is the hardened Docker Compose stack in
 [`docker_compose/hardened_media_m8`](docker_compose/hardened_media_m8) (Traefik,
-PostgreSQL, MinIO, media Redis, Prometheus, Grafana). See that directory's
+PostgreSQL, S3 object storage (SeaweedFS), media Redis, Prometheus, Grafana). See that directory's
 README for stack setup.
 
 ## API overview
@@ -60,7 +60,7 @@ Auto-mounted by `fastapi-m8` (≥ 3.3.0) `create_app` — the standard m8 triad:
 | --- | --- | --- | --- |
 | GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@mano8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.1`, service-version range `>=2.0.0 <3.0.0`. |
 | GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
-| GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / MinIO). |
+| GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / S3 storage). |
 
 Point direct container **liveness** probes at `/ping`, gateway/proxy liveness
 probes at `/{prefix}/ping`, and **readiness** probes at `/{prefix}/health/`.

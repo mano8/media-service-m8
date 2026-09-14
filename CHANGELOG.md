@@ -116,6 +116,98 @@ All notable changes to `media-service-m8` are documented here.
   Garage alternate profile was checked the same way and was already clean
   (only 8333 reachable; RPC loopback-bound, no admin API enabled).
 
+### Changed
+
+- **⚠️ Production overlay: the two storage-credential Docker secrets are
+  renamed `minio_access_key` / `minio_secret_key` → `s3_access_key` /
+  `s3_secret_key`** (`docker_compose/hardened_media_m8/docker-compose.production.yml`,
+  object-storage backend migration plan, Wave 6 / `T30-close-deferred-flags`).
+  They hold the scoped `media-rw` identity every application container signs
+  S3 with and never had anything to do with the retired backend; the ids now
+  match the `S3_ACCESS_KEY_FILE` / `S3_SECRET_KEY_FILE` variables they feed
+  and the `s3_root_user` / `s3_root_password` admin pair next to them.
+  **Upgrade step for an existing deployment:** rename the two files in
+  `./secrets/` — `minio_access_key.txt` → `s3_access_key.txt`,
+  `minio_secret_key.txt` → `s3_secret_key.txt` (same contents) — before the
+  next `docker compose … up`; nothing else changes. The overlay's operator
+  checklist repeats this. `media.env.production.example` /
+  `worker.env.production.example` follow. `tests/test_compose_secrets_policy.py`
+  now asserts the new ids and the absence of the old ones.
+- **`S3_ENDPOINT` defaults to `storage:8333`** instead of the retired
+  `minio:9000` (`media_service/core/config.py`). Every compose stack in the
+  fleet sets `S3_ENDPOINT` explicitly, so this is dead config in practice —
+  which is exactly why it survived three steps that each deferred it. The
+  `MINIO_*` deprecation shim's own two legacy constants deliberately stay
+  `minio` / `9000`: they reproduce the *old* field defaults for a partial
+  legacy config that sets `MINIO_PORT` alone, so the field default and the
+  legacy-pair default legitimately stop being the same value.
+  `tests/test_storage_client.py` asserts that separation instead of the
+  equality it asserted before.
+- **Garage alternate profile: `s3_api.s3_region` is rendered from `S3_REGION`
+  at boot** rather than tracked as a static `eu-west-1`. `garage/garage.toml`
+  becomes `garage/garage.toml.template` (`@S3_REGION@` placeholder) and the
+  profile's `storage-config` renders `garage/config/garage.toml`
+  (gitignored) from it — the same generate-before-boot shape the SeaweedFS
+  profile uses for `seaweedfs/config/s3.json` — failing closed on an empty or
+  non-`[a-z0-9-]` region. Measured live against `dxflrs/garage:v2.3.0`:
+  a request signed with the rendered region is a `200`; the same request
+  signed with the previous static value is a `400`
+  `AuthorizationHeaderMalformed` ("unexpected scope") — not the `403` the
+  plan expected, and one the aws-cli hides by re-signing through its region
+  redirector, which a browser on a presigned URL cannot do.
+- **Garage alternate profile: `GARAGE_RPC_SECRET` gets Docker-secret
+  `_FILE` wiring** via a new `docker-compose.garage.production.yml`
+  (`garage_rpc_secret` → `./secrets/garage_rpc_secret.txt`,
+  `GARAGE_RPC_SECRET_FILE` on `storage`, `storage-config`, `storage-init`;
+  `s3_access_key` / `s3_secret_key` on `storage-init` and `storage-cors`,
+  which the shared production overlay does not cover because under SeaweedFS
+  `storage-init` is admin-only and `storage-cors` does not exist). A separate
+  file, not three more lines in `docker-compose.production.yml`, so a
+  SeaweedFS deployment never has to provision a secret for a backend it does
+  not run. Garage refuses to start when both `GARAGE_RPC_SECRET` and
+  `GARAGE_RPC_SECRET_FILE` are present — an empty `GARAGE_RPC_SECRET=` line
+  in `.env` counts (measured) — so the overlay also takes `.env` off the two
+  services that run the Garage binary. Validated live through the full
+  four-file production merge.
+- Doc/vocabulary sweep with a grep as the acceptance test
+  (`tests/test_no_retired_backend_references.py`): no tracked file names
+  MinIO as the storage backend this fleet runs any more — `docker_compose/README.md`,
+  `docker_compose/SECURITY.md`, the top-level `README.md`,
+  `REPOSITORY_CONTEXT.md`, the `media.env*` "presign cache" headers, the CI
+  workflow comment, the API tests' fake presigned host and conftest
+  credentials all follow. Historical references (the migration itself, the
+  runbook, the security matrix) and the shim's legacy vocabulary are the
+  documented exceptions; `get_minio_client` is a `media-sdk-m8`-owned name
+  this repository only re-exports.
+
+### Fixed
+
+- **The Garage alternate profile did not boot through compose as shipped
+  in `T27`.** Three defects, each found by actually running
+  `docker compose -f docker-compose.yml -f docker-compose.garage.yml up`
+  while re-validating item 4 above: (1) `volumes: !reset` followed by a list
+  merges to *null* under Compose v2 (`!override` is the tag that replaces),
+  so `storage` had no data or config mount at all; (2) `dxflrs/garage` is a
+  `FROM scratch` image whose only file is `/garage`, so the shell-scripted
+  `storage-init` failed with `exec: "/bin/sh": no such file or directory` —
+  a new `storage-tools` one-shot (`busybox:1.37.0-musl`, `command: true`)
+  seeds a named volume `garage_tools` with busybox's static applet tree and
+  `storage-init` runs its unchanged CLI script through `/tools/bin/sh`; (3)
+  `storage-cors` never loaded `.env`, where `S3_CORS_ALLOW_ORIGIN` lives, and
+  exited 1 on every boot. Also removed from `storage-init`: a dead,
+  `|| true`-guarded loop that tried to run `garage bucket website --allow`
+  on all five buckets — that would publish them for anonymous read through
+  Garage's web endpoint, which `FORBIDDEN_OPERATIONS` rules out.
+  `tests/test_compose_garage_profile.py` grows from 16 to 33 tests covering
+  all of the above; the profile was then re-validated end to end (layout,
+  key import, five buckets, RWO grants, CORS on all five, S3 `PUT`/`LIST`
+  round trip) with and without the production overlays.
+- `media_service/Dockerfile`'s post-install import guard still imported
+  `minio`, which `T9-consumers-repin` dropped from the requirements — the
+  production image build would have failed on that line. It now imports
+  `boto3` / `botocore`, the client the SDK actually uses. `.dockerignore`
+  also learns the SeaweedFS/Garage runtime directories and `secrets/`.
+
 ---
 
 ## [2.3.0] — 2026-09-13 · MinIO → SeaweedFS backend swap, filename trust boundary (`T26-changelog-release`)

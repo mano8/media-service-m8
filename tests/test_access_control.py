@@ -152,10 +152,10 @@ def test_download_public_object_of_other_owner_allowed(
     client: TestClient, session: Session, mock_storage
 ):
     obj = _make_object(session, uuid.uuid4(), visibility=MediaVisibility.PUBLIC)
-    mock_storage.presigned_get_object.return_value = "https://minio/download"
+    mock_storage.presigned_get_object.return_value = "https://storage/download"
     resp = client.get(f"/media/v1/objects/{obj.id}/download-url")
     assert resp.status_code == 200
-    assert resp.json()["url"] == "https://minio/download"
+    assert resp.json()["url"] == "https://storage/download"
 
 
 def test_get_sensitive_object_of_other_owner_denied(

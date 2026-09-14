@@ -53,8 +53,8 @@ Internet
 
  data_net (internal, no gateway):
     auth_user_service ←→ m8_db, redis_cache
-    media_service     ←→ m8_db, media_redis_cache, minio
-    media_worker      ←→ media_redis_cache, minio, media_service (internal callback)
+    media_service     ←→ m8_db, media_redis_cache, storage (S3)
+    media_worker      ←→ media_redis_cache, storage (S3), media_service (internal callback)
 
  scan_net (internal, no gateway):
     media_worker ←→ clamav (TCP :3310 only)

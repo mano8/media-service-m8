@@ -8,7 +8,8 @@
 # one-shots (`storage-config`, `storage-init`) with Garage 2.x equivalents.
 # Every other service, the Traefik storage route (traefik/dynamic_conf.yml,
 # `http://storage:8333`), and every S3_* var in media.env/worker.env are
-# UNCHANGED: `container_name: storage` and port 8333 both stay put, so
+# UNCHANGED (S3_REGION included: storage-config renders it into the Garage
+# config at boot, so the region is fixed in exactly one place, media.env): `container_name: storage` and port 8333 both stay put, so
 # nothing downstream of the storage boundary can tell which backend is
 # running. That is the architectural claim of the migration plan's §3 made
 # demonstrable — switching backends is a `compose -f` swap, not a code
@@ -22,7 +23,7 @@
 # single-node layout are all created by the `garage` CLI talking to the
 # node's own RPC port — the same thing T4's garage_backend() conformance
 # driver did via `docker exec`. Since RPC is loopback-bound inside the
-# `storage` container (garage/garage.toml, matching SeaweedFS's S2 posture:
+# `storage` container (garage/garage.toml.template, matching SeaweedFS's S2 posture:
 # confirmed unreachable from a sibling container with a raw `nc -z` probe,
 # same test T3/T4 used), the bootstrap container below shares `storage`'s
 # network NAMESPACE (`network_mode: "service:storage"`) instead of exec'ing
@@ -37,16 +38,21 @@
 # five media buckets, nothing wider.
 services:
   # Garage has no static identity file to generate ahead of boot (unlike
-  # SeaweedFS's s3.json) — this one-shot becomes a credential-shape guard
-  # instead, kept under the same name so every consumer's
-  # `depends_on: storage-config: condition: service_completed_successfully`
-  # keeps working unmodified.
+  # SeaweedFS's s3.json) — this one-shot is a credential-shape guard plus the
+  # renderer of garage/config/garage.toml from garage/garage.toml.template
+  # (T30: `s3_api.s3_region` is substituted from S3_REGION, the region every
+  # app signs with, because Garage validates the SigV4 region on every request
+  # and a mismatch is a 403 on everything). Kept under the same name so every
+  # consumer's `depends_on: storage-config: condition:
+  # service_completed_successfully` keeps working unmodified.
   storage-config:
     image: alpine:3.21.3
     env_file:
       - ./.env                            # GARAGE_RPC_SECRET
-      - ./media.env                       # S3_ACCESS_KEY / S3_SECRET_KEY
-    volumes: !reset []
+      - ./media.env                       # S3_ACCESS_KEY / S3_SECRET_KEY / S3_REGION
+    volumes: !override                    # replaces the SeaweedFS ./seaweedfs/config mount
+      - ./garage/config:/config
+      - ./garage/garage.toml.template:/garage.toml.template:ro
     entrypoint:
       - /bin/sh
       - -c
@@ -92,7 +98,26 @@ services:
           exit 1
         fi
 
-        echo "storage-config (garage profile): credentials present — Garage has no identity file to pre-generate; storage-init creates the layout/bucket/key live"
+        # --- render garage.toml: the ONE place the SigV4 region is fixed ---
+        REGION="$${S3_REGION:-}"
+        case "$$REGION" in
+          "")
+            echo "storage-config: S3_REGION is empty — Garage validates the SigV4 region on every request, so it must be the value the apps sign with" >&2; exit 1 ;;
+          *[!a-z0-9-]*)
+            echo "storage-config: S3_REGION must be lowercase letters, digits and '-' only (got '$$REGION')" >&2; exit 1 ;;
+        esac
+        umask 022
+        sed "s|@S3_REGION@|$$REGION|g" /garage.toml.template > /config/garage.toml.tmp
+        if grep -q '@S3_REGION@' /config/garage.toml.tmp; then
+          echo "storage-config: template placeholder survived rendering" >&2; exit 1
+        fi
+        # The storage server runs as uid/gid 1000 and mounts this read-only;
+        # the rendered file carries no secret, so 0644 is the right mode.
+        chown 1000:1000 /config/garage.toml.tmp
+        chmod 644 /config/garage.toml.tmp
+        mv /config/garage.toml.tmp /config/garage.toml
+
+        echo "storage-config (garage profile): credentials present, garage.toml rendered for region $$REGION — Garage has no identity file to pre-generate; storage-init creates the layout/bucket/key live"
     restart: "no"
     # networks: unchanged from base (data_net) — left for the base file to
     # supply; repeating it here trips the duplicate-item check.
@@ -118,18 +143,18 @@ services:
     # trips `docker compose config`'s duplicate-item check.
     env_file:
       - ./.env                            # GARAGE_RPC_SECRET
-    volumes: !reset
+    volumes: !override                    # replaces the SeaweedFS data/config/tls mounts
       - ./garage/data:/data
-      - ./garage/garage.toml:/etc/garage.toml:ro
+      - ./garage/config:/etc/garage:ro    # garage.toml rendered by storage-config
     # No ENTRYPOINT is set on the upstream image (bare `CMD ["/garage",
     # "server"]`), so `command:` must name the full binary path itself, not
     # just its arguments.
-    command: ["/garage", "-c", "/etc/garage.toml", "server"]
+    command: ["/garage", "-c", "/etc/garage/garage.toml", "server"]
     # Queries this node's own RPC (loopback, same container) — proves the
     # daemon is up, independent of whether a layout/bucket/key exists yet,
     # the same "the daemon answers" bar SeaweedFS's /healthz clears.
     healthcheck:
-      test: ["CMD", "/garage", "-c", "/etc/garage.toml", "status"]
+      test: ["CMD", "/garage", "-c", "/etc/garage/garage.toml", "status"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -147,6 +172,25 @@ services:
   # (`garage bucket info`/`key info` exit non-zero when absent; layout
   # re-assign is a no-op once already applied), so a re-run converges
   # instead of failing like a bare re-run of `garage bucket create` would.
+  # The upstream Garage image is `FROM scratch`: `/garage` is the ONLY file in
+  # it — no /bin/sh, no coreutils — so a shell script cannot run on it as-is
+  # (measured under T30: `exec: "/bin/sh": stat /bin/sh: no such file or
+  # directory`; T27's bootstrap had never actually run through compose). The
+  # fix that keeps the stack build-free and offline: this one-shot seeds a
+  # named volume with busybox's static applet tree — Docker copies an image's
+  # content into an EMPTY named volume mounted over it, so `command: true`
+  # is the whole job — and storage-init below mounts that volume at /tools
+  # and runs its script with /tools/bin/sh. busybox's applets are hard links
+  # to one static binary, so they survive the copy and need no loader.
+  storage-tools:
+    image: busybox:1.37.0-musl
+    command: ["true"]
+    volumes:
+      - garage_tools:/bin
+    restart: "no"
+    networks:
+      - data_net                          # internal, no gateway: same "no egress" posture as storage-config
+
   storage-init:
     image: dxflrs/garage:v2.3.0
     network_mode: "service:storage"
@@ -154,19 +198,23 @@ services:
     depends_on:
       storage:
         condition: service_healthy
+      storage-tools:
+        condition: service_completed_successfully
     # env_file (./.env, ./media.env — GARAGE_RPC_SECRET unused here, bucket
     # names + S3_ACCESS_KEY/SECRET) is unchanged from the base storage-init;
     # left for the base file to supply, same duplicate-item reasoning as
     # `storage` above.
     volumes:
-      - ./garage/garage.toml:/etc/garage.toml:ro
+      - ./garage/config:/etc/garage:ro    # garage.toml rendered by storage-config
       - ./garage/data:/data               # CLI reads the node key from metadata_dir, same volume the server uses
+      - garage_tools:/tools/bin:ro        # busybox sh + coreutils, seeded by storage-tools
     entrypoint:
-      - /bin/sh
+      - /tools/bin/sh
       - -c
       - |
         set -eu
-        GARAGE="/garage -c /etc/garage.toml"
+        export PATH=/tools/bin
+        GARAGE="/garage -c /etc/garage/garage.toml"
 
         pick() {  # pick <value> <file> <label> — Docker secret wins
           if [ -n "$$2" ]; then
@@ -217,38 +265,12 @@ services:
           echo "storage-init: media-rw granted RWO on $$b"
         done
 
-        # --- CORS: Garage DOES implement PutBucketCors (verified live against
-        # v2.3.0), one call per bucket, same shape as the SeaweedFS profile ---
-        ORIGINS="$${S3_CORS_ALLOW_ORIGIN:-}"
-        if [ -z "$$ORIGINS" ]; then
-          echo "storage-init: S3_CORS_ALLOW_ORIGIN is empty — set the exact browser origin(s) allowed on the presigned data path" >&2
-          exit 1
-        fi
-        case "$$ORIGINS" in
-          *"*"*)
-            echo "storage-init: S3_CORS_ALLOW_ORIGIN must not contain '*' — a wildcard origin lets any site drive the presigned data path" >&2
-            exit 1 ;;
-        esac
-        ORIGIN_JSON=""
-        OLD_IFS=$$IFS; IFS=,
-        for o in $$ORIGINS; do
-          ORIGIN_JSON="$$ORIGIN_JSON,\"$$o\""
-        done
-        IFS=$$OLD_IFS
-        ORIGIN_JSON=$${ORIGIN_JSON#,}
-        CORS="{\"CORSRules\":[{
-          \"AllowedOrigins\":[$$ORIGIN_JSON],
-          \"AllowedMethods\":[\"GET\",\"HEAD\",\"POST\"],
-          \"AllowedHeaders\":[\"Authorization\",\"Content-Type\",\"Content-Length\",\"Content-Disposition\",\"Range\",\"x-amz-date\",\"x-amz-content-sha256\",\"x-amz-algorithm\",\"x-amz-credential\",\"x-amz-signature\"],
-          \"ExposeHeaders\":[\"ETag\",\"Content-Range\",\"Content-Length\",\"Content-Disposition\"],
-          \"MaxAgeSeconds\":3000
-        }]}"
-        AWS_ACCESS_KEY_ID="$$APP_KEY" AWS_SECRET_ACCESS_KEY="$$APP_SECRET" AWS_DEFAULT_REGION="$${S3_REGION:-eu-west-1}" \
-          /usr/bin/env 2>/dev/null || true
-        for b in "$$S3_BUCKET_PUBLIC" "$$S3_BUCKET_PRIVATE" "$$S3_BUCKET_SENSITIVE" "$$S3_BUCKET_TEMP" "$$S3_BUCKET_ARCHIVE"; do
-          AWS_ACCESS_KEY_ID="$$APP_KEY" AWS_SECRET_ACCESS_KEY="$$APP_SECRET" AWS_DEFAULT_REGION="$${S3_REGION:-eu-west-1}" \
-            $$GARAGE bucket website --allow "$$b" >/dev/null 2>&1 || true
-        done
+        # CORS is NOT applied here: the `garage` CLI has no S3-API CORS
+        # subcommand, so storage-cors (below) does it over the S3 port with
+        # the media-rw key. Nothing here ever enables `bucket website` — that
+        # would publish a bucket for anonymous read through Garage's web
+        # endpoint, which FORBIDDEN_OPERATIONS rules out for every media
+        # bucket (T30 removed a dead, `|| true`-guarded loop that tried to).
         echo "storage-init: 5 buckets/layout/key ready — storage-cors applies CORS over the S3 API"
     restart: "no"
 
@@ -268,7 +290,8 @@ services:
       storage-init:
         condition: service_completed_successfully
     env_file:
-      - ./media.env                       # S3_ACCESS_KEY/SECRET, S3_ENDPOINT, bucket names, CORS origin
+      - ./.env                            # S3_CORS_ALLOW_ORIGIN lives here, as for the SeaweedFS storage-init
+      - ./media.env                       # S3_ACCESS_KEY/SECRET, S3_ENDPOINT, S3_REGION, bucket names
     environment:
       AWS_EC2_METADATA_DISABLED: "true"
       AWS_REQUEST_CHECKSUM_CALCULATION: when_required
@@ -356,3 +379,8 @@ services:
     depends_on:
       storage-cors:
         condition: service_completed_successfully
+
+volumes:
+  # Seeded once from busybox:1.37.0-musl by storage-tools; read-only in
+  # storage-init. Holds no data and no secret — a shell and coreutils only.
+  garage_tools:

@@ -46,7 +46,11 @@ _LEGACY_S3_ALIASES: dict[str, str] = {
 }
 # ``MINIO_HOST``/``MINIO_PORT`` collapse into the single ``S3_ENDPOINT`` netloc;
 # these defaults keep a partial legacy configuration resolving exactly as the
-# two separate fields did.
+# two separate fields did. They deliberately do NOT track ``S3_ENDPOINT``'s own
+# default (``storage:8333``): a legacy ``.env`` that sets ``MINIO_PORT`` alone
+# was pointing at ``minio:<port>`` before the rename and must keep doing so
+# until it migrates. These two constants are the only place outside the
+# CHANGELOG where ``minio`` legitimately survives in this repository.
 _LEGACY_ENDPOINT_HOST_DEFAULT = "minio"
 _LEGACY_ENDPOINT_PORT_DEFAULT = 9000
 
@@ -113,11 +117,13 @@ class Settings(ConsumerServiceSettings):
 
     # ── Object storage (S3) ──────────────────────────────────────────────────
     # Named after the protocol, not after one implementation of it: the backend
-    # is any S3-API server (MinIO today, SeaweedFS 4.x once the backend swap
-    # lands). Internal endpoint the service itself talks S3 to, as a
-    # scheme-less ``host[:port]``; TLS is selected by ``S3_USE_SSL``, never by
-    # a scheme here.
-    S3_ENDPOINT: str = "minio:9000"
+    # is any S3-API server (SeaweedFS 4.x is the ratified default, Garage 2.x
+    # the validated fallback; the application never names either). Internal
+    # endpoint the service itself talks S3 to, as a scheme-less
+    # ``host[:port]``; TLS is selected by ``S3_USE_SSL``, never by a scheme
+    # here. The default is the ``storage`` service on its S3 port, which every
+    # compose stack in the fleet sets explicitly anyway.
+    S3_ENDPOINT: str = "storage:8333"
     S3_USE_SSL: bool = False
     S3_REGION: str = "eu-west-1"
     # Browser-facing endpoint (full URL, e.g. ``http://127.0.0.1:9005`` or
