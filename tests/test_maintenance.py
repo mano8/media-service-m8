@@ -250,6 +250,43 @@ def test_reconcile_reports_both_orphan_directions(
     assert session.get(MediaObject, present.id) is not None
 
 
+def test_reconcile_never_reclaims_an_archived_original(
+    session: Session, mock_storage: MagicMock
+):
+    """A soft-deleted original cold-moved to the archive tier is not an orphan.
+
+    The archive-tier writer (``ObjectsController.delete_object``) repoints the
+    row at ``S3_BUCKET_ARCHIVE``; its ``DELETED`` status must not make the
+    reconciler read the archived bytes as row-less and, under ``repair``,
+    delete them before the retention window has run — that is the hard
+    purge's job, from that same bucket.
+    """
+    archived = _make_object(
+        session,
+        status=MediaObjectStatus.DELETED,
+        deleted_at=datetime.now(timezone.utc),
+        bucket="archive-media",
+        object_key="archived-key",
+    )
+    mock_storage.list_object_keys.return_value = ["archived-key", "stray-key"]
+
+    report = MaintenanceController.reconcile_orphans(
+        session=session,
+        storage=mock_storage,
+        buckets=["archive-media"],
+        grace=timedelta(0),
+        limit=1000,
+        repair=True,
+    )
+
+    assert [o.object_key for o in report.storage_orphans] == ["stray-key"]
+    assert report.repaired == 1
+    mock_storage.remove_object.assert_called_once_with(
+        bucket="archive-media", object_key="stray-key"
+    )
+    assert session.get(MediaObject, archived.id) is not None
+
+
 def test_reconcile_excludes_rows_within_grace_window(
     session: Session, mock_storage: MagicMock
 ):

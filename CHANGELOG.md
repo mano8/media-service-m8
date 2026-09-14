@@ -13,7 +13,33 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
-No pending changes.
+### Added
+
+- **`archive-media` has a writer: the archive tier for soft-deleted originals**
+  (`T32-archive-media-writer`, migration plan Wave 5, answering `T28` Q2).
+  `DELETE /v1/objects/{id}` now cold-moves the original out of its visibility
+  bucket into `S3_BUCKET_ARCHIVE` — server-side copy, row repointed, source
+  copy dropped once the soft-delete has committed — where it waits out
+  `MEDIA_RETENTION_PURGE_DAYS` until the hard purge reclaims it from that
+  bucket (`hard_purge_expired` already deleted from the bucket *as stored*,
+  never re-derived from visibility, so no purge change was needed). Two
+  behaviours change for a caller: a **PUBLIC** object's bytes are no longer
+  destroyed on the spot — its known URL still goes dead the moment the source
+  copy is removed, but the bytes are now recoverable for the retention window
+  like every other visibility's — and the visibility buckets hold only live
+  objects. Archival is best-effort: a failed copy leaves the row pointing at
+  the bucket the bytes are really in (still consistent, still purgeable), and
+  public bytes are then removed from their URL exactly as before. Variants
+  are not moved. No new identity, versioning or Object Lock: the bucket stays
+  inside the `media-rw` five-bucket grant, and
+  `tests/test_storage_versioning_policy.py` still guards it. Guarded by the
+  rewritten delete suite in `tests/test_objects.py` (copy → commit → remove
+  ordering, both failure fallbacks), `test_reconcile_never_reclaims_an_archived_original`
+  (a `repair` sweep of `archive-media` leaves archived rows alone) and
+  `test_archive_storage_class_has_a_writer` (pins the named caller of
+  `bucket_for_storage_class(StorageClass.ARCHIVE)`); the `T23` live workflow
+  suite gains an archive-tier step (real cross-bucket move proved from
+  storage, then the purge reclaims it from `archive-media`).
 
 ---
 

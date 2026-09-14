@@ -8,7 +8,8 @@ would: browser-direct POST upload, antivirus scan gating (both the CLEAN and
 the INFECTED/QUARANTINED side, the latter via a real EICAR upload), variant
 generation, share links, a visibility move (proved as an actual cross-bucket
 copy against storage, not just the metadata field), archive export, orphan
-reconcile, and hard-purge.
+reconcile, the archive tier (a soft-delete proved as a real cold move into
+``archive-media``, `T32`), and hard-purge.
 
 Opt-in and skipped by default: unlike the rest of this folder's suites (which
 run against any bootstrapped stack via `security-tests-m8`'s
@@ -34,6 +35,7 @@ Configuration (all via environment variable, all default to the
     STORAGE_LIVE_TEST_BUCKET_PRIVATE     default: private-media
     STORAGE_LIVE_TEST_BUCKET_PUBLIC      default: public-media
     STORAGE_LIVE_TEST_BUCKET_TEMP        default: temp-media
+    STORAGE_LIVE_TEST_BUCKET_ARCHIVE     default: archive-media
 
 The hard-purge step needs one direct SQL statement (backdating
 ``deleted_at`` past ``MEDIA_RETENTION_PURGE_DAYS`` — waiting out the real
@@ -103,6 +105,7 @@ S3_REGION = os.environ.get("STORAGE_LIVE_TEST_S3_REGION", "eu-west-1")
 BUCKET_PRIVATE = os.environ.get("STORAGE_LIVE_TEST_BUCKET_PRIVATE", "private-media")
 BUCKET_PUBLIC = os.environ.get("STORAGE_LIVE_TEST_BUCKET_PUBLIC", "public-media")
 BUCKET_TEMP = os.environ.get("STORAGE_LIVE_TEST_BUCKET_TEMP", "temp-media")
+BUCKET_ARCHIVE = os.environ.get("STORAGE_LIVE_TEST_BUCKET_ARCHIVE", "archive-media")
 DB_EXEC_COMMAND = os.environ.get("STORAGE_LIVE_TEST_DB_EXEC_COMMAND")
 
 # DNS shim: a presigned URL's Host must match the FQDN it was signed for
@@ -472,7 +475,7 @@ def test_storage_workflow_live() -> None:
     with pytest.raises(Exception):  # noqa: B017, PT011
         s3.head_object(Bucket=BUCKET_TEMP, Key=orphan_key)
 
-    # ── 8. Hard purge ─────────────────────────────────────────────────────────
+    # ── 8. Archive tier (soft-delete cold move) ──────────────────────────────
     del_resp = _call(
         "DELETE",
         f"{MEDIA_BASE}/v1/objects/{second_id}",
@@ -481,6 +484,25 @@ def test_storage_workflow_live() -> None:
     )
     assert del_resp.status_code == 204, del_resp.text
 
+    # Real cross-bucket move proof, straight from storage: the soft-deleted
+    # original now lives in the archive bucket and only there (`T32`).
+    second_key = second_obj["object_key"]
+    s3.head_object(Bucket=BUCKET_ARCHIVE, Key=second_key)  # raises if absent
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        s3.head_object(Bucket=second_obj["storage_bucket"], Key=second_key)
+
+    # The archived copy is not an orphan: a repair sweep must leave it alone.
+    repair_after_archive = _call(
+        "POST",
+        f"{MEDIA_BASE}/v1/admin/maintenance/orphans/repair?confirm=true",
+        expect=(200,),
+        headers=_auth_headers(token),
+        timeout=90,
+    )
+    assert repair_after_archive.status_code == 200, repair_after_archive.text
+    s3.head_object(Bucket=BUCKET_ARCHIVE, Key=second_key)  # still there
+
+    # ── 9. Hard purge ─────────────────────────────────────────────────────────
     if not DB_EXEC_COMMAND:
         pytest.skip(
             "STORAGE_LIVE_TEST_DB_EXEC_COMMAND not set — cannot backdate "
@@ -518,7 +540,7 @@ def test_storage_workflow_live() -> None:
     )
     assert gone_resp.status_code == 404, gone_resp.status_code
 
+    # Reclaimed from the bucket as stored — the archive tier, not the
+    # visibility bucket the row was uploaded into.
     with pytest.raises(Exception):  # noqa: B017, PT011
-        s3.head_object(
-            Bucket=second_obj["storage_bucket"], Key=second_obj["object_key"]
-        )
+        s3.head_object(Bucket=BUCKET_ARCHIVE, Key=second_key)

@@ -108,7 +108,7 @@ On any failure the session is marked `ABORTED`, a `MediaObject` with
 | GET | `/v1/objects/{object_id}` | **public** | — | Fetch object metadata |
 | GET | `/v1/objects/{object_id}/download-url` | **public** | 60/min | Presigned GET URL for download |
 | PATCH | `/v1/objects/{object_id}` | writer | — | Update mutable metadata |
-| DELETE | `/v1/objects/{object_id}` | writer | — | Soft-delete (idempotent) |
+| DELETE | `/v1/objects/{object_id}` | writer | — | Soft-delete (idempotent); cold-moves the original to `S3_BUCKET_ARCHIVE` |
 
 The three `GET` routes are **public**: a caller with no token sees live `PUBLIC`
 objects and nothing else, and a denial there answers **404**, never 403, so the
@@ -409,8 +409,17 @@ the storage ingress setup and CORS configuration.
 | `TENANT` | `S3_BUCKET_PRIVATE` (`private-media`) |
 | `SENSITIVE` | `S3_BUCKET_SENSITIVE` (`sensitive-media`) |
 
-Lifecycle storage classes map to `S3_BUCKET_TEMP` (`temp-media`) and
-`S3_BUCKET_ARCHIVE` (`archive-media`).
+Lifecycle storage classes map to `S3_BUCKET_TEMP` (`temp-media`, assembled
+archive exports inside their download window) and `S3_BUCKET_ARCHIVE`
+(`archive-media`, the **archive tier**: every soft-deleted original is
+cold-moved there — copy, repoint the row, drop the source — and waits out
+`MEDIA_RETENTION_PURGE_DAYS` until the hard purge reclaims it from that
+bucket). A PUBLIC object's known URL goes dead on delete exactly as before,
+but its bytes are now recoverable for the retention window like every other
+visibility's, and the visibility buckets hold only what the service still
+serves. The move is best-effort: if the archive copy fails the row keeps
+pointing at the bucket the bytes are really in (and public bytes are still
+removed from their URL).
 
 ## Auth modes
 
@@ -516,7 +525,9 @@ routes above:
 
 - **hard-purge** (daily) — removes bytes + row for objects soft-deleted longer
   than `MEDIA_RETENTION_PURGE_DAYS` (this is the only true hard-delete; the API
-  only soft-deletes). Quota is not re-debited.
+  only soft-deletes, into the archive tier). Bytes are removed from the bucket
+  *as stored* — normally `S3_BUCKET_ARCHIVE` — never re-derived from
+  visibility. Quota is not re-debited.
 - **stale-upload expiry** (hourly) — the scheduled form of
   `/v1/admin/uploads/purge-stale`.
 - **orphan reconciliation** (daily, report-only) — storage-keys-without-rows and

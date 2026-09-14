@@ -315,7 +315,12 @@ recommendation stands.
 2. **`archive-media` keeps its bucket and mapping and gets a writer.** That is
    feature work outside this evaluation, tracked as its own follow-on step in
    the migration plan; the bucket stays inside the `media-rw` five-bucket
-   grant and gains no versioning or lock.
+   grant and gains no versioning or lock. *Delivered (`T32`, 2026-09-14):*
+   `ObjectsController.delete_object` cold-moves every soft-deleted original
+   into `archive-media` (`_archive_deleted_bytes`), where the hard purge
+   reclaims it after `MEDIA_RETENTION_PURGE_DAYS`. M27 no longer holds; the
+   bucket is still unversioned and unlocked, and
+   `tests/test_storage_versioning_policy.py` still guards that.
 3. **Yes — failover to Garage must be semantically identical.** Option C is
    closed permanently. `tests/test_storage_versioning_policy.py` is the
    standing guard, and the fleet policy in the workspace's

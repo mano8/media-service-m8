@@ -348,11 +348,13 @@ behind it, not an omission:
 measures what SeaweedFS 4.45 and Garage 2.3.0 actually do and recommends
 against adoption today. The short version: the SDK deletes by key with no
 version id, so on a versioned bucket the nightly hard purge would report
-`purged=N` while reclaiming nothing, and neither `sensitive-media` nor
-`archive-media` holds an object yet. If immutability is ever required, the
-document gives the only viable shape (versioning plus a **GOVERNANCE** lock,
-never COMPLIANCE, on `sensitive-media` only) and the six preconditions that
-come first.
+`purged=N` while reclaiming nothing; `sensitive-media` holds no object yet,
+and `archive-media` — the archive tier every soft-deleted original is
+cold-moved into since `T32` — holds only bytes already inside their
+`MEDIA_RETENTION_PURGE_DAYS` window, which a lock would make unpurgeable. If
+immutability is ever required, the document gives the only viable shape
+(versioning plus a **GOVERNANCE** lock, never COMPLIANCE, on
+`sensitive-media` only) and the six preconditions that come first.
 
 ## URLs
 
