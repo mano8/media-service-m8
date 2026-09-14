@@ -99,7 +99,7 @@ markupsafe==3.0.3
     # via
     #   jinja2
     #   mako
-media-sdk-m8==0.8.0
+media-sdk-m8==1.0.0
     # via -r media_service/requirements_base.txt
 packaging==26.2
     # via fastapi-m8

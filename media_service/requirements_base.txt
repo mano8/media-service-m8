@@ -25,8 +25,9 @@ redis>=5.3.1,<6.0.0
 # 0.4.0 chunked ObjectStorage.stream_object primitive used by streaming SHA-256
 # verification, plan item 6.x.3). 0.8.0 (T9-consumers-repin) drops the `minio`
 # dependency: ObjectStorage now speaks boto3/botocore, so `minio` is no longer
-# pulled in transitively and is not declared here directly either.
-media-sdk-m8>=0.8.0,<0.9.0
+# pulled in transitively and is not declared here directly either. 1.0.0 (T34)
+# is the stable cut of that same API; the floor tracks its major.
+media-sdk-m8>=1.0.0,<2.0.0
 
 # Background-job producer: enqueues scan + variant jobs for media-worker-m8
 arq>=0.28.0
