@@ -248,7 +248,8 @@ class TestDockerSecretsBlock:
         ]
         assert f"{_S3_KEY_SECRET_ID}.txt" in header
         assert f"{_S3_SECRET_SECRET_ID}.txt" in header
-        assert "minio_access_key.txt" in header and "rename" in header, (
+        retired_file = f"{_RETIRED_S3_SECRET_IDS[0]}.txt"
+        assert retired_file in header and "rename" in header, (
             "the operator checklist must tell an upgrading deployment to rename "
             "its two pre-existing minio_*.txt secret files"
         )

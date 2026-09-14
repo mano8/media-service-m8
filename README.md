@@ -58,7 +58,7 @@ Auto-mounted by `fastapi-m8` (≥ 3.3.0) `create_app` — the standard m8 triad:
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@mano8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.1`, service-version range `>=2.0.0 <3.0.0`. |
+| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@mano8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.1`, service-version range `>=3.0.0 <4.0.0`. |
 | GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
 | GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / S3 storage). |
 
@@ -390,9 +390,10 @@ deployments where the service streams bytes on behalf of the browser.
 The storage settings are named after the S3 protocol, not after one server:
 `S3_ENDPOINT` (scheme-less `host[:port]`; TLS via `S3_USE_SSL`), `S3_REGION`,
 `S3_ACCESS_KEY`, `S3_SECRET_KEY`, the five `S3_BUCKET_*` names and
-`S3_PRESIGNED_URL_EXPIRE_SECONDS`. The former `MINIO_*` names still load and
-warn — `MINIO_HOST`/`MINIO_PORT` collapse into `S3_ENDPOINT` — and are removed
-in `3.0.0`.
+`S3_PRESIGNED_URL_EXPIRE_SECONDS`. These are the only names the service
+reads: the pre-`2.2.0` vocabulary is refused at boot since `3.0.0`
+(`Settings` is `extra="forbid"`) — see the CHANGELOG's *Upgrade from 2.1.0*
+block for the rename table.
 
 **Ingress:** The hardened stacks expose the storage data path (buckets only,
 not admin or console) via a dedicated Traefik router on `websecure` (TLS) — see

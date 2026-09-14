@@ -541,9 +541,11 @@ since `CUTOVER_TS` is lost.
    ```
 
    The rollback commit's compose block names the service `minio` on the
-   same `./minio/data` volume, and its env files speak the `MINIO_*` names
-   — which the `2.2.0` service still reads through its deprecation shim, so
-   the app image does **not** need to change. `minio-frozen` must be stopped
+   same `./minio/data` volume, pins the pre-migration app image, and its
+   env files speak the `MINIO_*` names — which that image reads natively.
+   A `3.0.0` service **refuses** those names at boot (the deprecation shim
+   went with `3.0.0`), so the app image rolls back with the compose file:
+   never restore the env files alone. `minio-frozen` must be stopped
    first (`$C stop minio-frozen`): two MinIO processes on one data
    directory is the one thing this procedure must never do.
 4. **Start:** `docker compose up -d` (the restored file has no `migration`

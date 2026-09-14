@@ -10,8 +10,6 @@ each remaining `minio` mention to be one of:
 
 * a **historical** reference — the old backend named as the thing that was
   replaced (`old MinIO block`, `MinIO → SeaweedFS`, `MinIO-era`, ...);
-* the **deprecation shim's** legacy vocabulary (`MINIO_<suffix>` env names,
-  the two `_LEGACY_ENDPOINT_*` constants in `media_service/core/config.py`);
 * a **runtime-data directory name** kept in `.gitignore`/`.dockerignore` for
   worktrees checked out before the migration (`minio/data/*`);
 * an identifier owned by `media-sdk-m8` (`get_minio_client`), which this
@@ -21,6 +19,11 @@ Whole files that exist to describe the migration *from* MinIO are exempt
 (`CHANGELOG.md`, the data-migration runbook and overlay, the security matrix,
 the versioning evaluation). Everything else — a default, a compose secret id,
 an env-file header, a README describing the running stack — must not.
+
+The `MINIO_*` → `S3_*` deprecation shim was this scan's one documented code
+exception until `3.0.0` removed it; `media_service/core/config.py` is now
+scanned like every other file, and the only tracked `MINIO_*` names left are
+the ones the retired-key tests assert are *refused*.
 """
 
 from __future__ import annotations
@@ -97,13 +100,6 @@ _ALLOWED_CONTEXT = re.compile(
             r"were named minio_",
             r"PathPrefix\(/minio\)",
             r"legitimately survives",
-            # deprecation shim vocabulary (removed in 3.0.0)
-            r"\bMINIO_[A-Z_]+\b",
-            r"_LEGACY_ENDPOINT_(HOST|PORT)_DEFAULT",
-            r"minio:9000",  # only ever next to the shim constants / their tests
-            r"minio:<port>",
-            r"MINIO_\{suffix\}",
-            r"_apply_legacy_minio_aliases",
             # runtime-data directory names kept for pre-migration worktrees
             r"minio/data",
             r"\*\*/minio/",

@@ -154,32 +154,16 @@ def test_s3_public_endpoint_http_external_local_allowed():
     assert s.S3_PUBLIC_ENDPOINT == "http://storage.example.com"
 
 
-# ── S3_ENDPOINT validation (replaces MINIO_PORT's range check) ────────────────
+# ── S3_ENDPOINT validation ───────────────────────────────────────────────────
 
 
 def test_s3_endpoint_default_is_the_storage_service_not_the_retired_backend():
     """T30: the field default names the fleet's ``storage`` service on its S3
     port — the backend the compose stacks actually run — not the retired
-    ``minio:9000`` pair. Every stack sets ``S3_ENDPOINT`` explicitly, so this
-    default is only ever seen by a bare ``Settings()``; it still must not point
-    at a host nothing in the fleet runs."""
+    backend's former ``minio:9000`` pair. Every stack sets ``S3_ENDPOINT``
+    explicitly, so this default is only ever seen by a bare ``Settings()``; it
+    still must not point at a host nothing in the fleet runs."""
     assert _make_settings().S3_ENDPOINT == "storage:8333"
-
-
-def test_s3_endpoint_default_is_decoupled_from_the_legacy_host_port_pair():
-    """The shim's legacy defaults reproduce the *old* field defaults for a
-    partial ``MINIO_HOST``/``MINIO_PORT`` config and therefore stay ``minio`` /
-    ``9000`` — they legitimately differ from the new field default. Asserting
-    the separation (rather than the equality the pre-T30 test asserted) is
-    what keeps a future "tidy-up" from retargeting the shim constants."""
-    from media_service.core.config import (
-        _LEGACY_ENDPOINT_HOST_DEFAULT,
-        _LEGACY_ENDPOINT_PORT_DEFAULT,
-    )
-
-    legacy = f"{_LEGACY_ENDPOINT_HOST_DEFAULT}:{_LEGACY_ENDPOINT_PORT_DEFAULT}"
-    assert legacy == "minio:9000"
-    assert Settings.model_fields["S3_ENDPOINT"].default != legacy
 
 
 def test_s3_endpoint_with_scheme_rejected():
@@ -196,7 +180,7 @@ def test_s3_endpoint_empty_rejected():
 
 @pytest.mark.parametrize("endpoint", ["storage:0", "storage:65536", "storage:nine"])
 def test_s3_endpoint_invalid_port_rejected(endpoint):
-    """The port range MINIO_PORT enforced as an int field is still enforced."""
+    """The port range is enforced on the netloc's port half, as an int field would."""
     with pytest.raises((ValueError, ValidationError), match="port must be a number"):
         _make_settings(S3_ENDPOINT=endpoint)
 
@@ -213,102 +197,38 @@ def test_s3_endpoint_accepted_forms(endpoint):
     assert _make_settings(S3_ENDPOINT=endpoint).S3_ENDPOINT == endpoint
 
 
-# ── MINIO_* → S3_* deprecation shim (removed in 3.0.0) ───────────────────────
+# ── Retired vocabulary is refused (3.0.0) ────────────────────────────────────
 
 
-def test_legacy_host_and_port_become_s3_endpoint():
-    """An unmigrated deployment's MINIO_HOST/MINIO_PORT still resolve, and warn."""
-    with pytest.warns(DeprecationWarning, match="removed in media-service-m8 3.0.0"):
-        s = _make_settings(MINIO_HOST="legacy-storage", MINIO_PORT=9001)
-    assert s.S3_ENDPOINT == "legacy-storage:9001"
+# The retired vocabulary, sampled: the host/port pair that used to collapse
+# into ``S3_ENDPOINT``, the secret, and one bucket name.
+_RETIRED_STORAGE_KEYS = (  # retired in 3.0.0 — refused, not translated
+    "MINIO_HOST",  # retired
+    "MINIO_PORT",  # retired
+    "MINIO_SECRET_KEY",  # retired
+    "MINIO_BUCKET_PUBLIC",  # retired
+)
 
 
-def test_legacy_host_alone_keeps_the_default_port():
-    """Half a legacy pair resolves exactly as the two separate fields did."""
-    with pytest.warns(DeprecationWarning):
-        s = _make_settings(MINIO_HOST="legacy-storage")
-    assert s.S3_ENDPOINT == "legacy-storage:9000"
+@pytest.mark.parametrize("retired_key", _RETIRED_STORAGE_KEYS)
+def test_retired_storage_keys_are_refused(retired_key):
+    """3.0.0 removed the ``MINIO_*`` → ``S3_*`` deprecation shim. ``Settings``
+    is ``extra="forbid"``, so a stray old name in a ``media.env`` fails at boot
+    with pydantic's own ``extra_forbidden`` error naming the key — the intended
+    major-version behaviour, with no softer path."""
+    with pytest.raises(ValidationError) as excinfo:
+        _make_settings(**{retired_key: "legacy-value"})
+    errors = excinfo.value.errors()
+    assert [e["type"] for e in errors] == ["extra_forbidden"]
+    assert errors[0]["loc"] == (retired_key,)
 
 
-def test_legacy_port_alone_keeps_the_default_host():
-    with pytest.warns(DeprecationWarning):
-        s = _make_settings(MINIO_PORT=9002)
-    assert s.S3_ENDPOINT == "minio:9002"  # legacy host default, by design (T30)
-
-
-def test_legacy_scalar_aliases_are_applied():
-    """Every renamed scalar still loads from its old name."""
-    with pytest.warns(DeprecationWarning, match="MINIO_REGION -> S3_REGION"):
-        s = _make_settings(
-            MINIO_REGION="eu-central-1",
-            MINIO_USE_SSL=True,
-            MINIO_BUCKET_PUBLIC="legacy-public",
-            MINIO_BUCKET_PRIVATE="legacy-private",
-            MINIO_BUCKET_SENSITIVE="legacy-sensitive",
-            MINIO_BUCKET_TEMP="legacy-temp",
-            MINIO_BUCKET_ARCHIVE="legacy-archive",
-            MINIO_PRESIGNED_URL_EXPIRE_SECONDS=600,
-        )
-    assert s.S3_REGION == "eu-central-1"
-    assert s.S3_USE_SSL is True
-    assert s.S3_BUCKET_PUBLIC == "legacy-public"
-    assert s.S3_BUCKET_PRIVATE == "legacy-private"
-    assert s.S3_BUCKET_SENSITIVE == "legacy-sensitive"
-    assert s.S3_BUCKET_TEMP == "legacy-temp"
-    assert s.S3_BUCKET_ARCHIVE == "legacy-archive"
-    assert s.S3_PRESIGNED_URL_EXPIRE_SECONDS == 600
-
-
-def test_new_names_win_over_legacy_ones():
-    """A half-migrated .env resolves to the new vocabulary, never the old."""
-    with pytest.warns(DeprecationWarning):
-        s = _make_settings(
-            S3_ENDPOINT="new-storage:9000",
-            MINIO_HOST="legacy-storage",
-            MINIO_PORT=9001,
-            S3_REGION="eu-west-3",
-            MINIO_REGION="eu-central-1",
-            S3_SECRET_KEY="NewStorage!Secret1",
-            MINIO_SECRET_KEY="LegacyStorage!Secret1",
-        )
-    assert s.S3_ENDPOINT == "new-storage:9000"
-    assert s.S3_REGION == "eu-west-3"
-    assert s.S3_SECRET_KEY == "NewStorage!Secret1"
-
-
-def test_legacy_fields_are_cleared_on_the_instance():
-    """The shim translates and drops: no value — least of all the secret — survives
-    on a name the S3 vocabulary no longer reads."""
-    with pytest.warns(DeprecationWarning):
-        s = _make_settings(
-            MINIO_HOST="legacy-storage",
-            MINIO_PORT=9001,
-            MINIO_REGION="eu-central-1",
-            MINIO_SECRET_KEY="LegacyStorage!Secret1",
-        )
-    assert s.MINIO_HOST is None
-    assert s.MINIO_PORT is None
-    assert s.MINIO_REGION is None
-    assert s.MINIO_SECRET_KEY is None
-    # The values landed on the new names instead (the secret keeps the value the
-    # test environment already supplies as S3_SECRET_KEY — new names win).
-    assert s.S3_ENDPOINT == "legacy-storage:9001"
-    assert s.S3_REGION == "eu-central-1"
-    assert s.S3_SECRET_KEY
-
-
-def test_no_deprecation_warning_for_a_fully_migrated_config():
-    """The shim is silent once the old names are gone."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        assert _make_settings(S3_ENDPOINT="storage:9000").S3_ENDPOINT == "storage:9000"
-
-
-def test_legacy_public_endpoint_still_hits_the_renamed_validator():
-    """S7 is intact through the shim: the old name is validated by the same rules."""
-    with pytest.warns(DeprecationWarning):
-        with pytest.raises((ValueError, ValidationError), match="11.4"):
-            _make_settings(MINIO_PUBLIC_ENDPOINT="storage.example.com")
+def test_retired_storage_keys_are_not_fields():
+    """No retired ``MINIO_*`` name is declared as a field or listed as a
+    secret, so nothing could silently accept one."""
+    retired_prefix = _RETIRED_STORAGE_KEYS[0].split("_")[0] + "_"
+    assert not [f for f in Settings.model_fields if f.startswith(retired_prefix)]
+    assert not [f for f in Settings.secret_fields if f.startswith(retired_prefix)]
 
 
 def test_s3_secret_key_is_a_secret_field():
@@ -318,30 +238,8 @@ def test_s3_secret_key_is_a_secret_field():
         _make_settings(S3_SECRET_KEY="changethis")
 
 
-def test_shim_passes_non_mapping_input_through_untouched():
-    """The before-validator only translates mappings; anything else reaches
-    pydantic's own type error unchanged."""
-    with pytest.raises(ValidationError, match="valid dictionary"):
-        Settings.model_validate("not-a-mapping")
-
-
-def test_legacy_secret_file_mount_reaches_the_renamed_field(tmp_path, monkeypatch):
-    """The hardened production overlay mounts the storage secret as
-    ``MINIO_SECRET_KEY_FILE`` (S4/S8). The ``*_FILE`` settings source fills the
-    legacy field and the shim carries it to ``S3_SECRET_KEY``, so the deployed
-    credential path survives the rename without touching the compose files."""
-    secret = tmp_path / "legacy_secret_key"
-    secret.write_text("FileMounted!Secret1", encoding="utf-8")
-    monkeypatch.delenv("S3_SECRET_KEY", raising=False)
-    monkeypatch.setenv("MINIO_SECRET_KEY_FILE", str(secret))
-    with pytest.warns(DeprecationWarning):
-        s = _make_settings()
-    assert s.S3_SECRET_KEY == "FileMounted!Secret1"
-    assert s.MINIO_SECRET_KEY is None
-
-
 def test_secret_file_mount_works_under_the_new_name(tmp_path, monkeypatch):
-    """``S3_SECRET_KEY_FILE`` is what the compose files move to in T12."""
+    """``S3_SECRET_KEY_FILE`` is the hardened stacks' Docker-secret path (S4/S8)."""
     secret = tmp_path / "s3_secret_key"
     secret.write_text("FileMounted!Secret2", encoding="utf-8")
     monkeypatch.delenv("S3_SECRET_KEY", raising=False)
