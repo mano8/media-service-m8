@@ -144,8 +144,7 @@ REVOCATION_CACHE_TTL_SECONDS=30
 
 # ── S3 object storage ─────────────────────────────────────────────────────────
 # Internal endpoint as a scheme-less host[:port]; TLS is chosen by S3_USE_SSL.
-# The deprecated MINIO_HOST/MINIO_PORT pair still loads (it collapses into this
-# one value) and warns, until it is removed in 3.0.0.
+# Only the S3_* names load; any pre-2.2.0 storage name is refused at boot (3.0.0).
 S3_ENDPOINT=127.0.0.1:9000
 S3_USE_SSL=false
 S3_REGION=eu-west-1

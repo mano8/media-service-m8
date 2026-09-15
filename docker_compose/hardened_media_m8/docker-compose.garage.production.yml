@@ -1,0 +1,94 @@
+# docker-compose.garage.production.yml — PRODUCTION overlay for the Garage 2.x
+# alternate storage profile (T30-close-deferred-flags, closing the follow-on
+# T27-garage-alt-profile recorded).
+#
+# Apply LAST, on top of the base stack, the Garage profile and the production
+# overlay — never on its own and never without docker-compose.garage.yml:
+#
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.garage.yml \
+#                  -f docker-compose.production.yml \
+#                  -f docker-compose.garage.production.yml up -d
+#
+# It does two things. First, it moves GARAGE_RPC_SECRET off the .env file and
+# onto a Docker secret (`garage_rpc_secret`, ./secrets/garage_rpc_secret.txt)
+# reached through GARAGE_RPC_SECRET_FILE — the same `<NAME>_FILE` indirection
+# every other credential gets from docker-compose.production.yml. Second, it
+# gives the two Garage-only bootstrap steps the `media-rw` credential the same
+# way: docker-compose.production.yml wires storage-init for SeaweedFS, where
+# that one-shot is admin-only, but under this profile storage-init IMPORTS the
+# media-rw keypair and storage-cors (which the shared overlay does not know
+# about at all) signs PutBucketCors with it. It is a separate file
+# rather than three more lines in docker-compose.production.yml because the
+# secret is Garage-only: folding it into the shared production overlay would
+# make every SeaweedFS deployment provision a secret file for a backend it
+# does not run.
+#
+# Garage itself (the daemon and the CLI alike) refuses to start when BOTH
+# GARAGE_RPC_SECRET and GARAGE_RPC_SECRET_FILE are present — an EMPTY
+# `GARAGE_RPC_SECRET=` line in .env counts as present (measured: "only one of
+# `rpc_secret` and `rpc_secret_file` can be set"). So this overlay also takes
+# .env off the two services that run the Garage binary; neither needs
+# anything else from it (storage-init's bucket names come from
+# media.env.production, its credentials from Docker secrets). storage-config
+# is a plain shell guard whose `pick()` gives the `_FILE` form precedence, so
+# it keeps .env and tolerates the empty line.
+#
+# Three services read the RPC secret — none of them an application container:
+#   storage-config  the credential-shape guard + garage.toml renderer (reads it
+#                   only to validate length/charset before the daemon boots);
+#   storage         the Garage daemon itself (GARAGE_RPC_SECRET_FILE is read
+#                   natively by `garage server`, no shell wrapper needed);
+#   storage-init    the `garage` CLI bootstrap, which authenticates to the
+#                   loopback RPC port with the same secret (and imports the
+#                   media-rw keypair from s3_access_key / s3_secret_key);
+#   storage-cors    aws-cli one-shot, reads only s3_access_key / s3_secret_key.
+#
+# Operator checklist addition (on top of docker-compose.production.yml's):
+#   ./secrets/garage_rpc_secret.txt — 64 lowercase hex chars (32 bytes),
+#   `openssl rand -hex 32`, no trailing newline, chmod 600. Garage refuses a
+#   world-readable secret file at boot; that refusal is the daemon being
+#   right, not a bug to configure away.
+
+services:
+  storage-config:
+    secrets:
+      - garage_rpc_secret
+    environment:
+      GARAGE_RPC_SECRET_FILE: /run/secrets/garage_rpc_secret
+
+  storage:
+    env_file: !override []                # .env carried only GARAGE_RPC_SECRET for this service
+    secrets:
+      - garage_rpc_secret
+    environment:
+      GARAGE_RPC_SECRET_FILE: /run/secrets/garage_rpc_secret
+
+  storage-init:
+    env_file: !override
+      - ./media.env.production            # bucket names, S3_REGION; no .env (see header)
+    secrets:
+      - garage_rpc_secret
+      - s3_access_key
+      - s3_secret_key
+    environment:
+      GARAGE_RPC_SECRET_FILE: /run/secrets/garage_rpc_secret
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
+
+  storage-cors:
+    env_file: !override
+      - ./.env                            # S3_CORS_ALLOW_ORIGIN (aws-cli image: the empty GARAGE_RPC_SECRET line is inert here)
+      - ./media.env.production
+    secrets:
+      - s3_access_key
+      - s3_secret_key
+    environment:
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
+
+secrets:
+  # Garage cluster RPC secret — read ONLY by the storage daemon and its two
+  # bootstrap one-shots. Never mounted into an application container.
+  garage_rpc_secret:
+    file: ./secrets/garage_rpc_secret.txt

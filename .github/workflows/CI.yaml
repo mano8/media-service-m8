@@ -105,7 +105,7 @@ jobs:
         run: pip install -r media_service/requirements_dev.txt
 
       # The test suite is self-contained: tests/conftest.py sets every required
-      # env var (auth secrets, MinIO, MEDIA_REDIS_*) and stubs find_dotenv before
+      # env var (auth secrets, S3_*, MEDIA_REDIS_*) and stubs find_dotenv before
       # importing media_service, so no .env file is needed. pytest.ini provides
       # pythonpath, --cov, --cov-branch, and --ignore=tests/live (live tests need
       # a running stack).

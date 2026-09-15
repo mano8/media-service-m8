@@ -153,7 +153,7 @@ def test_initiate_stores_the_declared_filing_on_the_session(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
     cat = _make_category(session, current_user.id)
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = client.post(
         "/media/v1/uploads/initiate",
         json={**_INITIATE_BODY, "category_ids": [cat.id]},
@@ -167,7 +167,7 @@ def test_initiate_stores_the_declared_filing_on_the_session(
 def test_initiate_without_category_ids_declares_no_filing(
     client: TestClient, mock_storage: MagicMock, session: Session
 ):
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     assert resp.status_code == 200
     stored = session.get(UploadSession, uuid.UUID(resp.json()["session_id"]))
@@ -180,7 +180,7 @@ def test_initiate_collapses_a_repeated_category_id(
 ):
     """A filing is a set — naming the same category twice is not an error."""
     cat = _make_category(session, current_user.id)
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = client.post(
         "/media/v1/uploads/initiate",
         json={**_INITIATE_BODY, "category_ids": [cat.id, cat.id]},

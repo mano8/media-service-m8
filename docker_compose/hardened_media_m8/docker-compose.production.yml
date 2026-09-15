@@ -33,11 +33,18 @@
 # 2. Create ./secrets/ directory with one secret per file:
 #      db_password.txt              auth_redis_password.txt
 #      media_redis_password.txt     media_internal_service_token.txt
-#      media_share_signing_secret.txt   minio_access_key.txt
-#      minio_secret_key.txt         private_api_secret.txt
+#      media_share_signing_secret.txt   s3_access_key.txt
+#      s3_secret_key.txt            private_api_secret.txt
 #      s3_root_user.txt             s3_root_password.txt
 #      refresh_secret_key.txt       event_signing_key.txt
 #      session_secret.txt           tokens_encryption_key.txt
+#    Upgrading a deployment created before T30-close-deferred-flags: the
+#    two storage-credential files were named minio_access_key.txt /
+#    minio_secret_key.txt — rename them to s3_access_key.txt /
+#    s3_secret_key.txt (same content; they hold the `media-rw` identity and
+#    never had anything to do with the retired backend). See CHANGELOG.
+#    Garage alternate profile only: also create garage_rpc_secret.txt and add
+#    -f docker-compose.garage.production.yml after this file (see that file).
 # 3. Copy / fill *.env.production.example → *.env.production (non-secret fields).
 # 4. Run: docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
 #
@@ -100,13 +107,13 @@ services:
     secrets:
       - s3_root_user
       - s3_root_password
-      - minio_access_key
-      - minio_secret_key
+      - s3_access_key
+      - s3_secret_key
     environment:
       S3_ROOT_USER_FILE: /run/secrets/s3_root_user
       S3_ROOT_PASSWORD_FILE: /run/secrets/s3_root_password
-      S3_ACCESS_KEY_FILE: /run/secrets/minio_access_key
-      S3_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
 
   # Bucket creation + per-bucket CORS run as the admin identity only.
   storage-init:
@@ -158,8 +165,8 @@ services:
       - media_redis_password
       - media_internal_service_token
       - media_share_signing_secret
-      - minio_access_key
-      - minio_secret_key
+      - s3_access_key
+      - s3_secret_key
       - private_api_secret
       - refresh_secret_key
       - event_signing_key
@@ -168,8 +175,8 @@ services:
       MEDIA_REDIS_PASSWORD_FILE: /run/secrets/media_redis_password
       MEDIA_INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/media_internal_service_token
       MEDIA_SHARE_SIGNING_SECRET_FILE: /run/secrets/media_share_signing_secret
-      S3_ACCESS_KEY_FILE: /run/secrets/minio_access_key
-      S3_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
       PRIVATE_API_SECRET_FILE: /run/secrets/private_api_secret
       REFRESH_SECRET_KEY_FILE: /run/secrets/refresh_secret_key
       EVENT_SIGNING_KEY_FILE: /run/secrets/event_signing_key
@@ -187,8 +194,8 @@ services:
       - media_redis_password
       - media_internal_service_token
       - media_share_signing_secret
-      - minio_access_key
-      - minio_secret_key
+      - s3_access_key
+      - s3_secret_key
       - private_api_secret
       - refresh_secret_key
       - event_signing_key
@@ -197,8 +204,8 @@ services:
       MEDIA_REDIS_PASSWORD_FILE: /run/secrets/media_redis_password
       MEDIA_INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/media_internal_service_token
       MEDIA_SHARE_SIGNING_SECRET_FILE: /run/secrets/media_share_signing_secret
-      S3_ACCESS_KEY_FILE: /run/secrets/minio_access_key
-      S3_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
       PRIVATE_API_SECRET_FILE: /run/secrets/private_api_secret
       REFRESH_SECRET_KEY_FILE: /run/secrets/refresh_secret_key
       EVENT_SIGNING_KEY_FILE: /run/secrets/event_signing_key
@@ -212,13 +219,13 @@ services:
     secrets:
       - media_internal_service_token
       - media_redis_password
-      - minio_access_key
-      - minio_secret_key
+      - s3_access_key
+      - s3_secret_key
     environment:
       MEDIA_INTERNAL_SERVICE_TOKEN_FILE: /run/secrets/media_internal_service_token
       MEDIA_REDIS_PASSWORD_FILE: /run/secrets/media_redis_password
-      S3_ACCESS_KEY_FILE: /run/secrets/minio_access_key
-      S3_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
     volumes: !override
       - ./worker.env.production:/opt/worker/.env:ro
 
@@ -240,10 +247,13 @@ secrets:
     file: ./secrets/media_internal_service_token.txt
   media_share_signing_secret:
     file: ./secrets/media_share_signing_secret.txt
-  minio_access_key:
-    file: ./secrets/minio_access_key.txt
-  minio_secret_key:
-    file: ./secrets/minio_secret_key.txt
+  # The scoped `media-rw` identity every application container signs S3 with.
+  # Named after the protocol like the S3_ACCESS_KEY / S3_SECRET_KEY vars they
+  # feed (ids were `minio_*` before T30 — see the operator checklist above).
+  s3_access_key:
+    file: ./secrets/s3_access_key.txt
+  s3_secret_key:
+    file: ./secrets/s3_secret_key.txt
   # Storage admin identity — read ONLY by storage-config/storage-init and by the
   # backend's own identity table. Never mounted into an application container.
   s3_root_user:

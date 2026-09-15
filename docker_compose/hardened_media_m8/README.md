@@ -42,14 +42,15 @@ through that network.
 | --- | --- | --- |
 | traefik | `traefik:v3.7.5` | `:8000`, `:4430`, `127.0.0.1:9000`, `127.0.0.1:8080` |
 | auth_user_service | `tepochtli/fa-auth-m8:2.2.1` | `/user` via Traefik |
-| media_service | `tepochtli/media-service-m8:2.1.1` | `/media` via Traefik |
-| media_service_worker | `tepochtli/media-service-m8:2.1.1` (arq command override) | internal — no port; lifecycle/outbox crons |
-| media_worker | `tepochtli/media-worker-m8:0.4.1` | internal — enqueue-driven (scan + variants) |
+| media_service | `tepochtli/media-service-m8:3.0.0` | `/media` via Traefik |
+| media_service_worker | `tepochtli/media-service-m8:3.0.0` (arq command override) | internal — no port; lifecycle/outbox crons |
+| media_worker | `tepochtli/media-worker-m8:1.0.0` | internal — enqueue-driven (scan + variants) |
 | clamav | `clamav/clamav:1.5-debian13-slim` | internal `scan_net` only |
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
 | storage | `chrislusf/seaweedfs:4.45` | S3 object storage — internal data network, **no host port** |
+| storage-tls-init | `alpine:3.21.3` | one-shot: mints the certificate that locks the S3 gRPC port, then destroys the CA key |
 | storage-config | `alpine:3.21.3` | one-shot: writes the backend's static identity table before it boots |
 | storage-init | `amazon/aws-cli:2.36.40` | one-shot: creates the five buckets + pins per-bucket CORS |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
@@ -138,14 +139,6 @@ bash init.sh
 
 On Windows, run this from Git Bash.
 
-Re-running `bash init.sh` on a stack that already has a keypair does not
-regenerate it, but it does re-derive `kid` from the mounted `keys/public.pem`
-and check it against `ACCESS_KEY_ID`: a match is confirmed, an unset value is
-written, and a stale value is re-bound with a `NOTE:` naming the correction —
-it never silently skips over an unbound `kid` (this is how the J1 defect this
-stack shipped went undetected). Use `--rotate-keys` to actually generate a new
-keypair with the JWKS overlap window.
-
 Start the stack:
 
 ```sh
@@ -171,6 +164,29 @@ to the storage container's own loopback by `-ip.bind=127.0.0.1`, so no sibling
 container can reach them at all. That binding is what replaced the old
 `!PathPrefix(/minio)` rule; the isolation now lives in the storage process rather
 than in a proxy rule.
+
+`-ip.bind` is not the whole story, and the difference matters. `-s3.ip.bind=0.0.0.0`
+— the flag that makes the gateway reachable at all — also publishes three surfaces
+it does not name:
+
+- the S3 component's **gRPC** port (`8333 + 10000 = 18333`), which serves an IAM
+  service whose `PutIdentity` RPC creates S3 identities. Measured on this pinned
+  image, an **unauthenticated** call from an ordinary sibling container minted an
+  identity with `Admin` rights that then worked over the normal S3 API — a full
+  escape from the scoped `media-rw` credential. SeaweedFS offers no flag to bind
+  this port separately (`-s3.port.grpc=0` falls back to the default), and neither
+  `-s3.iam=false` nor `-s3.iam.readOnly=true` nor `jwt.filer_signing.key` refuses
+  the call. It is closed instead with **gRPC mTLS on the S3 component only**
+  (`seaweedfs/security.toml`, `[grpc.s3]`). The `storage-tls-init` one-shot mints
+  a throwaway CA, signs one server certificate and then **deletes the CA private
+  key**, so no client certificate that port would accept can ever be issued —
+  which is the intent, since nothing here is a legitimate client of it.
+- the **Iceberg REST Catalog** (`8181`) and **Lance Namespace** (`9101`) servers,
+  which SeaweedFS 4.x starts by default. This stack uses neither, and both are
+  switched off at the listener with `-s3.port.iceberg=0` / `-s3.port.lance=0`.
+
+`docker_compose/shared_live_tests/tests/live_storage/test_storage_admin_surface_live.py`
+re-proves all of this from a sibling container against any running stack.
 
 The S3 port itself serves exactly two non-S3 paths — `/healthz` and `/status`,
 bare liveness probes that answer `200` with an empty body — and the router denies
@@ -217,6 +233,128 @@ separate delete verb, so deletes are covered by `Write` over the same bucket
 set. `media_service` waits for `storage-init` to complete before starting and
 uses `S3_ACCESS_KEY` / `S3_SECRET_KEY`, never the admin credentials, which no
 application container is given.
+
+The fifteen security invariants this storage layer must hold (no host port,
+loopback-bound admin surfaces, scoped CORS and credential, presigned-only data
+path, TLS/Host-pinned route, server-side size and `Content-Type` enforcement,
+`attachment` disposition, ranged GET, hygiene, pins, container hardening) are
+walked with evidence in [`SECURITY_REGRESSION_MATRIX.md`](SECURITY_REGRESSION_MATRIX.md);
+the wire-level rows re-run against any live stack via
+`../shared_live_tests/tests/live_storage/test_storage_invariants_live.py`.
+
+**Carrying existing objects over from a MinIO-era deployment** (not needed
+for a clean start) is a separate, reversible procedure:
+[`DATA_MIGRATION_RUNBOOK.md`](DATA_MIGRATION_RUNBOOK.md) — rclone bucket-to-
+bucket through the `docker-compose.migration.yml` overlay (a frozen MinIO and
+an `rclone` one-shot behind the `migration` profile, never started by a plain
+`up`), count/byte and byte-for-byte parity per bucket, a digest join against
+the stored `sha256` column (`verify_migration_digests.py`), a rollback window
+with the exact trigger conditions, and the rollback itself.
+
+### Alternate backend: Garage (`docker-compose.garage.yml`)
+
+`.workspace/context/object-storage.md` ratifies SeaweedFS 4.x as the default
+and Garage 2.x as the validated fallback. `docker-compose.garage.yml` makes
+that swap real instead of theoretical: it overrides `storage`, `storage-config`
+and `storage-init` with Garage 2.x equivalents (plus two new one-shots,
+`storage-tools` and `storage-cors` — see below) and changes nothing else.
+`container_name: storage` and port `8333` are unchanged, so the Traefik route
+and every `S3_*` variable in `media.env`/`worker.env` need no edit —
+`S3_REGION` included, which `storage-config` renders into the Garage config
+at boot.
+
+```bash
+# One extra flag is the whole migration:
+docker compose -f docker-compose.yml -f docker-compose.garage.yml up -d
+
+# Production posture: the shared production overlay, then the Garage-only one
+# (moves GARAGE_RPC_SECRET onto ./secrets/garage_rpc_secret.txt):
+docker compose -f docker-compose.yml -f docker-compose.garage.yml \
+               -f docker-compose.production.yml -f docker-compose.garage.production.yml up -d
+```
+
+Before first boot, set `GARAGE_RPC_SECRET` in `.env` (>= 64 lowercase hex
+chars — `openssl rand -hex 32`; see `.env.example`). It authenticates
+cluster-administration RPC calls between `storage` and the bootstrap
+one-shots and is unused under the default SeaweedFS profile. In production
+leave that line **empty** and provision `./secrets/garage_rpc_secret.txt`
+instead (64 hex chars, `chmod 600`, owned by uid 1000 — the daemon runs
+non-root and refuses a world-readable secret file):
+`docker-compose.garage.production.yml` wires it through
+`GARAGE_RPC_SECRET_FILE` for the three services that read it (`storage`,
+`storage-config`, `storage-init`) and hands `storage-init`/`storage-cors`
+the `media-rw` credential the same way. Garage refuses to start when both
+the plain and the `_FILE` form are present — an empty `GARAGE_RPC_SECRET=`
+line counts — which is why that overlay also takes `.env` off the two
+services that run the Garage binary.
+
+What differs from the SeaweedFS profile, and why:
+
+- **No static identity file.** SeaweedFS reads its accounts from
+  `-s3.config` at startup; Garage has no equivalent, so `storage-config`
+  becomes a credential-shape guard plus the renderer of
+  `garage/config/garage.toml` (gitignored) from the tracked
+  `garage/garage.toml.template`, and `storage-init` creates the
+  single-node layout, the five buckets and the fixed `media-rw` keypair
+  live via the `garage` CLI (imported with `garage key import`, never
+  generated, so `S3_ACCESS_KEY`/`S3_SECRET_KEY` need no change).
+- **The Garage image is `FROM scratch`** — `/garage` is its only file, no
+  `/bin/sh`. `storage-init` still runs a shell script on it: the
+  `storage-tools` one-shot seeds a named volume (`garage_tools`) with
+  busybox's static applet tree (Docker copies an image's directory into an
+  empty named volume mounted over it, so `command: true` is the whole job),
+  and `storage-init` mounts that volume read-only at `/tools/bin` and runs
+  `/tools/bin/sh`. No build, no download at boot, one more pinned image
+  (`busybox:1.37.0-musl`).
+- **Cluster administration (`garage` CLI) needs the RPC port**, which is
+  loopback-bound inside the `storage` container — the same posture as
+  SeaweedFS's master/volume/filer/webdav, confirmed unreachable from a
+  sibling container with the same `nc -z` probe `T3`/`T4` used. `storage-init`
+  reaches it by sharing `storage`'s network **namespace**
+  (`network_mode: "service:storage"`), not by mounting the Docker socket or
+  publishing an admin port.
+- **CORS is a separate one-shot, `storage-cors`.** Garage's S3 API does
+  implement `PutBucketCors` (verified live against v2.3.0) but the `garage`
+  CLI has no S3-API subcommand for it, so this step goes over the S3 port
+  with `aws s3api` — same shape as the SeaweedFS profile's `storage-init`
+  CORS block, just split out because it needs the S3 port (`data_net`)
+  rather than the RPC port (loopback-only, `storage-init`'s namespace).
+- **The `media-rw` grant is `RWO` (Read/Write/**Owner**), not `RW`.** Garage
+  only allows `PutBucketCors` to a key holding the bucket's Owner permission.
+  Bucket scope is unchanged — still exactly the five media buckets.
+- **`s3_api.s3_region` is rendered from `S3_REGION` at boot**, never edited
+  by hand: `storage-config` substitutes it into `garage/config/garage.toml`
+  from `garage/garage.toml.template` (fail-closed on an empty or
+  non-`[a-z0-9-]` value). Garage checks the SigV4 credential scope on every
+  request — measured on v2.3.0: a request signed with the rendered region is
+  a `200`, the same request signed with any other region is a `400`
+  `AuthorizationHeaderMalformed` ("unexpected scope"). The aws-cli hides that
+  by re-signing through its region redirector; a browser on a presigned URL
+  has no such retry, which is why the region must come from the one variable
+  the apps sign with.
+
+Both follow-ons `T27` recorded here — the production `_FILE` wiring for
+`GARAGE_RPC_SECRET` and the templated region — were closed by
+`T30-close-deferred-flags` (above). This profile remains a documented
+alternative, not a required cutover path.
+
+### Buckets are unversioned, and stay that way (for now)
+
+None of the five media buckets has object versioning or Object Lock enabled,
+and the bootstraps in both profiles are guarded against turning either on
+(`tests/test_storage_versioning_policy.py`). That is a decision with evidence
+behind it, not an omission:
+[`VERSIONING_OBJECTLOCK_EVALUATION.md`](VERSIONING_OBJECTLOCK_EVALUATION.md)
+measures what SeaweedFS 4.45 and Garage 2.3.0 actually do and recommends
+against adoption today. The short version: the SDK deletes by key with no
+version id, so on a versioned bucket the nightly hard purge would report
+`purged=N` while reclaiming nothing; `sensitive-media` holds no object yet,
+and `archive-media` — the archive tier every soft-deleted original is
+cold-moved into since `T32` — holds only bytes already inside their
+`MEDIA_RETENTION_PURGE_DAYS` window, which a lock would make unpurgeable. If
+immutability is ever required, the document gives the only viable shape
+(versioning plus a **GOVERNANCE** lock, never COMPLIANCE, on
+`sensitive-media` only) and the six preconditions that come first.
 
 ## URLs
 
@@ -269,15 +407,6 @@ controlled by `grafana/config.monitoring`.
   only the `*.example` files are tracked.
 - The media service base path is `/media`.
 - Other compose examples are not updated by this hardened example.
-- `app_net` / `scan_net` / `clamav_egress` carry **no** explicit `name:` —
-  Compose project-prefixes each one, so this stack never shares a network
-  with another project. Two compose projects must never declare the same
-  literal `networks.*.name`: an explicit name is external and Docker treats
-  it as shared, so whichever project boots first "owns" it and the second
-  silently attaches, letting Docker DNS resolve a service name (e.g.
-  `auth_user_service`) to **either** stack's container. See
-  `.workspace/plans/stack/analysis/audit-fa-auth-jwks-kid-key-binding-2026-09-08.md`
-  §0.2 for the measured collision this caused.
 
 ## Common Commands
 

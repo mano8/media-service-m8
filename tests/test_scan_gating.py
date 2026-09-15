@@ -87,7 +87,7 @@ def test_download_allowed_when_clean(
     client: TestClient, mock_storage, session: Session, current_user
 ):
     obj = _make_object(session, current_user.id, ScanStatus.CLEAN)
-    mock_storage.presigned_get_object.return_value = "https://minio/download"
+    mock_storage.presigned_get_object.return_value = "https://storage/download"
     resp = client.get(f"/media/v1/objects/{obj.id}/download-url")
     assert resp.status_code == 200
 

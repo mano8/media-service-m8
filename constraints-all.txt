@@ -141,7 +141,7 @@ markupsafe==3.0.3
     #   mako
 mdurl==0.1.2
     # via markdown-it-py
-media-sdk-m8==0.8.0
+media-sdk-m8==1.0.0
     # via -r media_service/requirements_base.txt
 msgpack==1.2.1
     # via cachecontrol

@@ -73,7 +73,7 @@ COPY --from=builder /install /usr/local
 # console-script line covers the entrypoint's own binaries.
 RUN python -m pip uninstall -y setuptools wheel && \
     python -m pip uninstall -y pip && \
-    python -c "import alembic, arq, asyncpg, fastapi, fastapi_m8, filetype, httpx, jinja2, media_sdk_m8, minio, prometheus_client, pydantic, pydantic_settings, redis, slugify, sqlalchemy, sqlmodel, starlette, tenacity, uvicorn" && \
+    python -c "import alembic, arq, asyncpg, fastapi, fastapi_m8, filetype, httpx, jinja2, media_sdk_m8, boto3, botocore, prometheus_client, pydantic, pydantic_settings, redis, slugify, sqlalchemy, sqlmodel, starlette, tenacity, uvicorn" && \
     alembic --version && uvicorn --version && gunicorn --version
 
 COPY --chown=appuser:appuser ./media_service ./media_service

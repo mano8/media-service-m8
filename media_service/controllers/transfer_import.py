@@ -69,6 +69,7 @@ from media_service.core.config import settings
 from media_service.core.validation import (
     is_allowed_declared_mime,
     max_size_for_category,
+    sanitize_filename,
 )
 from media_service.db_models.categories import Category
 from media_service.db_models.media_objects import (
@@ -91,11 +92,6 @@ from media_service.schemas.uploads import UploadCompleteRequest, UploadInitiateR
 from media_service.storage.client import ObjectStorage
 
 _logger = logging.getLogger(__name__)
-
-#: Fallback filename for a manifest row that carries none. Matches the fallback
-#: :func:`media_service.storage.keys._safe_filename` already applies, so an
-#: unnamed object gets the same key it would have got through a normal upload.
-_FALLBACK_FILENAME = "file"
 
 
 def _reject(message: str) -> HTTPException:
@@ -767,7 +763,11 @@ def _import_one_file(
         req = UploadInitiateRequest(
             category=entry.category,
             visibility=entry.visibility,
-            original_filename=entry.filename or _FALLBACK_FILENAME,
+            # A manifest name is data, not something the caller typed, so
+            # it is normalised onto the portable-filename policy rather than
+            # refused (the fallback for a missing name is the same ``file``
+            # every unnamed upload gets).
+            original_filename=sanitize_filename(entry.filename),
             mime_type=entry.mime_type,
             expected_size_bytes=size_bytes,
             category_ids=[row.id for row in categories],

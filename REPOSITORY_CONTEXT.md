@@ -10,7 +10,7 @@ Handle upload, storage, and lifecycle management of media assets.
 
 ## Repository boundaries
 
-- Own the storage layer through the MinIO/filesystem abstraction.
+- Own the storage layer through the S3 object-storage abstraction (`media_sdk_m8.ObjectStorage`); the backend implementation is a deployment choice, never named in service code.
 - Do not couple the service to authentication internals.
 - Expose a clean API to its consumers.
 - `auth-sdk-m8` is never imported directly in service code — only `fastapi-m8`

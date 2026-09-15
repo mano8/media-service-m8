@@ -67,8 +67,8 @@ _REQUIRED_SECRETS = {
     "media_redis_password",
     "media_internal_service_token",
     "media_share_signing_secret",
-    "minio_access_key",
-    "minio_secret_key",
+    "s3_access_key",
+    "s3_secret_key",
     "private_api_secret",
     "refresh_secret_key",
     "event_signing_key",
@@ -91,10 +91,14 @@ _TOKEN_FILE_VAR = "MEDIA_INTERNAL_SERVICE_TOKEN_FILE"
 # MEDIA_SHARE_SIGNING_SECRET_FILE
 _SHARE_FILE_VAR = "MEDIA_SHARE_SIGNING_SECRET_FILE"
 
-# S3 credential files (docker secret ids stay `minio_*`; only the env var name
-# the app reads moved to S3_* in T12-env-docs-sweep)
-_MINIO_KEY_FILE_VAR = "S3_ACCESS_KEY_FILE"
-_MINIO_SECRET_FILE_VAR = "S3_SECRET_KEY_FILE"
+# S3 credential files. The env var names moved to S3_* in T12-env-docs-sweep;
+# the Docker secret ids followed in T30-close-deferred-flags (`minio_*` →
+# `s3_*`, an operator-visible rename recorded in the CHANGELOG).
+_S3_KEY_FILE_VAR = "S3_ACCESS_KEY_FILE"
+_S3_SECRET_FILE_VAR = "S3_SECRET_KEY_FILE"
+_S3_KEY_SECRET_ID = "s3_access_key"
+_S3_SECRET_SECRET_ID = "s3_secret_key"
+_RETIRED_S3_SECRET_IDS = ("minio_access_key", "minio_secret_key")
 
 # Plaintext secret keys that must NOT be set in production env examples.
 # Each value is the env var name that should be absent / commented out.
@@ -215,6 +219,41 @@ class TestDockerSecretsBlock:
                 f"Secret `{name}` file path should be under ./secrets/: {entry['file']!r}"
             )
 
+    def test_retired_minio_secret_ids_are_gone(self):
+        """T30: the `media-rw` credential files are `s3_access_key.txt` /
+        `s3_secret_key.txt`. Declaring the old `minio_*` ids too would make the
+        operator provision the same secret twice under a name that names a
+        backend the fleet no longer runs; declaring them instead of the new
+        ones is the regression this guards."""
+        secrets = _load_overlay().get("secrets", {})
+        for retired in _RETIRED_S3_SECRET_IDS:
+            assert retired not in secrets, (
+                f"docker-compose.production.yml still declares the retired "
+                f"`{retired}` Docker secret."
+            )
+        assert (
+            secrets[_S3_KEY_SECRET_ID]["file"] == f"./secrets/{_S3_KEY_SECRET_ID}.txt"
+        )
+        assert (
+            secrets[_S3_SECRET_SECRET_ID]["file"]
+            == f"./secrets/{_S3_SECRET_SECRET_ID}.txt"
+        )
+
+    def test_operator_checklist_names_the_rename(self):
+        """The rename is operator-visible: an existing ./secrets/ directory has
+        two files to rename. The overlay header must say so, next to the file
+        list, not only the CHANGELOG."""
+        header = _PRODUCTION_OVERLAY.read_text(encoding="utf-8").split("services:", 1)[
+            0
+        ]
+        assert f"{_S3_KEY_SECRET_ID}.txt" in header
+        assert f"{_S3_SECRET_SECRET_ID}.txt" in header
+        retired_file = f"{_RETIRED_S3_SECRET_IDS[0]}.txt"
+        assert retired_file in header and "rename" in header, (
+            "the operator checklist must tell an upgrading deployment to rename "
+            "its two pre-existing minio_*.txt secret files"
+        )
+
 
 # ── 3. Service-level secrets mounts ──────────────────────────────────────────
 
@@ -252,14 +291,29 @@ class TestServiceSecretsMounts:
     @pytest.mark.parametrize(
         "service", ["media_service", "media_service_worker", "media_worker"]
     )
-    def test_service_mounts_minio_credentials(self, service: str):
+    def test_service_mounts_s3_credentials(self, service: str):
         secs = self._service_secrets(service)
-        assert "minio_access_key" in secs, (
-            f"{service} must mount the `minio_access_key` Docker secret."
+        assert _S3_KEY_SECRET_ID in secs, (
+            f"{service} must mount the `{_S3_KEY_SECRET_ID}` Docker secret."
         )
-        assert "minio_secret_key" in secs, (
-            f"{service} must mount the `minio_secret_key` Docker secret."
+        assert _S3_SECRET_SECRET_ID in secs, (
+            f"{service} must mount the `{_S3_SECRET_SECRET_ID}` Docker secret."
         )
+
+    @pytest.mark.parametrize(
+        "service",
+        ["storage-config", "media_service", "media_service_worker", "media_worker"],
+    )
+    def test_service_mounts_no_retired_minio_secret_id(self, service: str):
+        """T30: the storage credential secrets were renamed `minio_*` → `s3_*`.
+        A service still mounting the old id would look for a file the operator
+        checklist no longer asks for."""
+        secs = self._service_secrets(service)
+        for retired in _RETIRED_S3_SECRET_IDS:
+            assert retired not in secs, (
+                f"{service} still mounts the retired `{retired}` Docker secret — "
+                f"use `{_S3_KEY_SECRET_ID}` / `{_S3_SECRET_SECRET_ID}`."
+            )
 
 
 # ── 4. _FILE env vars — plan 6.1 explicit categories ─────────────────────────
@@ -335,31 +389,33 @@ class TestFileMountEnvVars:
             f"{service} {_SHARE_FILE_VAR} must point to /run/secrets/."
         )
 
-    # 6.1 category: MinIO credential files
+    # 6.1 category: S3 credential files
     @pytest.mark.parametrize(
         "service", ["media_service", "media_service_worker", "media_worker"]
     )
-    def test_minio_access_key_file_wired(self, service: str):
+    def test_s3_access_key_file_wired(self, service: str):
         env = self._env(service)
-        assert _MINIO_KEY_FILE_VAR in env, (
-            f"{service} must declare {_MINIO_KEY_FILE_VAR} in the production overlay "
-            "(plan 6.1: MinIO credentials sourced from /run/secrets/)."
+        assert _S3_KEY_FILE_VAR in env, (
+            f"{service} must declare {_S3_KEY_FILE_VAR} in the production overlay "
+            "(plan 6.1: S3 credentials sourced from /run/secrets/)."
         )
-        assert env[_MINIO_KEY_FILE_VAR].startswith("/run/secrets/"), (
-            f"{service} {_MINIO_KEY_FILE_VAR} must point to /run/secrets/."
+        assert env[_S3_KEY_FILE_VAR] == f"/run/secrets/{_S3_KEY_SECRET_ID}", (
+            f"{service} {_S3_KEY_FILE_VAR} must point at the `{_S3_KEY_SECRET_ID}` "
+            "Docker secret."
         )
 
     @pytest.mark.parametrize(
         "service", ["media_service", "media_service_worker", "media_worker"]
     )
-    def test_minio_secret_key_file_wired(self, service: str):
+    def test_s3_secret_key_file_wired(self, service: str):
         env = self._env(service)
-        assert _MINIO_SECRET_FILE_VAR in env, (
-            f"{service} must declare {_MINIO_SECRET_FILE_VAR} in the production overlay "
-            "(plan 6.1: MinIO credentials sourced from /run/secrets/)."
+        assert _S3_SECRET_FILE_VAR in env, (
+            f"{service} must declare {_S3_SECRET_FILE_VAR} in the production overlay "
+            "(plan 6.1: S3 credentials sourced from /run/secrets/)."
         )
-        assert env[_MINIO_SECRET_FILE_VAR].startswith("/run/secrets/"), (
-            f"{service} {_MINIO_SECRET_FILE_VAR} must point to /run/secrets/."
+        assert env[_S3_SECRET_FILE_VAR] == f"/run/secrets/{_S3_SECRET_SECRET_ID}", (
+            f"{service} {_S3_SECRET_FILE_VAR} must point at the "
+            f"`{_S3_SECRET_SECRET_ID}` Docker secret."
         )
 
 

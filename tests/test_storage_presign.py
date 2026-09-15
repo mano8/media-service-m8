@@ -6,7 +6,7 @@ from media_service.storage.client import ObjectStorage
 from media_service.storage.presign import create_download_url, create_upload_url
 
 
-def _storage(return_url: str = "https://minio/presigned") -> MagicMock:
+def _storage(return_url: str = "https://storage/presigned") -> MagicMock:
     s = MagicMock(spec=ObjectStorage)
     s.presigned_post_object.return_value = (return_url, {"key": "k"})
     s.presigned_get_object.return_value = return_url
@@ -14,7 +14,7 @@ def _storage(return_url: str = "https://minio/presigned") -> MagicMock:
 
 
 def test_create_upload_url_delegates_to_storage():
-    storage = _storage("https://minio/post")
+    storage = _storage("https://storage/post")
     url, fields = create_upload_url(
         storage=storage,
         bucket="b",
@@ -23,7 +23,7 @@ def test_create_upload_url_delegates_to_storage():
         max_size_bytes=2048,
         expires_seconds=300,
     )
-    assert url == "https://minio/post"
+    assert url == "https://storage/post"
     assert fields == {"key": "k"}
     storage.presigned_post_object.assert_called_once_with(
         bucket="b",
@@ -35,11 +35,11 @@ def test_create_upload_url_delegates_to_storage():
 
 
 def test_create_download_url_without_filename():
-    storage = _storage("https://minio/get")
+    storage = _storage("https://storage/get")
     url = create_download_url(
         storage=storage, bucket="b", object_key="k", expires_seconds=60
     )
-    assert url == "https://minio/get"
+    assert url == "https://storage/get"
     storage.presigned_get_object.assert_called_once_with(
         bucket="b",
         object_key="k",
@@ -49,7 +49,7 @@ def test_create_download_url_without_filename():
 
 
 def test_create_download_url_with_filename():
-    storage = _storage("https://minio/get")
+    storage = _storage("https://storage/get")
     create_download_url(
         storage=storage,
         bucket="b",
@@ -66,7 +66,7 @@ def test_create_download_url_with_filename():
 
 
 def test_create_download_url_filename_with_quote_is_sanitized():
-    storage = _storage("https://minio/get")
+    storage = _storage("https://storage/get")
     create_download_url(
         storage=storage,
         bucket="b",
@@ -83,7 +83,7 @@ def test_create_download_url_filename_with_quote_is_sanitized():
 
 
 def test_create_download_url_filename_with_crlf_is_sanitized():
-    storage = _storage("https://minio/get")
+    storage = _storage("https://storage/get")
     create_download_url(
         storage=storage,
         bucket="b",

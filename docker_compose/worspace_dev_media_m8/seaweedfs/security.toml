@@ -1,0 +1,43 @@
+# SeaweedFS security.toml - gRPC mTLS on the S3 component ONLY.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# `-s3.ip.bind=0.0.0.0` is what makes the S3 gateway (8333) reachable from the
+# app containers. It binds the S3 component's gRPC port (8333+10000 = 18333) to
+# 0.0.0.0 as well - there is no separate bind flag for it (`weed server -h`:
+# `-s3.ip.bind` is the only S3 bind option, and `-s3.port.grpc=0` falls back to
+# the default rather than disabling).
+#
+# That gRPC port serves `messaging_pb.SeaweedS3IamCache`, whose `PutIdentity`
+# RPC creates S3 identities. Measured against chrislusf/seaweedfs:4.45: an
+# UNAUTHENTICATED PutIdentity from a sibling container minted an identity with
+# ["Admin","Read","Write","List"], and that credential then created buckets and
+# listed/wrote every object over the ordinary S3 API. Neither `-s3.iam=false`
+# nor `-s3.iam.readOnly=true` (the default) nor `jwt.filer_signing.key` gates
+# it - each was measured and none refused the call.
+#
+# Enabling mTLS for [grpc.s3] makes that port demand a client certificate, so a
+# plaintext gRPC dial no longer completes. This restores invariant S2 (no admin
+# surface reachable from sibling containers) and protects S4 (the app holds
+# only a scoped credential and cannot escalate).
+#
+# Only the S3 component is listed here. master (9333), volume (8080), filer
+# (8888) and webdav (7333) - and their gRPC ports - are already bound to the
+# container's own loopback by `-ip.bind=127.0.0.1`, so no sibling can reach
+# them and they need no certificate of their own.
+#
+# The certificates are minted by the `storage-tls-init` one-shot into
+# ./seaweedfs/tls/. That one-shot DESTROYS the CA private key immediately after
+# signing, so no client certificate this CA would accept can ever be issued
+# again - the port is closed to everyone, which is the intent: nothing in this
+# stack is a legitimate client of the S3 gRPC port.
+#
+# This file carries no secret and is tracked in git. The key it points at is
+# generated at boot and is gitignored.
+
+[grpc]
+ca = "/etc/seaweedfs/tls/ca.crt"
+
+[grpc.s3]
+cert = "/etc/seaweedfs/tls/s3.crt"
+key = "/etc/seaweedfs/tls/s3.key"

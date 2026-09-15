@@ -1,5 +1,7 @@
 """Tests for storage/buckets.py."""
 
+import inspect
+
 import pytest
 
 from media_service.db_models.media_objects import MediaVisibility
@@ -40,3 +42,19 @@ def test_bucket_archive():
 def test_bucket_unknown_visibility_raises():
     with pytest.raises(KeyError):
         bucket_for_visibility("unknown")  # type: ignore[arg-type]
+
+
+def test_archive_storage_class_has_a_writer():
+    """`StorageClass.ARCHIVE` resolves a bucket somebody actually writes to.
+
+    `T28` (M27) measured `archive-media` as a bucket with no producing code
+    path; `T32` gave it one — the soft-delete cold move in
+    `ObjectsController.delete_object`. This pins the caller by name so the
+    tier cannot silently go back to being reserved-and-empty: if the writer
+    is removed, remove the storage class and the bucket with it.
+    """
+    from media_service.controllers import objects
+
+    writer = objects._archive_deleted_bytes
+    assert "bucket_for_storage_class(StorageClass.ARCHIVE)" in inspect.getsource(writer)
+    assert writer.__name__ in inspect.getsource(objects.ObjectsController.delete_object)

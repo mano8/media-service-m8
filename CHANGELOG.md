@@ -11,6 +11,411 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`archive-media` has a writer: the archive tier for soft-deleted originals**
+  (`T32-archive-media-writer`, migration plan Wave 5, answering `T28` Q2).
+  `DELETE /v1/objects/{id}` now cold-moves the original out of its visibility
+  bucket into `S3_BUCKET_ARCHIVE` — server-side copy, row repointed, source
+  copy dropped once the soft-delete has committed — where it waits out
+  `MEDIA_RETENTION_PURGE_DAYS` until the hard purge reclaims it from that
+  bucket (`hard_purge_expired` already deleted from the bucket *as stored*,
+  never re-derived from visibility, so no purge change was needed). Two
+  behaviours change for a caller: a **PUBLIC** object's bytes are no longer
+  destroyed on the spot — its known URL still goes dead the moment the source
+  copy is removed, but the bytes are now recoverable for the retention window
+  like every other visibility's — and the visibility buckets hold only live
+  objects. Archival is best-effort: a failed copy leaves the row pointing at
+  the bucket the bytes are really in (still consistent, still purgeable), and
+  public bytes are then removed from their URL exactly as before. Variants
+  are not moved. No new identity, versioning or Object Lock: the bucket stays
+  inside the `media-rw` five-bucket grant, and
+  `tests/test_storage_versioning_policy.py` still guards it. Guarded by the
+  rewritten delete suite in `tests/test_objects.py` (copy → commit → remove
+  ordering, both failure fallbacks), `test_reconcile_never_reclaims_an_archived_original`
+  (a `repair` sweep of `archive-media` leaves archived rows alone) and
+  `test_archive_storage_class_has_a_writer` (pins the named caller of
+  `bucket_for_storage_class(StorageClass.ARCHIVE)`); the `T23` live workflow
+  suite gains an archive-tier step (real cross-bucket move proved from
+  storage, then the purge reclaims it from `archive-media`).
+
+---
+
+## [3.0.0] — 2026-09-14 · MinIO → SeaweedFS backend swap, `S3_*` vocabulary only, filename trust boundary (`T34-service-3-0-0-drop-shim`)
+
+**Major.** Renumbered from the unreleased `2.3.0` heading dated 2026-09-13
+(`T26-changelog-release`) with everything that had accumulated under
+`[Unreleased]` since — the Garage alternate profile (`T27`), the versioning /
+Object Lock evaluation and its operator answers (`T28`, `T31`), the S3 gRPC
+IAM escalation fix (`T29`), the four closed deferred flags (`T30`) — folded
+in, per the workspace's one-bump-per-unpublished-release rule
+(`.workspace/context/version-sources.md`): the last published
+`media-service-m8` is **`2.1.0`**, and neither `2.1.1`, `2.2.0` nor `2.3.0`
+ever left the working tree. **Why a major:** the `MINIO_*` → `S3_*`
+deprecation shim `2.2.0` introduced is **removed** here rather than after a
+minor grace cycle (object-storage backend migration plan, Wave 7, revising
+its §9.3). The first published version that speaks `S3_*` is also the first
+that refuses `MINIO_*`, and a deployment upgrading from `2.1.0` must already
+swap its storage backend and rename two Docker secrets — an env-var rename on
+top of that is what a major is for. `CONTRACT_VERSION` stays `1.1` (the
+served HTTP surface is untouched by this whole plan); `CONTRACT_RANGE` moves
+to `>=3.0.0 <4.0.0`, tracking the package major exactly as the `1.0.0` and
+`2.0.0` cuts did. The folded text below is kept as written at each step;
+where a `T30` sentence described the shim as still present it now says so
+in the past tense.
+
+### Upgrade from 2.1.0
+
+In this order — each step assumes the one before it.
+
+1. **Swap the storage backend: MinIO → SeaweedFS 4.x, as a clean start.**
+   Every stack's storage block, bootstrap and Traefik route changed under
+   the `2.3.0` heading below; the ratified cutover for this fleet is new,
+   empty buckets (migration plan §9.1). The data-migration runbook
+   (`docker_compose/hardened_media_m8/DATA_MIGRATION_RUNBOOK.md`) and its
+   overlay stay tracked as a documented option for a deployment that must
+   carry objects over, and are not run otherwise.
+2. **Rename the storage settings in every env file** — `media.env`,
+   `worker.env`, `media.env.production`; the old names are refused at boot
+   (`extra_forbidden`), there is no warning path any more. `S3_ENDPOINT` is
+   a scheme-less `host[:port]` netloc, so the old host/port pair collapses
+   into one value.
+
+   | Removed (`2.1.0`)                    | Use instead (`3.0.0`)             |
+   |--------------------------------------|-----------------------------------|
+   | `MINIO_HOST` + `MINIO_PORT`          | `S3_ENDPOINT` (`host:port`)       |
+   | `MINIO_USE_SSL`                      | `S3_USE_SSL`                      |
+   | `MINIO_REGION`                       | `S3_REGION`                       |
+   | `MINIO_PUBLIC_ENDPOINT`              | `S3_PUBLIC_ENDPOINT`              |
+   | `MINIO_ACCESS_KEY` / `_FILE`         | `S3_ACCESS_KEY` / `_FILE`         |
+   | `MINIO_SECRET_KEY` / `_FILE`         | `S3_SECRET_KEY` / `_FILE`         |
+   | `MINIO_BUCKET_PUBLIC`                | `S3_BUCKET_PUBLIC`                |
+   | `MINIO_BUCKET_PRIVATE`               | `S3_BUCKET_PRIVATE`               |
+   | `MINIO_BUCKET_SENSITIVE`             | `S3_BUCKET_SENSITIVE`             |
+   | `MINIO_BUCKET_TEMP`                  | `S3_BUCKET_TEMP`                  |
+   | `MINIO_BUCKET_ARCHIVE`               | `S3_BUCKET_ARCHIVE`               |
+   | `MINIO_PRESIGNED_URL_EXPIRE_SECONDS` | `S3_PRESIGNED_URL_EXPIRE_SECONDS` |
+
+   The `media-worker-m8` that pairs with this release (`1.0.0`) takes the
+   same rename with no shim of its own.
+3. **Rename the two production Docker-secret files** (`T30`, under
+   **Changed** below): `./secrets/minio_access_key.txt` →
+   `s3_access_key.txt`, `./secrets/minio_secret_key.txt` →
+   `s3_secret_key.txt`, same contents, before the next
+   `docker compose … up`.
+4. **Move the client to `@mano8/astro-media-m8` `2.1.0` or later.** The
+   published `2.0.0` client's gate is `>=2.0.0 <3.0.0` and refuses a `3.x`
+   service on sight at `GET /media/meta`; `2.1.0` widens it to
+   `>=2.0.0 <4.0.0` (the contract is still `media-service-m8@1.1`, so the
+   client cut is a minor). Nothing else in the client changes.
+
+### Removed
+
+- **The `MINIO_*` → `S3_*` deprecation shim** (`media_service/core/config.py`,
+  `T34-service-3-0-0-drop-shim`, object-storage backend migration plan,
+  Wave 7). Gone: the fourteen `Optional` `MINIO_*` fields that existed only
+  so an unmigrated `.env` could load under `extra="forbid"`, the
+  `_LEGACY_S3_ALIASES` map and its two `_LEGACY_ENDPOINT_*` defaults, the
+  `_apply_legacy_minio_aliases` before-validator that translated and
+  warned, and the `MINIO_SECRET_KEY` entry in `secret_fields`. A stray
+  `MINIO_*` key in a `media.env` now fails at boot with pydantic's own
+  `extra_forbidden` error naming the key — the intended major-version
+  behaviour, with no softer path. `tests/test_storage_client.py` loses its
+  eight legacy-pair rows and `T30`'s default/legacy separation test and
+  gains `test_retired_storage_keys_are_refused` (four sampled names) and
+  `test_retired_storage_keys_are_not_fields`;
+  `tests/test_no_retired_backend_references.py` drops the shim vocabulary
+  from its allowed markers, so `config.py` is scanned like every other
+  file. `README.md`, `media_service/.example_env`, the data-migration
+  runbook's rollback note and the security matrix's S8 row no longer
+  describe the shim as present.
+
+### Added
+
+- **Garage 2.x alternate storage profile**
+  (`docker_compose/hardened_media_m8/docker-compose.garage.yml`,
+  object-storage backend migration plan, Wave 5 /
+  `T27-garage-alt-profile`). `docker compose -f docker-compose.yml -f
+  docker-compose.garage.yml up -d` swaps the ratified SeaweedFS default for
+  the validated Garage fallback (`.workspace/context/object-storage.md`)
+  without touching the Traefik storage route or any `S3_*` variable —
+  `container_name: storage` and port `8333` are unchanged. Bootstrap
+  (single-node layout, five buckets, the fixed `media-rw` keypair imported
+  rather than generated, per-bucket CORS) runs live via the `garage` CLI and
+  a new `storage-cors` one-shot; the RPC/cluster-administration port stays
+  loopback-bound (S2 parity with SeaweedFS), reached by the bootstrap
+  container sharing `storage`'s network namespace rather than a Docker
+  socket or an open admin port. `media-rw` is granted Owner (not just
+  Read/Write) because Garage requires it for `PutBucketCors`. Validated live
+  against a real `dxflrs/garage:v2.3.0` container while building this
+  profile (hardened boot under non-root/cap-drop-ALL/read-only, layout
+  apply, bucket create, key import, RWO grant, PutObject/GetBucketCors round
+  trip, RPC-unreachable-from-a-sibling). Not a required cutover path — Wave
+  5 is explicitly optional; SeaweedFS remains the default.
+
+- **Object versioning / Object Lock evaluation**
+  (`docker_compose/hardened_media_m8/VERSIONING_OBJECTLOCK_EVALUATION.md`,
+  object-storage backend migration plan, Wave 5 /
+  `T28-versioning-objectlock-eval`). A recommendation, not an
+  implementation: **do not enable object versioning or Object Lock** on any
+  media bucket today, measured against a throwaway `chrislusf/seaweedfs:4.45`
+  node (this stack's pin and boot flags) and `dxflrs/garage:v2.3.0`. The
+  conflict the step exists to state runs deeper than expected — the SDK's
+  `remove_object` deletes by key with no version id, so versioning *alone*,
+  with no lock configured, turns every delete this service performs into a
+  delete marker and makes the nightly hard purge report `purged=N` while
+  reclaiming nothing; the orphan reconciler cannot see the difference either,
+  since `ListObjectsV2` lists neither noncurrent versions nor delete-marked
+  keys. COMPLIANCE mode is rejected outright for personal data (measured: the
+  admin credential cannot delete a retained version even with the governance
+  bypass); GOVERNANCE is the only lock mode compatible with erasure (refused
+  to the scoped `media-rw` key, granted to the admin identity). Also recorded:
+  `media-rw` can enable/suspend versioning and release a legal hold (SeaweedFS
+  has no permission verb below `Write`), the `OP-08` `Content-Type` rewrite
+  stops being in-place under versioning, a stored `NoncurrentVersionExpiration`
+  lifecycle rule expires nothing here (no lifecycle worker runs in this stack),
+  Garage 2.3.0 answers `NotImplemented` to all of it (fallback parity would be
+  lost), and both evaluated buckets are empty today — `archive-media` has no
+  producing code path at all. Ships with
+  `tests/test_storage_versioning_policy.py` (6 tests), a static guard that
+  fails if any bootstrap or service path starts issuing these operations while
+  the recommendation stands.
+
+### Changed
+
+- **`media-sdk-m8` floor `>=0.8.0,<0.9.0` → `>=1.0.0,<2.0.0`**
+  (`media_service/requirements_base.txt`; `constraints.txt`,
+  `constraints-all.txt` and `media_service/requirements_prod.lock` re-locked
+  at `1.0.0`, `T34`). `1.0.0` is the stable cut of the same boto3-based,
+  provider-neutral `ObjectStorage` this service has used since `2.2.0`; no
+  call site changes. As with `0.8.0` at `T9`, **the floor is pinned ahead
+  of the index** — `media-sdk-m8@1.0.0` is not on PyPI until the fleet's
+  publish step (`T31`), so `pip install -r requirements_prod.lock` and the
+  Docker build resolve only against a local `../media-sdk-m8/dist` until
+  then.
+- **⚠️ Production overlay: the two storage-credential Docker secrets are
+  renamed `minio_access_key` / `minio_secret_key` → `s3_access_key` /
+  `s3_secret_key`** (`docker_compose/hardened_media_m8/docker-compose.production.yml`,
+  object-storage backend migration plan, Wave 6 / `T30-close-deferred-flags`).
+  They hold the scoped `media-rw` identity every application container signs
+  S3 with and never had anything to do with the retired backend; the ids now
+  match the `S3_ACCESS_KEY_FILE` / `S3_SECRET_KEY_FILE` variables they feed
+  and the `s3_root_user` / `s3_root_password` admin pair next to them.
+  **Upgrade step for an existing deployment:** rename the two files in
+  `./secrets/` — `minio_access_key.txt` → `s3_access_key.txt`,
+  `minio_secret_key.txt` → `s3_secret_key.txt` (same contents) — before the
+  next `docker compose … up`; nothing else changes. The overlay's operator
+  checklist repeats this. `media.env.production.example` /
+  `worker.env.production.example` follow. `tests/test_compose_secrets_policy.py`
+  now asserts the new ids and the absence of the old ones.
+- **`S3_ENDPOINT` defaults to `storage:8333`** instead of the retired
+  `minio:9000` (`media_service/core/config.py`). Every compose stack in the
+  fleet sets `S3_ENDPOINT` explicitly, so this is dead config in practice —
+  which is exactly why it survived three steps that each deferred it. The
+  `MINIO_*` deprecation shim's own two legacy constants stayed `minio` /
+  `9000` at that point (they reproduced the *old* field defaults for a
+  partial legacy config); they leave with the shim in this same release —
+  see **Removed** — and `tests/test_storage_client.py` now asserts the old
+  names are refused instead of asserting that separation.
+- **Garage alternate profile: `s3_api.s3_region` is rendered from `S3_REGION`
+  at boot** rather than tracked as a static `eu-west-1`. `garage/garage.toml`
+  becomes `garage/garage.toml.template` (`@S3_REGION@` placeholder) and the
+  profile's `storage-config` renders `garage/config/garage.toml`
+  (gitignored) from it — the same generate-before-boot shape the SeaweedFS
+  profile uses for `seaweedfs/config/s3.json` — failing closed on an empty or
+  non-`[a-z0-9-]` region. Measured live against `dxflrs/garage:v2.3.0`:
+  a request signed with the rendered region is a `200`; the same request
+  signed with the previous static value is a `400`
+  `AuthorizationHeaderMalformed` ("unexpected scope") — not the `403` the
+  plan expected, and one the aws-cli hides by re-signing through its region
+  redirector, which a browser on a presigned URL cannot do.
+- **Garage alternate profile: `GARAGE_RPC_SECRET` gets Docker-secret
+  `_FILE` wiring** via a new `docker-compose.garage.production.yml`
+  (`garage_rpc_secret` → `./secrets/garage_rpc_secret.txt`,
+  `GARAGE_RPC_SECRET_FILE` on `storage`, `storage-config`, `storage-init`;
+  `s3_access_key` / `s3_secret_key` on `storage-init` and `storage-cors`,
+  which the shared production overlay does not cover because under SeaweedFS
+  `storage-init` is admin-only and `storage-cors` does not exist). A separate
+  file, not three more lines in `docker-compose.production.yml`, so a
+  SeaweedFS deployment never has to provision a secret for a backend it does
+  not run. Garage refuses to start when both `GARAGE_RPC_SECRET` and
+  `GARAGE_RPC_SECRET_FILE` are present — an empty `GARAGE_RPC_SECRET=` line
+  in `.env` counts (measured) — so the overlay also takes `.env` off the two
+  services that run the Garage binary. Validated live through the full
+  four-file production merge.
+- Doc/vocabulary sweep with a grep as the acceptance test
+  (`tests/test_no_retired_backend_references.py`): no tracked file names
+  MinIO as the storage backend this fleet runs any more — `docker_compose/README.md`,
+  `docker_compose/SECURITY.md`, the top-level `README.md`,
+  `REPOSITORY_CONTEXT.md`, the `media.env*` "presign cache" headers, the CI
+  workflow comment, the API tests' fake presigned host and conftest
+  credentials all follow. Historical references (the migration itself, the
+  runbook, the security matrix) are the documented exceptions; the shim's
+  legacy vocabulary was one too until this release removed the shim, and
+  `config.py` is now scanned like every other file. `get_minio_client` is a
+  `media-sdk-m8`-owned name this repository only re-exports.
+- **Storage backend swapped from MinIO to `chrislusf/seaweedfs:4.45`**
+  across all four `docker_compose` stacks (`T15-storage-service-block`,
+  `T16-storage-bootstrap`, `T17-traefik-storage-route`,
+  `T18-compose-policy-tests`, `T19-image-pin-allowlist`,
+  `T20-dev-stacks-port`, object-storage backend migration plan, Wave 3). The
+  storage service is loopback-bound on every admin surface, non-root with
+  all capabilities dropped and a read-only root filesystem; bootstrap is
+  `storage-config` + `storage-init` (five buckets, non-wildcard per-bucket
+  `PutBucketCors`); Traefik forwards `Host(storage.*)` to
+  `http://storage:8333` with the two non-S3 paths (`/healthz`, `/status`)
+  denied at the proxy. No client-observable behaviour change at the S3
+  boundary — the SDK's `ObjectStorage` (boto3, since `2.2.0`'s companion
+  `media-sdk-m8@0.8.0`) speaks the same protocol to either backend, proven
+  by the `T1` conformance harness (20/20) against both.
+- **Acceptance proven live end-to-end** (`T23-live-e2e`): browser-direct POST
+  upload, scan gating both ways, variant generation, share links, a
+  cross-bucket visibility move, archive export, orphan reconcile and
+  hard-purge, 40/40 against the migrated `hardened_media_m8` stack, now a
+  durable opt-in pytest module
+  (`docker_compose/shared_live_tests/tests/live_storage/test_storage_workflow_live.py`).
+- **Security regression matrix signed off S1-S15, 15/15 green, no amber**
+  (`T24-security-regression-matrix`), recorded in
+  `docker_compose/hardened_media_m8/SECURITY_REGRESSION_MATRIX.md` against
+  the live migrated stack, with a 34-test opt-in live module re-running the
+  wire-level rows.
+- **Data-migration runbook published** (`T25-data-migration-runbook`):
+  `docker_compose/hardened_media_m8/DATA_MIGRATION_RUNBOOK.md` plus a
+  `docker-compose.migration.yml` overlay and `verify_migration_digests.py`,
+  every command exercised for real against a frozen MinIO and the live
+  SeaweedFS stack. Running the migration remains the operator's own call
+  (§9.1 of the migration plan); nothing in this release runs it
+  automatically.
+
+### Security
+
+- **Closed an unauthenticated privilege escalation at the storage backend's
+  gRPC port, and two undeclared HTTP listeners beside it** (all 7 compose
+  stacks across `media-service-m8` and `fa-ui-m8`; object-storage backend
+  migration plan, follow-up to `T24-security-regression-matrix`).
+
+  `-s3.ip.bind=0.0.0.0` is what makes the S3 gateway (8333) reachable from
+  Traefik and the app containers. It also binds the S3 component's **gRPC**
+  port (8333 + 10000 = 18333), and SeaweedFS offers no flag to separate the
+  two (`-s3.port.grpc=0` falls back to the default). That port serves
+  `messaging_pb.SeaweedS3IamCache`, whose `PutIdentity` RPC creates S3
+  identities. Measured against the pinned `chrislusf/seaweedfs:4.45`: an
+  **unauthenticated** `PutIdentity` issued from an ordinary sibling container
+  minted an identity carrying `["Admin","Read","Write","List"]`, and that
+  credential then created buckets and read and wrote objects over the
+  ordinary S3 API — a complete escape from the scoped `media-rw` grant that
+  invariant **S4** exists to enforce, and a breach of **S2**. Every service on
+  `app_net` or `data_net` could reach it, `prometheus` and `grafana`
+  included. Neither `-s3.iam=false`, nor `-s3.iam.readOnly=true` (already the
+  default), nor `jwt.filer_signing.key` refused the call — each was measured.
+
+  Closed by enabling gRPC mTLS on the S3 component only
+  (`seaweedfs/security.toml`, `[grpc.s3]`), which is the one lever that
+  refuses the dial. A new `storage-tls-init` one-shot mints a throwaway CA,
+  signs one server certificate and then **destroys the CA private key**, so no
+  client certificate that port would accept can ever be issued; nothing in
+  these stacks is a legitimate client of it. The master/volume/filer/webdav
+  gRPC ports need no certificate — `-ip.bind=127.0.0.1` already keeps them on
+  the container's own loopback.
+
+  The same `-s3.ip.bind=0.0.0.0` also published two servers SeaweedFS 4.x
+  starts by default and this fleet does not use: the **Iceberg REST catalog**
+  (8181) and the **Lance namespace server** (9101), both reachable from every
+  sibling. `/v1/config` on the Iceberg port answered `200` unauthenticated.
+  Both are now switched off at the listener with `-s3.port.iceberg=0` and
+  `-s3.port.lance=0`.
+
+  The original `T24` walk of S2 missed all three because it probed only the
+  ports the MinIO-era topology had (`9333`, `8080`, `8888`, `7333` and their
+  `+10000` gRPC siblings); `SECURITY_REGRESSION_MATRIX.md`'s S2 row is
+  re-measured and says so. Guarded going forward by
+  `TestStorageExtraListenersClosed` in both repos' compose-policy suites (6
+  tests × 4 stacks in `media-service-m8`, × 3 in `fa-ui-m8`) and by a new
+  opt-in live probe,
+  `shared_live_tests/tests/live_storage/test_storage_admin_surface_live.py`,
+  which asserts from a sibling container that only 8333 answers and that an
+  unauthenticated `PutIdentity` fails — 11 passed against the fixed stack and
+  3 failed against a deliberately unfixed node, so it is not vacuous. The
+  Garage alternate profile was checked the same way and was already clean
+  (only 8333 reachable; RPC loopback-bound, no admin API enabled).
+- **Client-supplied filenames are validated at the trust boundary** —
+  `media_service/core/validation.py` gains one portable-filename policy,
+  `validate_filename` / `sanitize_filename`, and every place a name enters
+  the system applies it: `POST /media/v1/uploads/initiate` and
+  `PATCH /media/v1/objects/{id}` **refuse with `422`** a name that is empty
+  or all dots, longer than 255 characters, carries a path separator (`/`
+  `\`), one of `< > : " | ? *`, or any Unicode "Other" code point — C0/DEL
+  controls (NUL, CR/LF: header and key injection), format characters
+  (zero-width joiners and the bidi overrides such as U+202E that make
+  `photo<U+202E>gnp.exe` display as `photo.exe.png`), surrogates, private-use
+  and unassigned — and are NFC-normalised and trimmed otherwise; the archive
+  import path (`POST /media/v1/transfer/import`, whose manifest names are data
+  rather than typed) **normalises** onto the same rules instead of refusing
+  the document (path dropped, forbidden characters → `_`, `file` when nothing
+  is left). `;`, `%`, `#`, spaces, quotes-as-apostrophes and non-ASCII letters
+  stay allowed. The sink encoders are unchanged and stay as defence in depth:
+  `_safe_content_disposition` for the header, `_safe_filename` for zip
+  entries, and the new key rule below for the URL path. **Behaviour change:**
+  a client that previously uploaded `what?.png` or `a:b.pdf` now gets a `422`
+  naming the offending characters; rename and retry. Existing rows are not
+  rewritten. 1304 unit tests, 100% coverage; proven live on the migrated
+  hardened stack (`tests/live_storage/test_storage_invariants_live.py`
+  `test_f1_forbidden_filename_is_refused_at_the_boundary`, 5 cases: traversal,
+  `?`, U+202E, CR/LF, `<>` → all `422` before any presigned URL is minted).
+
+### Fixed
+
+- **The Garage alternate profile did not boot through compose as shipped
+  in `T27`.** Three defects, each found by actually running
+  `docker compose -f docker-compose.yml -f docker-compose.garage.yml up`
+  while re-validating item 4 above: (1) `volumes: !reset` followed by a list
+  merges to *null* under Compose v2 (`!override` is the tag that replaces),
+  so `storage` had no data or config mount at all; (2) `dxflrs/garage` is a
+  `FROM scratch` image whose only file is `/garage`, so the shell-scripted
+  `storage-init` failed with `exec: "/bin/sh": no such file or directory` —
+  a new `storage-tools` one-shot (`busybox:1.37.0-musl`, `command: true`)
+  seeds a named volume `garage_tools` with busybox's static applet tree and
+  `storage-init` runs its unchanged CLI script through `/tools/bin/sh`; (3)
+  `storage-cors` never loaded `.env`, where `S3_CORS_ALLOW_ORIGIN` lives, and
+  exited 1 on every boot. Also removed from `storage-init`: a dead,
+  `|| true`-guarded loop that tried to run `garage bucket website --allow`
+  on all five buckets — that would publish them for anonymous read through
+  Garage's web endpoint, which `FORBIDDEN_OPERATIONS` rules out.
+  `tests/test_compose_garage_profile.py` grows from 16 to 33 tests covering
+  all of the above; the profile was then re-validated end to end (layout,
+  key import, five buckets, RWO grants, CORS on all five, S3 `PUT`/`LIST`
+  round trip) with and without the production overlays.
+- `media_service/Dockerfile`'s post-install import guard still imported
+  `minio`, which `T9-consumers-repin` dropped from the requirements — the
+  production image build would have failed on that line. It now imports
+  `boto3` / `botocore`, the client the SDK actually uses. `.dockerignore`
+  also learns the SeaweedFS/Garage runtime directories and `secrets/`.
+- **Download and share links were dead for filenames containing `;` `%`
+  `#` (or `?`)** — `T24-security-regression-matrix`'s finding **F1**,
+  pre-existing and backend-independent: `storage/keys.py` embedded the
+  original filename verbatim in the object key, the presigned GET put that
+  key in the URL path percent-encoded (`%3B` `%25` `%23` `%3F`), and every
+  stack's Traefik `encodedCharacters` hardening (on `main` since
+  2026-06-12) answered `400` before storage saw the request, so such an
+  object uploaded fine (the key is a POST form field) but could never be
+  fetched. `build_object_key` / `build_variant_key` now route the name
+  through `_key_segment`, which replaces `;` `%` `?` `#` and any C0/DEL
+  control character with `_` — the served filename comes from
+  `original_filename`, never from the key, so nothing a client sees changes.
+  `tests/test_storage_keys.py` couples the rule to the shipped configs: it
+  parses every `docker_compose/*/traefik/traefik.yml` `encodedCharacters`
+  block and fails if a key could ever carry a character a stack refuses
+  encoded. Proven live: `test_f1_reserved_characters_in_filename_download_
+  through_the_route` uploads `t24;v2.png`, `t24 100%.png`, `t24 #1.png` and
+  fetches each through the real Traefik route over a raw TLS socket → `200`
+  with the original name in `Content-Disposition` (was `400`). Keys already
+  stored under such names are not rewritten; the data-migration runbook's
+  pre-flight query (`DATA_MIGRATION_RUNBOOK.md`, step 1.4) counts them.
+
+---
+
 ## [2.2.0] — 2026-09-06 · S3-neutral storage configuration vocabulary
 
 **Minor, additive-with-deprecation.** The storage settings are renamed after

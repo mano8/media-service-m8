@@ -89,7 +89,8 @@ examples/docker_compose/shared_live_tests/
 │   ├── conftest.py
 │   └── test_full_security.py
 └── tests/live_storage/
-    └── test_storage_workflow_live.py
+    ├── test_storage_workflow_live.py
+    └── test_storage_invariants_live.py
 ```
 
 `tests/live_storage/test_storage_workflow_live.py` is a second, independent
@@ -103,6 +104,20 @@ skipped by default without them. It lives outside `tests/live/` because
 session start regardless of which files are collected; if that preflight
 isn't satisfied for your stack, run this one standalone:
 `pytest tests/live_storage -p no:security_tests_m8`.
+
+`tests/live_storage/test_storage_invariants_live.py` is the wire-level half
+of the storage security regression matrix
+(`hardened_media_m8/SECURITY_REGRESSION_MATRIX.md`): S3, S4, S5, S6, S9, S10,
+S11 and S12 each proven from the storage server's own status line, S3 error
+code or response header against a running stack — server-side
+`content-length-range` and exact `Content-Type` rejection of the app-minted
+POST policy, `response-content-disposition: attachment` on the app's download
+URL (with a negative control and a hostile filename), ranged `206`, unsigned
+`403` on every bucket, the scoped credential denied outside its five buckets,
+per-bucket CORS, and the Traefik route's TLS/Host/liveness-path posture. Same
+opt-in gate and `STORAGE_LIVE_TEST_*` variables as the workflow suite (plus
+`STORAGE_LIVE_TEST_CORS_ORIGIN` and `STORAGE_LIVE_TEST_STORAGE_HTTP_BASE`,
+documented in its docstring).
 
 ## Start The Hardened Stack
 

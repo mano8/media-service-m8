@@ -25,7 +25,7 @@ _COMPOSE_DIR = Path(__file__).parent.parent / "docker_compose"
 _HARDENED = _COMPOSE_DIR / "hardened_media_m8" / "docker-compose.yml"
 _DEV = _COMPOSE_DIR / "dev_media_m8" / "docker-compose.yml"
 
-# Matches a bare image name with no tag (e.g. "alpine", "quay.io/minio/minio").
+# Matches a bare image name with no tag (e.g. "alpine", "chrislusf/seaweedfs").
 _BARE_IMAGE_RE = re.compile(r"^[^:@]+$")
 # Matches the :latest pseudo-tag.
 _LATEST_RE = re.compile(r":latest$", re.IGNORECASE)

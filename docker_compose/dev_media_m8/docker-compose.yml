@@ -167,6 +167,55 @@ services:
   # the app key, and any value that cannot be embedded verbatim in JSON all
   # abort the boot rather than producing a table that silently grants the wrong
   # thing.
+  # One-shot: mint the certificate that locks the S3 gRPC port.
+  #
+  # `-s3.ip.bind=0.0.0.0` (below) is what publishes the S3 gateway on 8333 to
+  # the app containers. SeaweedFS binds the S3 component's gRPC port
+  # (8333+10000 = 18333) to the same address and offers no flag to separate
+  # them, and that port serves an IAM service whose PutIdentity RPC mints S3
+  # identities. Measured on this exact pinned image, an UNAUTHENTICATED
+  # PutIdentity from a sibling container produced a working `Admin` credential.
+  #
+  # mTLS on that port (seaweedfs/security.toml) is the only lever that refuses
+  # it. This one-shot generates a throwaway CA, signs one server certificate
+  # with it, then DELETES THE CA KEY - so no client certificate the port would
+  # accept can ever be minted. Nothing in this stack is a legitimate client of
+  # the S3 gRPC port, so closing it to everyone is the intent.
+  #
+  # Idempotent: regenerates only when the certificate is missing or has less
+  # than 30 days left.
+  storage-tls-init:
+    image: alpine:3.21.3
+    volumes:
+      - ./seaweedfs/tls:/tls
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        CRT=/tls/s3.crt; KEY=/tls/s3.key; CA=/tls/ca.crt
+        apk add --no-cache --quiet openssl
+        if [ -f "$$CRT" ] && [ -f "$$KEY" ] && [ -f "$$CA" ] && openssl x509 -in "$$CRT" -noout -checkend 2592000 >/dev/null 2>&1; then
+          echo "==> storage-tls-init: S3 gRPC certificate present and valid, skipping"
+          exit 0
+        fi
+        echo "==> storage-tls-init: minting the S3 gRPC mTLS certificate"
+        umask 077
+        rm -f /tls/ca.crt /tls/ca.key /tls/ca.srl /tls/s3.crt /tls/s3.key /tls/s3.csr /tls/ext.cnf
+        openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout /tls/ca.key -out /tls/ca.crt -subj "/CN=seaweedfs-s3-grpc-ca"
+        openssl req -newkey rsa:2048 -nodes -keyout /tls/s3.key -out /tls/s3.csr -subj "/CN=storage-s3"
+        echo "extendedKeyUsage=serverAuth,clientAuth" > /tls/ext.cnf
+        openssl x509 -req -in /tls/s3.csr -CA /tls/ca.crt -CAkey /tls/ca.key -CAcreateserial -days 3650 -out /tls/s3.crt -extfile /tls/ext.cnf
+        # The CA private key is the only thing that could ever mint a client
+        # certificate this port would accept. Destroy it.
+        rm -f /tls/ca.key /tls/ca.srl /tls/s3.csr /tls/ext.cnf
+        # The storage server runs as uid/gid 1000 and mounts /tls read-only.
+        chown 1000:1000 /tls/ca.crt /tls/s3.crt /tls/s3.key
+        chmod 644 /tls/ca.crt /tls/s3.crt
+        chmod 640 /tls/s3.key
+        echo "==> storage-tls-init: certificate minted, CA key destroyed"
+    restart: "no"
+
   storage-config:
     image: alpine:3.21.3
     env_file:
@@ -318,6 +367,13 @@ services:
     volumes:
       - ./seaweedfs/data:/data
       - ./seaweedfs/config:/etc/seaweedfs/config:ro
+      # gRPC mTLS material for the S3 component. `-s3.ip.bind=0.0.0.0` binds
+      # the S3 gRPC port (18333) as well as the S3 gateway (8333) and there is
+      # no flag to separate them; that port's IAM service mints identities and
+      # was measured accepting an UNAUTHENTICATED PutIdentity on this image.
+      # security.toml turns it into an mTLS port whose CA key no longer exists.
+      - ./seaweedfs/tls:/etc/seaweedfs/tls:ro
+      - ./seaweedfs/security.toml:/etc/seaweedfs/security.toml:ro
     command:
       - server
       - -dir=/data
@@ -327,8 +383,16 @@ services:
       - -ip.bind=127.0.0.1
       - -s3.ip.bind=0.0.0.0
       - -s3.config=/etc/seaweedfs/config/s3.json
+      # SeaweedFS 4.x starts an Iceberg REST catalog (8181) and a Lance
+      # namespace server (9101) by default, and BOTH bind 0.0.0.0 - they were
+      # reachable from every sibling container. This stack is a plain S3 media
+      # store and uses neither, so both are switched off at the listener.
+      - -s3.port.iceberg=0
+      - -s3.port.lance=0
     depends_on:
       storage-config:
+        condition: service_completed_successfully
+      storage-tls-init:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8333/healthz"]
@@ -528,7 +592,7 @@ services:
   # repo, not under this stack). Only the .env file is mounted, matching the
   # media_service pattern.
   media_worker:
-    image: tepochtli/media-worker-m8:0.4.1
+    image: tepochtli/media-worker-m8:1.0.0
     security_opt:
       - no-new-privileges:true
     cap_drop:
