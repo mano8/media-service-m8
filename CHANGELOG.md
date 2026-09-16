@@ -13,37 +13,9 @@ All notable changes to `media-service-m8` are documented here.
 
 ## [Unreleased]
 
-### Added
-
-- **`archive-media` has a writer: the archive tier for soft-deleted originals**
-  (`T32-archive-media-writer`, migration plan Wave 5, answering `T28` Q2).
-  `DELETE /v1/objects/{id}` now cold-moves the original out of its visibility
-  bucket into `S3_BUCKET_ARCHIVE` — server-side copy, row repointed, source
-  copy dropped once the soft-delete has committed — where it waits out
-  `MEDIA_RETENTION_PURGE_DAYS` until the hard purge reclaims it from that
-  bucket (`hard_purge_expired` already deleted from the bucket *as stored*,
-  never re-derived from visibility, so no purge change was needed). Two
-  behaviours change for a caller: a **PUBLIC** object's bytes are no longer
-  destroyed on the spot — its known URL still goes dead the moment the source
-  copy is removed, but the bytes are now recoverable for the retention window
-  like every other visibility's — and the visibility buckets hold only live
-  objects. Archival is best-effort: a failed copy leaves the row pointing at
-  the bucket the bytes are really in (still consistent, still purgeable), and
-  public bytes are then removed from their URL exactly as before. Variants
-  are not moved. No new identity, versioning or Object Lock: the bucket stays
-  inside the `media-rw` five-bucket grant, and
-  `tests/test_storage_versioning_policy.py` still guards it. Guarded by the
-  rewritten delete suite in `tests/test_objects.py` (copy → commit → remove
-  ordering, both failure fallbacks), `test_reconcile_never_reclaims_an_archived_original`
-  (a `repair` sweep of `archive-media` leaves archived rows alone) and
-  `test_archive_storage_class_has_a_writer` (pins the named caller of
-  `bucket_for_storage_class(StorageClass.ARCHIVE)`); the `T23` live workflow
-  suite gains an archive-tier step (real cross-bucket move proved from
-  storage, then the purge reclaims it from `archive-media`).
-
 ---
 
-## [3.0.0] — 2026-09-14 · MinIO → SeaweedFS backend swap, `S3_*` vocabulary only, filename trust boundary (`T34-service-3-0-0-drop-shim`)
+## [3.0.0] — 2026-09-16 · MinIO → SeaweedFS backend swap, `S3_*` vocabulary only, filename trust boundary (`T34-service-3-0-0-drop-shim`)
 
 **Major.** Renumbered from the unreleased `2.3.0` heading dated 2026-09-13
 (`T26-changelog-release`) with everything that had accumulated under
@@ -53,18 +25,20 @@ IAM escalation fix (`T29`), the four closed deferred flags (`T30`) — folded
 in, per the workspace's one-bump-per-unpublished-release rule
 (`.workspace/context/version-sources.md`): the last published
 `media-service-m8` is **`2.1.0`**, and neither `2.1.1`, `2.2.0` nor `2.3.0`
-ever left the working tree. **Why a major:** the `MINIO_*` → `S3_*`
-deprecation shim `2.2.0` introduced is **removed** here rather than after a
-minor grace cycle (object-storage backend migration plan, Wave 7, revising
-its §9.3). The first published version that speaks `S3_*` is also the first
-that refuses `MINIO_*`, and a deployment upgrading from `2.1.0` must already
-swap its storage backend and rename two Docker secrets — an env-var rename on
-top of that is what a major is for. `CONTRACT_VERSION` stays `1.1` (the
-served HTTP surface is untouched by this whole plan); `CONTRACT_RANGE` moves
-to `>=3.0.0 <4.0.0`, tracking the package major exactly as the `1.0.0` and
-`2.0.0` cuts did. The folded text below is kept as written at each step;
-where a `T30` sentence described the shim as still present it now says so
-in the past tense.
+ever left the working tree. The `archive-media` writer (`T32`) landed after
+the 2026-09-14 recut and is folded under the same heading on 2026-09-16 by
+that rule, since `3.0.0` had still not been published. **Why a major:** the
+`MINIO_*` → `S3_*` deprecation shim `2.2.0` introduced is **removed** here
+rather than after a minor grace cycle (object-storage backend migration
+plan, Wave 7, revising its §9.3). The first published version that speaks
+`S3_*` is also the first that refuses `MINIO_*`, and a deployment upgrading
+from `2.1.0` must already swap its storage backend and rename two Docker
+secrets — an env-var rename on top of that is what a major is for.
+`CONTRACT_VERSION` stays `1.1` (the served HTTP surface is untouched by this
+whole plan); `CONTRACT_RANGE` moves to `>=3.0.0 <4.0.0`, tracking the
+package major exactly as the `1.0.0` and `2.0.0` cuts did. The folded text
+below is kept as written at each step; where a `T30` sentence described the
+shim as still present it now says so in the past tense.
 
 ### Upgrade from 2.1.0
 
@@ -134,6 +108,31 @@ In this order — each step assumes the one before it.
 
 ### Added
 
+- **`archive-media` has a writer: the archive tier for soft-deleted originals**
+  (`T32-archive-media-writer`, migration plan Wave 5, answering `T28` Q2).
+  `DELETE /v1/objects/{id}` now cold-moves the original out of its visibility
+  bucket into `S3_BUCKET_ARCHIVE` — server-side copy, row repointed, source
+  copy dropped once the soft-delete has committed — where it waits out
+  `MEDIA_RETENTION_PURGE_DAYS` until the hard purge reclaims it from that
+  bucket (`hard_purge_expired` already deleted from the bucket *as stored*,
+  never re-derived from visibility, so no purge change was needed). Two
+  behaviours change for a caller: a **PUBLIC** object's bytes are no longer
+  destroyed on the spot — its known URL still goes dead the moment the source
+  copy is removed, but the bytes are now recoverable for the retention window
+  like every other visibility's — and the visibility buckets hold only live
+  objects. Archival is best-effort: a failed copy leaves the row pointing at
+  the bucket the bytes are really in (still consistent, still purgeable), and
+  public bytes are then removed from their URL exactly as before. Variants
+  are not moved. No new identity, versioning or Object Lock: the bucket stays
+  inside the `media-rw` five-bucket grant, and
+  `tests/test_storage_versioning_policy.py` still guards it. Guarded by the
+  rewritten delete suite in `tests/test_objects.py` (copy → commit → remove
+  ordering, both failure fallbacks), `test_reconcile_never_reclaims_an_archived_original`
+  (a `repair` sweep of `archive-media` leaves archived rows alone) and
+  `test_archive_storage_class_has_a_writer` (pins the named caller of
+  `bucket_for_storage_class(StorageClass.ARCHIVE)`); the `T23` live workflow
+  suite gains an archive-tier step (real cross-bucket move proved from
+  storage, then the purge reclaims it from `archive-media`).
 - **Garage 2.x alternate storage profile**
   (`docker_compose/hardened_media_m8/docker-compose.garage.yml`,
   object-storage backend migration plan, Wave 5 /
