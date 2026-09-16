@@ -15,6 +15,48 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [3.0.1] — 2026-09-16 · hard purge takes an image's variants with it
+
+**Bug fix.** `POST /media/v1/admin/maintenance/purge-expired` (and the
+scheduled `hard_purge_expired` cron behind it) answered **500** for any
+soft-deleted object that had ever had a variant generated — in practice,
+every purgeable image. `media_variant` and `variant_job` reference
+`media_object` without `ON DELETE CASCADE` (share tokens and category links
+have it), so deleting the parent row was a foreign-key violation on
+PostgreSQL. The unit suite runs on SQLite, which does not enforce foreign
+keys unless asked, and the only live purge ever measured (`T23`, 2026-09-13)
+purged the quarantined EICAR upload, which has no variants. Found by the
+first live run of the workflow suite against the **published** `3.0.0`
+image (`T31-operator-closeout`, Wave 8 of the object-storage backend
+migration plan), once that suite's archive/purge subject became the clean
+PNG. Served contract unchanged: `CONTRACT_VERSION` `1.1`, `CONTRACT_RANGE`
+`>=3.0.0 <4.0.0`; `astro-media-m8`'s `>=2.0.0 <4.0.0` gate already admits it.
+
+### Fixed
+
+- `MaintenanceController.hard_purge_expired` now deletes each purged
+  object's `MediaVariant` and `VariantJob` rows before the object row,
+  flushing the children first. Variant bytes are removed from storage the
+  same best-effort way as the original — from `variant.storage_bucket` /
+  `variant.object_key` as stored — rather than left behind as orphans that
+  `reconcile_orphans` never matches (it keys on `MediaObject` rows only, the
+  blind spot `T32` recorded). The `media.hard_purge` log line gains
+  `variants` / `variant_jobs` counts.
+- `tests/test_maintenance.py::test_hard_purge_takes_variants_and_variant_jobs_with_the_original`
+  pins it with SQLite foreign-key enforcement switched on, the same way
+  `test_hard_purge_cascades_share_tokens` does — it fails with
+  `FOREIGN KEY constraint failed` on the `3.0.0` controller.
+- `docker_compose/shared_live_tests/tests/live_storage/test_storage_workflow_live.py`
+  steps 8–9 (archive tier, hard purge) now target the clean PUBLIC original
+  instead of the quarantined upload: the worker already removed the
+  quarantined bytes at scan time, so its archive copy was a documented
+  best-effort no-op and the step could never have passed. The quarantined
+  object's soft-delete is kept as its own assertion (`204`, nothing lands in
+  `archive-media`), and the PUBLIC delete is additionally proved to kill the
+  world-readable URL on the spot while the bytes survive in the archive tier.
+
+---
+
 ## [3.0.0] — 2026-09-16 · MinIO → SeaweedFS backend swap, `S3_*` vocabulary only, filename trust boundary (`T34-service-3-0-0-drop-shim`)
 
 **Major.** Renumbered from the unreleased `2.3.0` heading dated 2026-09-13
