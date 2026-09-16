@@ -55,6 +55,15 @@ PNG. Served contract unchanged: `CONTRACT_VERSION` `1.1`, `CONTRACT_RANGE`
   `archive-media`), and the PUBLIC delete is additionally proved to kill the
   world-readable URL on the spot while the bytes survive in the archive tier.
 
+### Changed
+
+- Compose pins `tepochtli/media-service-m8` `3.0.0` → `3.0.1` at the five
+  tracked sites (`docker_compose/hardened_media_m8/docker-compose.yml` ×2,
+  its `README.md` ×2, `docker_compose/README.md` stack-index row), with
+  `fa-ui-m8`'s three stacks and pin fixture moved in step — the fleet's
+  write-then-verify convention: pins first, the image tag is the operator's
+  act, `version-sources.md` rows flip once the registry serves it.
+
 ---
 
 ## [3.0.0] — 2026-09-16 · MinIO → SeaweedFS backend swap, `S3_*` vocabulary only, filename trust boundary (`T34-service-3-0-0-drop-shim`)
