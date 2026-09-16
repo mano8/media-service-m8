@@ -154,10 +154,12 @@ class TestGarageProfileShape:
         self, overlay: dict, base: dict
     ):
         storage = overlay["storage"]
-        # container_name is deliberately left for the base file to supply
-        # (unchanged from SeaweedFS's "storage") — asserted on the base file
-        # instead of repeated here.
-        assert base["storage"]["container_name"] == "storage"
+        # Neither file sets container_name: the base dropped it (W0.4, so two
+        # projects on one host never collide on the literal name) and DNS
+        # goes through the compose service name `storage`, which the overlay
+        # keeps. Asserted on both so a reintroduction is caught either side.
+        assert "container_name" not in base["storage"]
+        assert "container_name" not in storage
         assert storage["command"] == [
             "/garage",
             "-c",

@@ -9,7 +9,8 @@
 # Every other service, the Traefik storage route (traefik/dynamic_conf.yml,
 # `http://storage:8333`), and every S3_* var in media.env/worker.env are
 # UNCHANGED (S3_REGION included: storage-config renders it into the Garage
-# config at boot, so the region is fixed in exactly one place, media.env): `container_name: storage` and port 8333 both stay put, so
+# config at boot, so the region is fixed in exactly one place, media.env):
+# the service name `storage` and port 8333 both stay put, so
 # nothing downstream of the storage boundary can tell which backend is
 # running. That is the architectural claim of the migration plan's §3 made
 # demonstrable — switching backends is a `compose -f` swap, not a code

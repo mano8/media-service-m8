@@ -140,7 +140,7 @@ In this order — each step assumes the one before it.
   docker-compose.garage.yml up -d` swaps the ratified SeaweedFS default for
   the validated Garage fallback (`.workspace/context/object-storage.md`)
   without touching the Traefik storage route or any `S3_*` variable —
-  `container_name: storage` and port `8333` are unchanged. Bootstrap
+  the service name `storage` and port `8333` are unchanged. Bootstrap
   (single-node layout, five buckets, the fixed `media-rw` keypair imported
   rather than generated, per-bucket CORS) runs live via the `garage` CLI and
   a new `storage-cors` one-shot; the RPC/cluster-administration port stays
@@ -366,6 +366,29 @@ In this order — each step assumes the one before it.
 
 ### Fixed
 
+- **`requirements_prod.lock` carried a pre-publish hash for
+  `media-sdk-m8 1.0.0`.** The `T34` lock was compiled against a locally
+  built wheel (`--find-links ../../media-sdk-m8/dist`); the wheel that
+  actually reached PyPI on 2026-09-15 was rebuilt and hashes differently,
+  so every `--require-hashes` image build — the `trivy-image` CI job
+  included — failed at `pip install` with a hash mismatch. Recompiled with
+  the documented `pip-compile --generate-hashes --no-emit-index-url`
+  invocation and no `--find-links`, so the lock now pins the published
+  wheel and sdist. The same recompile brings `fastapi-m8` to `4.5.1` and
+  `auth-sdk-m8` to `3.2.0`, which `requirements_base.txt` and
+  `constraints.txt` had already required since `W3.2` — the lock had been
+  left behind. Verified by `pip download --require-hashes` over all 61
+  pins and a real `--target builder` image build.
+- **`tests/test_compose_garage_profile.py` asserted a `container_name` the
+  base stack no longer sets.** `W0.4` dropped `container_name: storage`
+  from every stack so two projects on one host cannot collide on the
+  literal name (DNS goes through the compose service name), while the
+  `T27` Garage test — written on the other branch — still asserted it on
+  the base file; the merge of the two branches never re-ran the suite. The
+  test now asserts the field is absent from both files, and the three
+  places that still said `container_name: storage` stays put (the overlay
+  header, the hardened README, the `T27` entry above) say *service name*
+  `storage` instead.
 - **The Garage alternate profile did not boot through compose as shipped
   in `T27`.** Three defects, each found by actually running
   `docker compose -f docker-compose.yml -f docker-compose.garage.yml up`

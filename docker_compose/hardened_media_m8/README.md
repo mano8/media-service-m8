@@ -258,7 +258,7 @@ and Garage 2.x as the validated fallback. `docker-compose.garage.yml` makes
 that swap real instead of theoretical: it overrides `storage`, `storage-config`
 and `storage-init` with Garage 2.x equivalents (plus two new one-shots,
 `storage-tools` and `storage-cors` — see below) and changes nothing else.
-`container_name: storage` and port `8333` are unchanged, so the Traefik route
+The service name `storage` and port `8333` are unchanged, so the Traefik route
 and every `S3_*` variable in `media.env`/`worker.env` need no edit —
 `S3_REGION` included, which `storage-config` renders into the Garage config
 at boot.
