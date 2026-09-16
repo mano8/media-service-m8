@@ -2,9 +2,9 @@
 
 Local hardened stack for `auth_user_service` + `media_service`.
 
-Includes PostgreSQL 18, two Redis instances (auth + media), MinIO, Traefik,
-Prometheus, Grafana, RS256/JWKS auth integration, hardened containers, and
-network segmentation.
+Includes PostgreSQL 18, two Redis instances (auth + media), SeaweedFS S3
+storage, Traefik, Prometheus, Grafana, RS256/JWKS auth integration, hardened
+containers, and network segmentation.
 
 Use this example while developing the media microservice. Other compose examples
 are intentionally not aligned until this one is working.
@@ -24,11 +24,11 @@ Browser / Frontend
        +--> PostgreSQL on data_net
        +--> auth_user_service private API (HTTP introspection) for token revocation
        +--> Media Redis on data_net for media queues/rate limits/cache
-       +--> MinIO on data_net
+       +--> Object storage (SeaweedFS S3) on data_net
 ```
 
 `app_net` is external-facing for Traefik, app services, and observability.
-`data_net` is internal and has no gateway; DB, Redis, and MinIO are not exposed
+`data_net` is internal and has no gateway; DB, Redis, and storage are not exposed
 through that network.
 
 > **Token revocation:** the media service does **not** connect to the auth
@@ -41,16 +41,18 @@ through that network.
 | Service | Image/build | Local access |
 | --- | --- | --- |
 | traefik | `traefik:v3.7.5` | `:8000`, `:4430`, `127.0.0.1:9000`, `127.0.0.1:8080` |
-| auth_user_service | `tepochtli/fa-auth-m8:2.0.2` | `/user` via Traefik |
-| media_service | `tepochtli/media-service-m8:2.1.1` | `/media` via Traefik |
-| media_service_worker | `tepochtli/media-service-m8:2.1.1` (arq command override) | internal — no port; lifecycle/outbox crons |
-| media_worker | `tepochtli/media-worker-m8:0.4.1` | internal — enqueue-driven (scan + variants) |
+| auth_user_service | `tepochtli/fa-auth-m8:2.2.1` | `/user` via Traefik |
+| media_service | `tepochtli/media-service-m8:3.0.0` | `/media` via Traefik |
+| media_service_worker | `tepochtli/media-service-m8:3.0.0` (arq command override) | internal — no port; lifecycle/outbox crons |
+| media_worker | `tepochtli/media-worker-m8:1.0.0` | internal — enqueue-driven (scan + variants) |
 | clamav | `clamav/clamav:1.5-debian13-slim` | internal `scan_net` only |
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
 | media_redis_cache | `redis:8.8.0-alpine` | media Redis — internal data network |
-| minio | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772` | internal data network — **no host port** |
-| minio-init | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` | one-shot: buckets + `media-rw` policy |
+| storage | `chrislusf/seaweedfs:4.45` | S3 object storage — internal data network, **no host port** |
+| storage-tls-init | `alpine:3.21.3` | one-shot: mints the certificate that locks the S3 gRPC port, then destroys the CA key |
+| storage-config | `alpine:3.21.3` | one-shot: writes the backend's static identity table before it boots |
+| storage-init | `amazon/aws-cli:2.36.40` | one-shot: creates the five buckets + pins per-bucket CORS |
 | prometheus | `ubuntu/prometheus:3.11-26.04_stable` | `127.0.0.1:9090` |
 | grafana | `grafana/grafana:13.1.0-25530058790` | `127.0.0.1:3000` |
 
@@ -80,8 +82,9 @@ MEDIA_DB_PASSWORD=<media-db-password>
 MEDIA_DB_NAME=media_db
 REDIS_PASSWORD=<auth-redis-password>
 MEDIA_REDIS_PASSWORD=<media-redis-password>
-MINIO_ROOT_USER=<minio-root-user>
-MINIO_ROOT_PASSWORD=<minio-root-password>
+S3_ROOT_USER=<storage-admin-access-key>
+S3_ROOT_PASSWORD=<storage-admin-secret>
+S3_CORS_ALLOW_ORIGIN=https://localhost:4430
 ```
 
 Edit `auth.env` so its generic runtime DB values match the `AUTH_DB_*` triplet in
@@ -94,10 +97,9 @@ Edit `media.env` so it matches the `MEDIA_DB_*` triplet in `.env`:
 DB_DATABASE=media_db
 DB_USER=<same-as-MEDIA_DB_USER>
 DB_PASSWORD=<same-as-MEDIA_DB_PASSWORD>
-MINIO_HOST=minio
-MINIO_PORT=9000
-MINIO_ACCESS_KEY=<media-rw-user>
-MINIO_SECRET_KEY=<media-rw-password>
+S3_ENDPOINT=storage:8333
+S3_ACCESS_KEY=<media-rw-user>
+S3_SECRET_KEY=<media-rw-password>
 MEDIA_REDIS_HOST=media_redis_cache
 MEDIA_REDIS_PASSWORD=<same-as-MEDIA_REDIS_PASSWORD-in-.env>
 ```
@@ -106,9 +108,13 @@ MEDIA_REDIS_PASSWORD=<same-as-MEDIA_REDIS_PASSWORD-in-.env>
 cache keys under the `media:*` namespace. `media.env` has **no** `REDIS_*`
 (auth Redis) settings — revocation goes through HTTP introspection.
 
-The `minio-init` one-shot provisions a MinIO user from `media.env`'s
-`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`, so set those to the media-rw credentials
-you want (not the MinIO root user).
+The `storage-config` one-shot writes the backend's identity table from these
+two files: the admin identity from `.env`'s `S3_ROOT_USER` / `S3_ROOT_PASSWORD`,
+and the scoped `media-rw` identity from `media.env`'s `S3_ACCESS_KEY` /
+`S3_SECRET_KEY`. Set the latter to the media-rw credentials you want — never to
+the admin pair; the generator refuses to start if the two access keys match, if
+either is still `changethis`, or if a value carries a character it will not
+embed in JSON verbatim (allowed: `A-Z a-z 0-9 . _ ~ + / = -`).
 
 ### Secure-by-default settings (auth-sdk-m8 ≥ 1.0.0)
 
@@ -142,31 +148,74 @@ docker-compose up -d --build
 If your Docker install supports Compose v2, `docker compose up -d --build` is
 equivalent.
 
-## MinIO
+## Object storage
 
-In the hardened stack MinIO is **not** published to the host — it has no
-`ports:` mapping and is reachable only by the application services on the
+In the hardened stack the `storage` service is **not** published to the host — it
+has no `ports:` mapping and is reachable only by the application services on the
 internal `data_net` (security item 0.2 removed the public host-port exposure).
 
-However, the browser accesses MinIO **indirectly** via a dedicated Traefik router
+However, the browser accesses storage **indirectly** via a dedicated Traefik router
 for presigned uploads/downloads. The storage router is configured on the
 **`websecure`** (TLS) entrypoint, published as `https://storage.localhost` (mapped
-to Traefik host port `4430`; use your FQDN in staging/production). The route
-explicitly excludes `/minio/*` paths to prevent access to the admin API or console
-(`:9001`); only the S3 data path (`/{bucket}/{key}`) is exposed.
+to Traefik host port `4430`; use your FQDN in staging/production). It forwards to
+the S3 gateway (`http://storage:8333`) and to nothing else: the backend's admin
+surfaces — master `9333`, volume `8080`, filer `8888`, webdav `7333` — are bound
+to the storage container's own loopback by `-ip.bind=127.0.0.1`, so no sibling
+container can reach them at all. That binding is what replaced the old
+`!PathPrefix(/minio)` rule; the isolation now lives in the storage process rather
+than in a proxy rule.
+
+`-ip.bind` is not the whole story, and the difference matters. `-s3.ip.bind=0.0.0.0`
+— the flag that makes the gateway reachable at all — also publishes three surfaces
+it does not name:
+
+- the S3 component's **gRPC** port (`8333 + 10000 = 18333`), which serves an IAM
+  service whose `PutIdentity` RPC creates S3 identities. Measured on this pinned
+  image, an **unauthenticated** call from an ordinary sibling container minted an
+  identity with `Admin` rights that then worked over the normal S3 API — a full
+  escape from the scoped `media-rw` credential. SeaweedFS offers no flag to bind
+  this port separately (`-s3.port.grpc=0` falls back to the default), and neither
+  `-s3.iam=false` nor `-s3.iam.readOnly=true` nor `jwt.filer_signing.key` refuses
+  the call. It is closed instead with **gRPC mTLS on the S3 component only**
+  (`seaweedfs/security.toml`, `[grpc.s3]`). The `storage-tls-init` one-shot mints
+  a throwaway CA, signs one server certificate and then **deletes the CA private
+  key**, so no client certificate that port would accept can ever be issued —
+  which is the intent, since nothing here is a legitimate client of it.
+- the **Iceberg REST Catalog** (`8181`) and **Lance Namespace** (`9101`) servers,
+  which SeaweedFS 4.x starts by default. This stack uses neither, and both are
+  switched off at the listener with `-s3.port.iceberg=0` / `-s3.port.lance=0`.
+
+`docker_compose/shared_live_tests/tests/live_storage/test_storage_admin_surface_live.py`
+re-proves all of this from a sibling container against any running stack.
+
+The S3 port itself serves exactly two non-S3 paths — `/healthz` and `/status`,
+bare liveness probes that answer `200` with an empty body — and the router denies
+both, so only the data path (`/{bucket}/{key}`) is publicly advertised. The
+container healthchecks itself on `127.0.0.1:8333/healthz` and does not need the
+route. Addressing is path-style, so if you ever name a bucket `healthz` or
+`status` that exclusion would shadow it; no bucket in this stack does.
 
 Configuration:
 
-- `MINIO_PUBLIC_ENDPOINT=https://storage.localhost` in `media.env`
-- `MINIO_API_CORS_ALLOW_ORIGIN: "https://localhost:4430"` in minio environment (edit for your FQDN)
-- Traefik router uses `passHostHeader: true` — **required** for presigned GET signatures
-  to validate correctly (SigV4 binds the Host header).
+- `S3_PUBLIC_ENDPOINT=https://storage.localhost` in `media.env`
+- `S3_CORS_ALLOW_ORIGIN=https://localhost:4430` in `.env` (edit for your FQDN).
+  SeaweedFS has no CORS environment variable, so `storage-init` applies the rule
+  set with one `PutBucketCors` call per bucket: exactly these origins (comma-
+  separate for more than one), methods `GET`/`HEAD`/`POST`, and an enumerated
+  header list — never `*`. A wildcard or empty value aborts the one-shot.
+- Traefik router uses `passHostHeader: true` — presigned GET signatures bind the
+  Host header, so the proxy must forward the original Host unchanged. (SeaweedFS
+  also accepts `X-Forwarded-Host`, which Traefik always sets, so a stack with this
+  flag off happens not to break on this backend — do not rely on that: the flag is
+  the portable, backend-independent contract and the security invariant.)
 
-For debugging, reach the console/API via `docker compose exec` or by temporarily
-adding a loopback `ports:` mapping; the dev stack (`dev_media_m8`) keeps the
-loopback ports for convenience.
+For debugging, reach the S3 API via `docker compose exec` or by temporarily adding
+a loopback `ports:` mapping; the dev stack (`dev_media_m8`) keeps the loopback
+ports for convenience. The admin surfaces are loopback-bound *inside* the
+container, so they are reachable only from `docker compose exec storage` — a host
+port mapping alone will not expose them.
 
-The `minio-init` one-shot service creates these logical buckets:
+The `storage-init` one-shot service creates these logical buckets:
 
 ```text
 public-media
@@ -176,10 +225,136 @@ temp-media
 archive-media
 ```
 
-It also creates and attaches a scoped `media-rw` policy/user for the media
-service credentials from `media.env`. `media_service` waits for `minio-init` to
-complete before starting and uses `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`, not
-the MinIO root credentials.
+and pins CORS on each of them. The scoped `media-rw` identity itself is
+declared earlier, by `storage-config`, because SeaweedFS reads its identities
+from a static file at startup rather than from a bootstrap-time admin API —
+`Read`/`Write`/`List` on exactly these five buckets and nothing else. It has no
+separate delete verb, so deletes are covered by `Write` over the same bucket
+set. `media_service` waits for `storage-init` to complete before starting and
+uses `S3_ACCESS_KEY` / `S3_SECRET_KEY`, never the admin credentials, which no
+application container is given.
+
+The fifteen security invariants this storage layer must hold (no host port,
+loopback-bound admin surfaces, scoped CORS and credential, presigned-only data
+path, TLS/Host-pinned route, server-side size and `Content-Type` enforcement,
+`attachment` disposition, ranged GET, hygiene, pins, container hardening) are
+walked with evidence in [`SECURITY_REGRESSION_MATRIX.md`](SECURITY_REGRESSION_MATRIX.md);
+the wire-level rows re-run against any live stack via
+`../shared_live_tests/tests/live_storage/test_storage_invariants_live.py`.
+
+**Carrying existing objects over from a MinIO-era deployment** (not needed
+for a clean start) is a separate, reversible procedure:
+[`DATA_MIGRATION_RUNBOOK.md`](DATA_MIGRATION_RUNBOOK.md) — rclone bucket-to-
+bucket through the `docker-compose.migration.yml` overlay (a frozen MinIO and
+an `rclone` one-shot behind the `migration` profile, never started by a plain
+`up`), count/byte and byte-for-byte parity per bucket, a digest join against
+the stored `sha256` column (`verify_migration_digests.py`), a rollback window
+with the exact trigger conditions, and the rollback itself.
+
+### Alternate backend: Garage (`docker-compose.garage.yml`)
+
+`.workspace/context/object-storage.md` ratifies SeaweedFS 4.x as the default
+and Garage 2.x as the validated fallback. `docker-compose.garage.yml` makes
+that swap real instead of theoretical: it overrides `storage`, `storage-config`
+and `storage-init` with Garage 2.x equivalents (plus two new one-shots,
+`storage-tools` and `storage-cors` — see below) and changes nothing else.
+The service name `storage` and port `8333` are unchanged, so the Traefik route
+and every `S3_*` variable in `media.env`/`worker.env` need no edit —
+`S3_REGION` included, which `storage-config` renders into the Garage config
+at boot.
+
+```bash
+# One extra flag is the whole migration:
+docker compose -f docker-compose.yml -f docker-compose.garage.yml up -d
+
+# Production posture: the shared production overlay, then the Garage-only one
+# (moves GARAGE_RPC_SECRET onto ./secrets/garage_rpc_secret.txt):
+docker compose -f docker-compose.yml -f docker-compose.garage.yml \
+               -f docker-compose.production.yml -f docker-compose.garage.production.yml up -d
+```
+
+Before first boot, set `GARAGE_RPC_SECRET` in `.env` (>= 64 lowercase hex
+chars — `openssl rand -hex 32`; see `.env.example`). It authenticates
+cluster-administration RPC calls between `storage` and the bootstrap
+one-shots and is unused under the default SeaweedFS profile. In production
+leave that line **empty** and provision `./secrets/garage_rpc_secret.txt`
+instead (64 hex chars, `chmod 600`, owned by uid 1000 — the daemon runs
+non-root and refuses a world-readable secret file):
+`docker-compose.garage.production.yml` wires it through
+`GARAGE_RPC_SECRET_FILE` for the three services that read it (`storage`,
+`storage-config`, `storage-init`) and hands `storage-init`/`storage-cors`
+the `media-rw` credential the same way. Garage refuses to start when both
+the plain and the `_FILE` form are present — an empty `GARAGE_RPC_SECRET=`
+line counts — which is why that overlay also takes `.env` off the two
+services that run the Garage binary.
+
+What differs from the SeaweedFS profile, and why:
+
+- **No static identity file.** SeaweedFS reads its accounts from
+  `-s3.config` at startup; Garage has no equivalent, so `storage-config`
+  becomes a credential-shape guard plus the renderer of
+  `garage/config/garage.toml` (gitignored) from the tracked
+  `garage/garage.toml.template`, and `storage-init` creates the
+  single-node layout, the five buckets and the fixed `media-rw` keypair
+  live via the `garage` CLI (imported with `garage key import`, never
+  generated, so `S3_ACCESS_KEY`/`S3_SECRET_KEY` need no change).
+- **The Garage image is `FROM scratch`** — `/garage` is its only file, no
+  `/bin/sh`. `storage-init` still runs a shell script on it: the
+  `storage-tools` one-shot seeds a named volume (`garage_tools`) with
+  busybox's static applet tree (Docker copies an image's directory into an
+  empty named volume mounted over it, so `command: true` is the whole job),
+  and `storage-init` mounts that volume read-only at `/tools/bin` and runs
+  `/tools/bin/sh`. No build, no download at boot, one more pinned image
+  (`busybox:1.37.0-musl`).
+- **Cluster administration (`garage` CLI) needs the RPC port**, which is
+  loopback-bound inside the `storage` container — the same posture as
+  SeaweedFS's master/volume/filer/webdav, confirmed unreachable from a
+  sibling container with the same `nc -z` probe `T3`/`T4` used. `storage-init`
+  reaches it by sharing `storage`'s network **namespace**
+  (`network_mode: "service:storage"`), not by mounting the Docker socket or
+  publishing an admin port.
+- **CORS is a separate one-shot, `storage-cors`.** Garage's S3 API does
+  implement `PutBucketCors` (verified live against v2.3.0) but the `garage`
+  CLI has no S3-API subcommand for it, so this step goes over the S3 port
+  with `aws s3api` — same shape as the SeaweedFS profile's `storage-init`
+  CORS block, just split out because it needs the S3 port (`data_net`)
+  rather than the RPC port (loopback-only, `storage-init`'s namespace).
+- **The `media-rw` grant is `RWO` (Read/Write/**Owner**), not `RW`.** Garage
+  only allows `PutBucketCors` to a key holding the bucket's Owner permission.
+  Bucket scope is unchanged — still exactly the five media buckets.
+- **`s3_api.s3_region` is rendered from `S3_REGION` at boot**, never edited
+  by hand: `storage-config` substitutes it into `garage/config/garage.toml`
+  from `garage/garage.toml.template` (fail-closed on an empty or
+  non-`[a-z0-9-]` value). Garage checks the SigV4 credential scope on every
+  request — measured on v2.3.0: a request signed with the rendered region is
+  a `200`, the same request signed with any other region is a `400`
+  `AuthorizationHeaderMalformed` ("unexpected scope"). The aws-cli hides that
+  by re-signing through its region redirector; a browser on a presigned URL
+  has no such retry, which is why the region must come from the one variable
+  the apps sign with.
+
+Both follow-ons `T27` recorded here — the production `_FILE` wiring for
+`GARAGE_RPC_SECRET` and the templated region — were closed by
+`T30-close-deferred-flags` (above). This profile remains a documented
+alternative, not a required cutover path.
+
+### Buckets are unversioned, and stay that way (for now)
+
+None of the five media buckets has object versioning or Object Lock enabled,
+and the bootstraps in both profiles are guarded against turning either on
+(`tests/test_storage_versioning_policy.py`). That is a decision with evidence
+behind it, not an omission:
+[`VERSIONING_OBJECTLOCK_EVALUATION.md`](VERSIONING_OBJECTLOCK_EVALUATION.md)
+measures what SeaweedFS 4.45 and Garage 2.3.0 actually do and recommends
+against adoption today. The short version: the SDK deletes by key with no
+version id, so on a versioned bucket the nightly hard purge would report
+`purged=N` while reclaiming nothing; `sensitive-media` holds no object yet,
+and `archive-media` — the archive tier every soft-deleted original is
+cold-moved into since `T32` — holds only bytes already inside their
+`MEDIA_RETENTION_PURGE_DAYS` window, which a lock would make unpurgeable. If
+immutability is ever required, the document gives the only viable shape
+(versioning plus a **GOVERNANCE** lock, never COMPLIANCE, on
+`sensitive-media` only) and the six preconditions that come first.
 
 ## URLs
 
@@ -210,8 +385,11 @@ controlled by `grafana/config.monitoring`.
 
 - `.env` is infrastructure/bootstrap config. It provisions `AUTH_DB_*` and
   `MEDIA_DB_*` through `../shared/db_init/init-db.sh`, and supplies the Redis and
-  MinIO root passwords used by the `redis_cache`, `media_redis_cache`, and
-  `minio` services via Compose interpolation.
+  storage admin credentials used by the `redis_cache`, `media_redis_cache`, and
+  storage-bootstrap services. The `storage` service itself takes its identities
+  from the static `-s3.config` file, which `storage-config` generates into
+  `seaweedfs/config/s3.json` (gitignored — it carries both credentials
+  verbatim).
 - `auth.env` and `media.env` are runtime application configs consumed by
   `auth-sdk-m8`. They use generic `DB_DATABASE`, `DB_USER`, `DB_PASSWORD` — do
   **not** replace those with the `MEDIA_DB_*` / `AUTH_DB_*` names.
@@ -237,7 +415,7 @@ docker-compose config
 docker-compose up -d --build
 docker-compose ps
 docker-compose logs -f media_service
-docker-compose logs -f minio-init
+docker-compose logs -f storage-init
 docker-compose down
 ```
 
@@ -262,13 +440,22 @@ needed on WSL2/Linux bind mounts. On every run `init.sh` also enforces
 Set them (identically across auth + media), or set `EVENT_SIGNING_ENABLED=false`
 / `TOKEN_STRICT_VALIDATION=false` for local-only runs.
 
-**Media service cannot connect to MinIO**: inside Docker, use `MINIO_HOST=minio`
-and `MINIO_PORT=9000`. The hardened stack does not publish MinIO to the host, so
+**Media service cannot connect to object storage**: inside Docker, use
+`S3_ENDPOINT=storage:8333`. The hardened stack does not publish it to the host, so
 debug from inside the network (`docker compose exec`) rather than via a host
 port.
 
-**`minio-init` fails or buckets are missing**: check `docker-compose logs minio-init`.
-It waits for MinIO to be healthy, then creates buckets and the `media-rw` user.
+**`storage-init` fails or buckets are missing**: check
+`docker-compose logs storage-init`. It waits for `storage` to be healthy, then
+creates the five buckets and pins CORS on each. If it aborts before the first
+bucket, the message names the cause — an empty or wildcard `S3_CORS_ALLOW_ORIGIN`.
+
+**`storage` never starts and `storage-config` exited non-zero**: the identity
+table was refused. `docker-compose logs storage-config` names which credential
+was empty, still `changethis`, duplicated between the admin and app identities,
+or carried an unembeddable character. Nothing boots until `.env` and `media.env`
+are filled in — by design; a backend that came up with placeholder identities
+would 403 every application request instead.
 
 **DB user authentication fails**: confirm `media.env` `DB_USER` / `DB_PASSWORD`
 match `.env` `MEDIA_DB_USER` / `MEDIA_DB_PASSWORD`. If `db_data/` already exists,

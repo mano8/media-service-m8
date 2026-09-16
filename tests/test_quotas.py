@@ -264,7 +264,7 @@ def test_initiate_rejected_over_default_byte_quota(
     client: TestClient, mock_storage: MagicMock, monkeypatch
 ):
     monkeypatch.setattr(settings, "MEDIA_DEFAULT_QUOTA_BYTES", 1000)
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     assert resp.status_code == 413
 
@@ -273,7 +273,7 @@ def test_initiate_rejected_over_default_object_quota(
     client: TestClient, mock_storage: MagicMock, monkeypatch
 ):
     monkeypatch.setattr(settings, "MEDIA_DEFAULT_QUOTA_OBJECTS", 0)
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     assert resp.status_code == 409
 
@@ -287,7 +287,7 @@ def test_initiate_allowed_when_override_raises_ceiling(
 ):
     monkeypatch.setattr(settings, "MEDIA_DEFAULT_QUOTA_BYTES", 1000)
     _make_usage(session, current_user.id, quota_bytes=10**9)
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     assert resp.status_code == 200
 

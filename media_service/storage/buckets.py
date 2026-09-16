@@ -16,16 +16,16 @@ class StorageClass(StrEnum):
 def bucket_for_visibility(visibility: MediaVisibility) -> str:
     """Return the configured bucket for a media visibility."""
     return {
-        MediaVisibility.PUBLIC: settings.MINIO_BUCKET_PUBLIC,
-        MediaVisibility.PRIVATE: settings.MINIO_BUCKET_PRIVATE,
-        MediaVisibility.SENSITIVE: settings.MINIO_BUCKET_SENSITIVE,
-        MediaVisibility.TENANT: settings.MINIO_BUCKET_PRIVATE,
+        MediaVisibility.PUBLIC: settings.S3_BUCKET_PUBLIC,
+        MediaVisibility.PRIVATE: settings.S3_BUCKET_PRIVATE,
+        MediaVisibility.SENSITIVE: settings.S3_BUCKET_SENSITIVE,
+        MediaVisibility.TENANT: settings.S3_BUCKET_PRIVATE,
     }[visibility]
 
 
 def bucket_for_storage_class(storage_class: StorageClass) -> str:
     """Return the configured bucket for non-primary storage classes."""
     return {
-        StorageClass.TEMP: settings.MINIO_BUCKET_TEMP,
-        StorageClass.ARCHIVE: settings.MINIO_BUCKET_ARCHIVE,
+        StorageClass.TEMP: settings.S3_BUCKET_TEMP,
+        StorageClass.ARCHIVE: settings.S3_BUCKET_ARCHIVE,
     }[storage_class]

@@ -4,10 +4,10 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from sqlmodel import Field, SQLModel
 
-from media_service.core.validation import max_size_for_category
+from media_service.core.validation import max_size_for_category, validate_filename
 from media_service.db_models.categories import MAX_CATEGORY_ASSIGNMENTS
 from media_service.db_models.media_objects import (
     MediaCategory,
@@ -38,6 +38,13 @@ class UploadInitiateRequest(SQLModel):
         max_length=MAX_CATEGORY_ASSIGNMENTS,
         description="User categories to file the completed object into",
     )
+
+    @field_validator("original_filename")
+    @classmethod
+    def _portable_filename(cls, value: str) -> str:
+        # The one place a client-typed name enters the system; the policy it
+        # must meet lives with the other upload gates in ``core/validation``.
+        return validate_filename(value)
 
     @model_validator(mode="after")
     def _cap_to_category_maximum(self) -> "UploadInitiateRequest":

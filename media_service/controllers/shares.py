@@ -218,7 +218,7 @@ class SharesController:
         if not SharesController._consume_use(session, share.id):
             _metrics.inc_share_resolve("max_uses_exhausted")
             raise _rejected("Share link has reached its usage limit.")
-        expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
+        expires = settings.S3_PRESIGNED_URL_EXPIRE_SECONDS
         url = create_download_url(
             storage=storage,
             bucket=obj.storage_bucket,

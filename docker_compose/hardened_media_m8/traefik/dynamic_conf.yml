@@ -109,24 +109,43 @@ http:
         - security-headers
         - internal-only
 
-    # MinIO S3 data-path: browser-direct presigned uploads/downloads over TLS.
+    # S3 data path: browser-direct presigned uploads/downloads over TLS.
     # SECURITY CONTRACT:
-    #   - Only the S3 data path is routed — /minio (admin API + console) is EXPLICITLY
-    #     EXCLUDED by !PathPrefix(`/minio`). The console (:9001) gains NO router.
-    #   - Every successful op still requires a presigned URL minted by media-service
-    #     after fa-auth authentication; no raw credentials cross the public interface.
+    #   - Only the backend's S3 gateway (:8333) is routed. Its admin surfaces —
+    #     master 9333, volume 8080, filer 8888, webdav 7333 — are bound to the
+    #     storage container's OWN loopback by `-ip.bind=127.0.0.1`, so no sibling
+    #     on the network can reach them at all, Traefik included. That binding is
+    #     what replaces the old `!PathPrefix(`/minio`)` exclusion: the isolation
+    #     now lives in the storage process itself, not in a proxy rule a
+    #     misconfigured route could silently drop.
+    #   - The S3 port still serves exactly two non-S3 paths, and they are denied
+    #     here. Measured against the pinned image, an unauthenticated GET on 8333
+    #     answers `403 AccessDenied` on every path probed (`/`, `/public-media`,
+    #     `/metrics`, `/favicon.ico`, `/.well-known/`, `/admin`, `/dir/status`)
+    #     except `/healthz` and `/status`, which answer `200` with an empty body.
+    #     They are operator liveness probes, not part of the browser data path —
+    #     the container's own healthcheck reaches /healthz on 127.0.0.1:8333 and
+    #     never needs this route — so excluding them keeps the publicly advertised
+    #     surface to the data path alone. Addressing is path-style, so every
+    #     legitimate request is `/{bucket}/{key}`; no bucket is named `healthz` or
+    #     `status`, so the exclusion cannot shadow one. Rename a bucket into that
+    #     shape and this rule must be revisited.
+    #   - Every successful op still requires a presigned GET URL or POST policy
+    #     minted by media-service after fa-auth authentication; no raw credentials
+    #     cross the public interface.
     #   - passHostHeader: true on the backend is REQUIRED: GET SigV4 signatures bind
-    #     the Host header, so the reverse proxy MUST forward the original Host unchanged
-    #     for the signature to validate at MinIO.
+    #     the Host header, so the reverse proxy MUST forward the original Host
+    #     unchanged for the signature to validate at the storage backend.
     media-storage-router:
       entryPoints:
         - websecure
       # LOCALHOST-ONLY by default: Host(`storage.localhost`) limits this route to the
       # Docker host. TO EXPOSE storage ON THE LAN/WAN, replace Host(`storage.localhost`)
       # with your real storage FQDN (e.g. Host(`storage.example.com`)). The
-      # !PathPrefix(`/minio`) exclusion is the SECURITY CONTRACT and MUST stay regardless.
-      rule: "Host(`storage.localhost`) && !PathPrefix(`/minio`)"
-      service: minio-storage
+      # !(PathPrefix(`/healthz`) || PathPrefix(`/status`)) exclusion is the SECURITY
+      # CONTRACT and MUST stay regardless.
+      rule: "Host(`storage.localhost`) && !(PathPrefix(`/healthz`) || PathPrefix(`/status`))"
+      service: media-storage
       tls: {}
 
   services:
@@ -138,11 +157,13 @@ http:
       loadBalancer:
         servers:
           - url: "http://media_service:8000"
-    minio-storage:
+    media-storage:
       loadBalancer:
         passHostHeader: true   # REQUIRED — GET SigV4 signs the Host; proxy MUST forward it unchanged
         servers:
-          - url: "http://minio:9000"
+          # The S3 gateway port and nothing else. The admin ports are loopback-bound
+          # inside the container, so there is no other port here to point at.
+          - url: "http://storage:8333"
 
   middlewares:
     ip-allowlist:

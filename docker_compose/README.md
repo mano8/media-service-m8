@@ -4,7 +4,8 @@ Ready-to-run stacks for the `media-service-m8` microservice. Every stack runs
 the same application services — `auth_user_service` (the `fa-auth-m8` issuer),
 `media_service` + its maintenance worker, the DB-free `media_worker`, and
 ClamAV — behind Traefik, with PostgreSQL, two Redis instances (auth + media),
-and MinIO.
+and an S3 object-storage backend (SeaweedFS 4.x; Garage 2.x as a compose
+profile on the hardened stack).
 
 ---
 
@@ -25,11 +26,11 @@ and MinIO.
 
 ## Which stack should I use?
 
-| Stack | media_service / worker | fa-auth + media_worker | MinIO host ports | Best for |
+| Stack | media_service / worker | fa-auth + media_worker | S3 gateway host port | Best for |
 | --- | --- | --- | --- | --- |
-| [dev_media_m8](dev_media_m8/) | built from `../../media_service` | published images | `127.0.0.1:9005/9006` | Iterating on media-service against published peers |
-| [hardened_media_m8](hardened_media_m8/) | `tepochtli/media-service-m8:2.1.1` | published images | none (internal only) | Reference deployment / production-shaped posture |
-| [worspace_dev_media_m8](worspace_dev_media_m8/) | built from `../../` | built from sibling repos | `127.0.0.1:9005/9006` | Cross-repo workspace dev (local-only, not in CI) |
+| [dev_media_m8](dev_media_m8/) | built from `../../media_service` | published images | `127.0.0.1:9005` | Iterating on media-service against published peers |
+| [hardened_media_m8](hardened_media_m8/) | `tepochtli/media-service-m8:3.0.0` | published images | none (internal only) | Reference deployment / production-shaped posture |
+| [worspace_dev_media_m8](worspace_dev_media_m8/) | built from `../../` | built from sibling repos | `127.0.0.1:9005` | Cross-repo workspace dev (local-only, not in CI) |
 
 **Decision guide:**
 
@@ -61,14 +62,14 @@ Browser / Frontend
 
   media_service ─┬─> PostgreSQL (data_net)
                  ├─> media Redis (data_net) — queues / rate limits / cache
-                 ├─> MinIO (data_net)
+                 ├─> S3 storage — `storage` (data_net)
                  └─> auth_user_service private API (HTTP introspection)
 
   media_worker ──> ClamAV (scan_net) + media_service internal API (callbacks)
 ```
 
 Traefik is the single host entry point. Application services sit on `app_net`;
-PostgreSQL, Redis, and MinIO live on the internal `data_net`; the worker↔ClamAV
+PostgreSQL, Redis, and the S3 storage backend live on the internal `data_net`; the worker↔ClamAV
 traffic is isolated on `scan_net`.
 
 ---
@@ -125,9 +126,9 @@ Each stack uses a stack-root `.env` plus per-service runtime env files. Copy the
 `.example` files and fill in your values:
 
 ```text
-.env            ← infrastructure/bootstrap: DB provisioning + Redis/MinIO root passwords
+.env            ← infrastructure/bootstrap: DB provisioning + Redis/S3 admin (S3_ROOT_*) passwords
 auth.env        ← auth_user_service: algorithm, token mode, secrets, DB/Redis config
-media.env       ← media_service + workers: DB, MinIO, media Redis, share/internal secrets
+media.env       ← media_service + workers: DB, S3 (S3_*), media Redis, share/internal secrets
 worker.env      ← media_worker: queue + internal-callback token
 test.env        ← security-tests-m8 live suite (see Live testing)
 ```
@@ -167,7 +168,7 @@ via Alembic autogenerate against a real database.
 | `9000` | `127.0.0.1` | API services entry (Traefik) |
 | `8080` | `127.0.0.1` | Traefik dashboard |
 | `5432` | `127.0.0.1` | PostgreSQL |
-| `9005` / `9006` | `127.0.0.1` | MinIO API / console (`dev_media_m8`, `worspace_dev_media_m8` only) |
+| `9005` | `127.0.0.1` | S3 gateway (`dev_media_m8`, `worspace_dev_media_m8` only; admin surfaces stay loopback-bound inside the container) |
 | `9090` | `127.0.0.1` | Prometheus |
 | `3000` | `127.0.0.1` | Grafana |
 

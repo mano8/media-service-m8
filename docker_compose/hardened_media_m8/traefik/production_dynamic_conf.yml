@@ -102,18 +102,28 @@ http:
         - security-headers
         - internal-only
 
-    # MinIO S3 data-path: browser-direct presigned uploads/downloads over TLS.
+    # S3 data path: browser-direct presigned uploads/downloads over TLS.
     # SECURITY CONTRACT:
-    #   - Only the S3 data path is routed — /minio (admin API + console) is
-    #     EXPLICITLY EXCLUDED by !PathPrefix(`/minio`).
-    #   - Every successful op requires a presigned URL minted by media-service
-    #     after fa-auth authentication; no raw credentials cross the public interface.
+    #   - Only the backend's S3 gateway (:8333) is routed. Its admin surfaces
+    #     (master 9333, volume 8080, filer 8888, webdav 7333) are bound to the
+    #     storage container's own loopback by `-ip.bind=127.0.0.1` and are
+    #     unreachable from any sibling, Traefik included — that binding replaces
+    #     the old `!PathPrefix(`/minio`)` exclusion.
+    #   - The two non-S3 paths the S3 port serves — `/healthz` and `/status`,
+    #     the only paths that answer anything but `403 AccessDenied` to an
+    #     unauthenticated caller — are denied here. They are operator liveness
+    #     probes; the container healthchecks itself on 127.0.0.1:8333. Addressing
+    #     is path-style (`/{bucket}/{key}`) and no bucket carries either name, so
+    #     the exclusion cannot shadow a data path.
+    #   - Every successful op requires a presigned URL or POST policy minted by
+    #     media-service after fa-auth authentication; no raw credentials cross the
+    #     public interface.
     #   - passHostHeader: true is REQUIRED: GET SigV4 signs the Host header.
     media-storage-router:
       entryPoints:
         - websecure
-      rule: "Host(`storage.example.com`) && !PathPrefix(`/minio`)"
-      service: minio-storage
+      rule: "Host(`storage.example.com`) && !(PathPrefix(`/healthz`) || PathPrefix(`/status`))"
+      service: media-storage
       tls: {}
 
   services:
@@ -125,11 +135,11 @@ http:
       loadBalancer:
         servers:
           - url: "http://media_service:8000"
-    minio-storage:
+    media-storage:
       loadBalancer:
         passHostHeader: true
         servers:
-          - url: "http://minio:9000"
+          - url: "http://storage:8333"   # S3 gateway only; admin ports are loopback-bound
 
   middlewares:
     internal-only:

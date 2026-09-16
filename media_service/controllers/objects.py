@@ -47,7 +47,11 @@ from media_service.schemas.objects import (
     ObjectListResponse,
 )
 from media_service.metrics import inc_download_url_generated
-from media_service.storage.buckets import bucket_for_visibility
+from media_service.storage.buckets import (
+    StorageClass,
+    bucket_for_storage_class,
+    bucket_for_visibility,
+)
 from media_service.storage.client import ObjectStorage
 from media_service.storage.presign import create_download_url
 
@@ -371,6 +375,54 @@ def _relocate_for_visibility(
     return old_bucket
 
 
+def _archive_deleted_bytes(storage: ObjectStorage, obj: MediaObject) -> str | None:
+    """Copy a soft-deleted original into the archive tier, repointing ``obj``.
+
+    The writer for ``StorageClass.ARCHIVE``: every soft-deleted original is
+    cold-moved out of its visibility bucket into ``S3_BUCKET_ARCHIVE``, where
+    it waits out ``MEDIA_RETENTION_PURGE_DAYS`` until the hard purge reclaims
+    it from *that* bucket (``MaintenanceController.hard_purge_expired`` deletes
+    from the bucket as stored, never re-derived from visibility). Two things
+    follow from the move: a PUBLIC object's world-readable URL goes dead the
+    moment the source bytes are removed, exactly as before, but the bytes are
+    no longer destroyed on the spot — they are recoverable for the retention
+    window like every other visibility's; and the hot buckets hold only
+    live objects, so a bucket listing is a listing of what the service still
+    serves.
+
+    Same shape as :func:`_relocate_for_visibility`: the copy lands in the
+    archive bucket before the metadata is committed, and the caller removes
+    the source only once the commit has succeeded. Returns the bucket the
+    source copy is in when the object actually moved, otherwise ``None``.
+    Archival is **best-effort**: a failed copy leaves the row pointing at the
+    bucket the bytes are really in (still consistent, still purgeable) and
+    is logged, never raised — a storage outage must not turn a delete into a
+    502. Variants are not moved; they keep following the original's row.
+    """
+    archive_bucket = bucket_for_storage_class(StorageClass.ARCHIVE)
+    source_bucket = obj.storage_bucket
+    if source_bucket == archive_bucket:
+        return None
+    try:
+        storage.copy_object(
+            src_bucket=source_bucket,
+            src_object_key=obj.object_key,
+            dest_bucket=archive_bucket,
+            dest_object_key=obj.object_key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning(
+            "media.archive.copy_failed %s/%s -> %s: %s",
+            source_bucket,
+            obj.object_key,
+            archive_bucket,
+            exc,
+        )
+        return None
+    obj.storage_bucket = archive_bucket
+    return source_bucket
+
+
 def _best_effort_remove(
     storage: ObjectStorage, *, bucket: str, object_key: str, context: str
 ) -> None:
@@ -475,7 +527,7 @@ class ObjectsController:
                 status_code=status.HTTP_409_CONFLICT,
                 detail=detail.model_dump(mode="json"),
             )
-        expires = settings.MINIO_PRESIGNED_URL_EXPIRE_SECONDS
+        expires = settings.S3_PRESIGNED_URL_EXPIRE_SECONDS
         url = create_download_url(
             storage=storage,
             bucket=obj.storage_bucket,
@@ -609,16 +661,24 @@ class ObjectsController:
         object_id: uuid.UUID,
         storage: ObjectStorage,
     ) -> None:
-        """Soft-delete a media object (idempotent).
+        """Soft-delete a media object (idempotent) and cold-move its bytes.
 
-        A PUBLIC object's bytes are world-readable at a known URL, so a metadata-
-        only soft-delete would leave them exposed after the user "deleted" them.
-        Remove those bytes best-effort; private/sensitive buckets are reachable
-        only via presigned URLs, so their metadata soft-delete is sufficient.
+        The original is copied into the archive tier
+        (:func:`_archive_deleted_bytes`) before the soft-delete commits, and
+        the source copy is removed only after it — so the row never points at
+        bytes that are not there. A PUBLIC object's bytes are world-readable
+        at a known URL, so leaving them in place after the user "deleted"
+        them is not an option: if the archive copy fails, the public bytes
+        are still removed best-effort as they always were, at the cost of
+        the retention-window recoverability the archive tier otherwise
+        buys. Private/sensitive buckets are reachable only via presigned
+        URLs, so a failed copy there simply leaves the bytes where the row
+        says they are.
         """
         obj = _load_object(session, current_user, object_id, include_deleted=True)
         if obj.deleted_at is not None:
             return
+        source_bucket = _archive_deleted_bytes(storage, obj)
         obj.deleted_at = utcnow()
         obj.status = MediaObjectStatus.DELETED
         obj.updated_at = utcnow()
@@ -640,7 +700,18 @@ class ObjectsController:
             payload={"visibility": str(obj.visibility)},
         )
         session.commit()
-        if obj.visibility == MediaVisibility.PUBLIC:
+        if source_bucket is not None:
+            # Archived: the source copy is stale, drop it (after the commit,
+            # like the visibility move — a failed commit keeps both copies).
+            _best_effort_remove(
+                storage,
+                bucket=source_bucket,
+                object_key=obj.object_key,
+                context="soft-delete archive move",
+            )
+        elif obj.visibility == MediaVisibility.PUBLIC:
+            # Archive copy failed: still take the public bytes off their
+            # known URL, as every version before the archive tier did.
             _best_effort_remove(
                 storage,
                 bucket=obj.storage_bucket,

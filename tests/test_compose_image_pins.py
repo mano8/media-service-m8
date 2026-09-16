@@ -25,7 +25,7 @@ _COMPOSE_DIR = Path(__file__).parent.parent / "docker_compose"
 _HARDENED = _COMPOSE_DIR / "hardened_media_m8" / "docker-compose.yml"
 _DEV = _COMPOSE_DIR / "dev_media_m8" / "docker-compose.yml"
 
-# Matches a bare image name with no tag (e.g. "alpine", "quay.io/minio/minio").
+# Matches a bare image name with no tag (e.g. "alpine", "chrislusf/seaweedfs").
 _BARE_IMAGE_RE = re.compile(r"^[^:@]+$")
 # Matches the :latest pseudo-tag.
 _LATEST_RE = re.compile(r":latest$", re.IGNORECASE)
@@ -75,8 +75,8 @@ class TestHardenedImagePins:
         "service,expected_prefix",
         [
             ("cert-init", "alpine:"),
-            ("minio", "quay.io/minio/minio:RELEASE."),
-            ("minio-init", "quay.io/minio/mc:RELEASE."),
+            ("storage", "chrislusf/seaweedfs:4.45"),
+            ("storage-init", "amazon/aws-cli:2.36.40"),
         ],
     )
     def test_previously_bare_images_are_pinned(

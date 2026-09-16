@@ -69,7 +69,7 @@ def _job(
 def _completion(job: ExportJob, **overrides: object) -> dict[str, object]:
     body: dict[str, object] = {
         "status": "completed",
-        "storage_bucket": settings.MINIO_BUCKET_TEMP,
+        "storage_bucket": settings.S3_BUCKET_TEMP,
         "object_key": f"users/{job.owner_user_id}/exports/{job.id}.zip",
         "size_bytes": 512,
         "download_url": "https://media.example/export.zip?signature=hidden",
@@ -97,7 +97,7 @@ def test_archive_export_enqueues_the_shared_payload(
     assert isinstance(payload, ExportArchiveJobPayload)
     assert payload.job_id == job.id
     assert kwargs == {"_job_id": str(job.id)}
-    assert payload.target_bucket == settings.MINIO_BUCKET_TEMP
+    assert payload.target_bucket == settings.S3_BUCKET_TEMP
     assert payload.target_object_key.endswith(f"/exports/{job.id}.zip")
     assert payload.stream_chunk_size == settings.MEDIA_EXPORT_STREAM_CHUNK_SIZE
     assert [entry.object_id for entry in payload.objects] == sorted(
@@ -257,7 +257,7 @@ def test_worker_callback_completes_and_is_idempotent(
     assert first.status_code == second.status_code == 200
     session.refresh(job)
     assert job.status == ExportJobStatus.COMPLETED
-    assert job.storage_bucket == settings.MINIO_BUCKET_TEMP
+    assert job.storage_bucket == settings.S3_BUCKET_TEMP
     assert job.object_key == body["object_key"]
     assert job.size_bytes == 512
     assert job.expires_at is not None
@@ -379,7 +379,7 @@ def test_export_status_presigns_a_completed_archive(
     job = _job(
         session, uuid.UUID(str(current_user.id)), status=ExportJobStatus.COMPLETED
     )
-    job.storage_bucket = settings.MINIO_BUCKET_TEMP
+    job.storage_bucket = settings.S3_BUCKET_TEMP
     job.object_key = f"users/{job.owner_user_id}/exports/{job.id}.zip"
     job.size_bytes = 512
     job.expires_at = utcnow() + timedelta(minutes=5)
@@ -400,7 +400,7 @@ def test_export_status_refuses_an_expired_archive(
     job = _job(
         session, uuid.UUID(str(current_user.id)), status=ExportJobStatus.COMPLETED
     )
-    job.storage_bucket = settings.MINIO_BUCKET_TEMP
+    job.storage_bucket = settings.S3_BUCKET_TEMP
     job.object_key = f"users/{job.owner_user_id}/exports/{job.id}.zip"
     job.expires_at = utcnow() - timedelta(seconds=1)
     session.add(job)

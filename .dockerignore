@@ -17,6 +17,12 @@ docker_compose/**/traefik/certs/
 docker_compose/**/grafana/data/
 docker_compose/**/prometheus/data/
 docker_compose/**/minio/
+docker_compose/**/seaweedfs/data/
+docker_compose/**/seaweedfs/config/
+docker_compose/**/seaweedfs/tls/
+docker_compose/**/garage/data/
+docker_compose/**/garage/config/
+docker_compose/**/secrets/
 docker_compose/**/redis/
 docker_compose/**/media_redis/
 docker_compose/**/db_data/

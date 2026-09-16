@@ -23,7 +23,7 @@ revocation. It does **not** connect to the auth Redis.
 
 The reference deployment is the hardened Docker Compose stack in
 [`docker_compose/hardened_media_m8`](docker_compose/hardened_media_m8) (Traefik,
-PostgreSQL, MinIO, media Redis, Prometheus, Grafana). See that directory's
+PostgreSQL, S3 object storage (SeaweedFS), media Redis, Prometheus, Grafana). See that directory's
 README for stack setup.
 
 ## API overview
@@ -58,26 +58,33 @@ Auto-mounted by `fastapi-m8` (≥ 3.3.0) `create_app` — the standard m8 triad:
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@mano8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.1`, service-version range `>=2.0.0 <3.0.0`. |
+| GET | `/{prefix}/meta` | — | Static, cacheable service identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth to assert compatibility — satisfies `@mano8/astro-media-m8`'s `assertMediaServiceM8Compatibility`. Contract `media-service-m8@1.1`, service-version range `>=3.0.0 <4.0.0`. |
 | GET | `/ping` and `/{prefix}/ping` | — | Dependency-free **liveness** → `{"status": "ok"}`. Root `/ping` stays available for direct container probes; `/{prefix}/ping` is reachable through prefix-routing proxies. |
-| GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / MinIO). |
+| GET | `/{prefix}/health/` | — | Dependency-aware **readiness** (DB / Redis / S3 storage). |
 
 Point direct container **liveness** probes at `/ping`, gateway/proxy liveness
 probes at `/{prefix}/ping`, and **readiness** probes at `/{prefix}/health/`.
 The `/meta` values come from `Settings` (`SERVICE_VERSION` tracks the package version),
 so the service fails closed at boot if its identity is undeclared.
 
-### Uploads — `/{prefix}/v1/uploads` (presigned PUT flow)
+### Uploads — `/{prefix}/v1/uploads` (presigned POST-policy flow)
 
 | Method | Path | Auth | Rate limit | Purpose |
 | --- | --- | --- | --- | --- |
-| POST | `/v1/uploads/initiate` | writer | 20/min | Create an upload session + presigned PUT URL |
-| POST | `/v1/uploads/{session_id}/complete` | writer | 20/min | Finalize after the client PUTs to MinIO |
+| POST | `/v1/uploads/initiate` | writer | 20/min | Create an upload session + presigned S3 POST policy |
+| POST | `/v1/uploads/{session_id}/complete` | writer | 20/min | Finalize after the client POSTs to storage |
 | POST | `/v1/uploads/{session_id}/abort` | writer | — | Abort an in-progress session |
 
-Flow: `initiate` returns a presigned `PUT` URL and a session id → client uploads
-bytes directly to MinIO → `complete` runs three integrity checks then promotes
-the `MediaObject` from `PENDING_UPLOAD` to `UPLOADED`:
+Flow: `initiate` returns an S3 **POST policy** — `upload_url` plus
+`upload_fields`, not a bare presigned `PUT` — and a session id → the client
+sends a multipart `POST` containing every `upload_fields` entry followed by
+the file, directly to storage → `complete` runs three integrity checks then
+promotes the `MediaObject` from `PENDING_UPLOAD` to `UPLOADED`. The POST
+policy's signed conditions make the size cap and `Content-Type`
+**server-enforced** at upload time — storage itself rejects an oversized or
+wrong-type object — rather than relying solely on the client-side checks
+below, which catch what the signed conditions can't (declared vs. actual
+sniffed MIME, integrity hash):
 
 1. **Size** — `stat.size` must not exceed `MEDIA_MAX_UPLOAD_SIZE_BYTES` (or the
    per-category override from `MEDIA_MAX_UPLOAD_SIZE_BYTES_PER_CATEGORY`).
@@ -101,7 +108,7 @@ On any failure the session is marked `ABORTED`, a `MediaObject` with
 | GET | `/v1/objects/{object_id}` | **public** | — | Fetch object metadata |
 | GET | `/v1/objects/{object_id}/download-url` | **public** | 60/min | Presigned GET URL for download |
 | PATCH | `/v1/objects/{object_id}` | writer | — | Update mutable metadata |
-| DELETE | `/v1/objects/{object_id}` | writer | — | Soft-delete (idempotent) |
+| DELETE | `/v1/objects/{object_id}` | writer | — | Soft-delete (idempotent); cold-moves the original to `S3_BUCKET_ARCHIVE` |
 
 The three `GET` routes are **public**: a caller with no token sees live `PUBLIC`
 objects and nothing else, and a denial there answers **404**, never 403, so the
@@ -356,32 +363,40 @@ Tenancy is taken from the caller's `tenant_id` claim (surfaced on `UserModel` by
 upload — never from the request body. Objects created by an untenanted caller
 stay `tenant_id IS NULL`, for which `TENANT` resolves as owner/superuser-only.
 
-## MinIO — browser-direct uploads/downloads via presigned URLs
+## Object storage — browser-direct uploads/downloads via presigned URLs
 
 The **browser-direct upload/download** flow (Option A) routes file I/O through
-MinIO presigned URLs rather than the media-service proxy. This requires a
-browser-reachable MinIO endpoint:
+presigned S3 URLs rather than the media-service proxy. This requires a
+browser-reachable storage endpoint:
 
-By default every presigned URL is built from the internal `MINIO_HOST:MINIO_PORT`
+By default every presigned URL is built from the internal `S3_ENDPOINT`
 address, which the browser cannot reach in most deployments. Set
-`MINIO_PUBLIC_ENDPOINT` to the **full URL** the browser can reach:
+`S3_PUBLIC_ENDPOINT` to the **full URL** the browser can reach:
 
 ```text
-# dev / loopback (MinIO already bound to 127.0.0.1:9005 in dev stacks)
-MINIO_PUBLIC_ENDPOINT=http://127.0.0.1:9005
+# dev / loopback (storage already bound to 127.0.0.1:9005 in dev stacks)
+S3_PUBLIC_ENDPOINT=http://127.0.0.1:9005
 
 # hardened / production (Traefik storage router + TLS)
-MINIO_PUBLIC_ENDPOINT=https://storage.example.com
+S3_PUBLIC_ENDPOINT=https://storage.example.com
 ```
 
 When set, presigned upload POST URLs and presigned GET download URLs are
 signed for the public endpoint; all internal operations (health, stat, copy,
-verify) continue to use `MINIO_HOST:MINIO_PORT`. An empty value (the default)
+verify) continue to use `S3_ENDPOINT`. An empty value (the default)
 preserves the existing behaviour and is appropriate for proxy-through
 deployments where the service streams bytes on behalf of the browser.
 
-**Ingress:** The hardened stacks expose MinIO's data path (buckets only, not
-admin or console) via a dedicated Traefik router on `websecure` (TLS) — see
+The storage settings are named after the S3 protocol, not after one server:
+`S3_ENDPOINT` (scheme-less `host[:port]`; TLS via `S3_USE_SSL`), `S3_REGION`,
+`S3_ACCESS_KEY`, `S3_SECRET_KEY`, the five `S3_BUCKET_*` names and
+`S3_PRESIGNED_URL_EXPIRE_SECONDS`. These are the only names the service
+reads: the pre-`2.2.0` vocabulary is refused at boot since `3.0.0`
+(`Settings` is `extra="forbid"`) — see the CHANGELOG's *Upgrade from 2.1.0*
+block for the rename table.
+
+**Ingress:** The hardened stacks expose the storage data path (buckets only,
+not admin or console) via a dedicated Traefik router on `websecure` (TLS) — see
 [hardened_media_m8/README.md](docker_compose/hardened_media_m8/README.md) for
 the storage ingress setup and CORS configuration.
 
@@ -389,13 +404,22 @@ the storage ingress setup and CORS configuration.
 
 | Visibility | Bucket setting |
 | --- | --- |
-| `PUBLIC` | `MINIO_BUCKET_PUBLIC` (`public-media`) |
-| `PRIVATE` | `MINIO_BUCKET_PRIVATE` (`private-media`) |
-| `TENANT` | `MINIO_BUCKET_PRIVATE` (`private-media`) |
-| `SENSITIVE` | `MINIO_BUCKET_SENSITIVE` (`sensitive-media`) |
+| `PUBLIC` | `S3_BUCKET_PUBLIC` (`public-media`) |
+| `PRIVATE` | `S3_BUCKET_PRIVATE` (`private-media`) |
+| `TENANT` | `S3_BUCKET_PRIVATE` (`private-media`) |
+| `SENSITIVE` | `S3_BUCKET_SENSITIVE` (`sensitive-media`) |
 
-Lifecycle storage classes map to `MINIO_BUCKET_TEMP` (`temp-media`) and
-`MINIO_BUCKET_ARCHIVE` (`archive-media`).
+Lifecycle storage classes map to `S3_BUCKET_TEMP` (`temp-media`, assembled
+archive exports inside their download window) and `S3_BUCKET_ARCHIVE`
+(`archive-media`, the **archive tier**: every soft-deleted original is
+cold-moved there — copy, repoint the row, drop the source — and waits out
+`MEDIA_RETENTION_PURGE_DAYS` until the hard purge reclaims it from that
+bucket). A PUBLIC object's known URL goes dead on delete exactly as before,
+but its bytes are now recoverable for the retention window like every other
+visibility's, and the visibility buckets hold only what the service still
+serves. The move is best-effort: if the archive copy fails the row keeps
+pointing at the bucket the bytes are really in (and public bytes are still
+removed from their URL).
 
 ## Auth modes
 
@@ -501,7 +525,9 @@ routes above:
 
 - **hard-purge** (daily) — removes bytes + row for objects soft-deleted longer
   than `MEDIA_RETENTION_PURGE_DAYS` (this is the only true hard-delete; the API
-  only soft-deletes). Quota is not re-debited.
+  only soft-deletes, into the archive tier). Bytes are removed from the bucket
+  *as stored* — normally `S3_BUCKET_ARCHIVE` — never re-derived from
+  visibility. Quota is not re-debited.
 - **stale-upload expiry** (hourly) — the scheduled form of
   `/v1/admin/uploads/purge-stale`.
 - **orphan reconciliation** (daily, report-only) — storage-keys-without-rows and

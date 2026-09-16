@@ -145,60 +145,375 @@ services:
     networks:
       - data_net
 
-  minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772
-    container_name: minio
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      # CORS origin for browser-direct presigned uploads/downloads (Option A).
-      # Scoped to the UI origin — NEVER use *. Replace with your UI FQDN in staging/prod.
-      MINIO_API_CORS_ALLOW_ORIGIN: "https://localhost:4430"
+  # One-shot: generate the storage backend's static identity table from .env +
+  # media.env, BEFORE the backend boots (`weed` reads -s3.config once at
+  # startup). This is the SeaweedFS shape of what `mc admin user add` +
+  # `mc admin policy attach` did for MinIO: SeaweedFS has no bootstrap-time
+  # user-creation API, identities are declared up front in this file.
+  #
+  # Two identities, and only two:
+  #   admin     Admin/Read/Write/List — used ONLY by storage-init (bucket
+  #             creation + CORS) and by the backend itself. Sourced from .env,
+  #             never from media.env / worker.env, so no application container
+  #             ever sees it.
+  #   media-rw  Read/Write/List scoped to exactly the five media buckets. This
+  #             is what media_service / media_service_worker / media_worker
+  #             authenticate as. SeaweedFS's action vocabulary has no separate
+  #             delete verb, so MinIO's `s3:DeleteObject` grant lands inside
+  #             `Write` here — a coarser verb over the SAME bucket set, not a
+  #             wider one (recorded as D2 in the migration matrix).
+  #
+  # Fails closed: empty or still-placeholder credentials, an admin key equal to
+  # the app key, and any value that cannot be embedded verbatim in JSON all
+  # abort the boot rather than producing a table that silently grants the wrong
+  # thing.
+  # One-shot: mint the client certificate authority that locks the S3 gRPC port.
+  #
+  # `-s3.ip.bind=0.0.0.0` (below) is what publishes the S3 gateway on 8333 to
+  # Traefik and the app containers. SeaweedFS binds the S3 component's gRPC port
+  # (8333+10000 = 18333) to the same address and offers no flag to separate them,
+  # and that port serves an IAM service whose PutIdentity RPC mints S3
+  # identities. Measured on this exact pinned image, an UNAUTHENTICATED
+  # PutIdentity from a sibling container produced a working `Admin` credential.
+  #
+  # mTLS on that port (seaweedfs/security.toml) is the only lever that refuses
+  # it. This one-shot generates a throwaway CA, signs one server certificate
+  # with it, then DELETES THE CA KEY — so no client certificate the port would
+  # accept can ever be minted. Nothing in this stack is a legitimate client of
+  # the S3 gRPC port, so closing it to everyone is the intent, not a limitation.
+  #
+  # Idempotent: regenerates only when the certificate is missing or has less
+  # than 30 days left. Same `apk add openssl` pattern cert-init already uses,
+  # and like cert-init it runs on the default bridge because that install needs
+  # egress — it handles no credential of any kind, unlike storage-config.
+  storage-tls-init:
+    image: alpine:3.21.3
     volumes:
-      - ./minio/data:/data
-    command: server /data --console-address ":9001"
+      - ./seaweedfs/tls:/tls
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        CRT=/tls/s3.crt; KEY=/tls/s3.key; CA=/tls/ca.crt
+        apk add --no-cache --quiet openssl
+        if [ -f "$$CRT" ] && [ -f "$$KEY" ] && [ -f "$$CA" ] && openssl x509 -in "$$CRT" -noout -checkend 2592000 >/dev/null 2>&1; then
+          echo "==> storage-tls-init: S3 gRPC certificate present and valid, skipping"
+          exit 0
+        fi
+        echo "==> storage-tls-init: minting the S3 gRPC mTLS certificate"
+        umask 077
+        rm -f /tls/ca.crt /tls/ca.key /tls/ca.srl /tls/s3.crt /tls/s3.key /tls/s3.csr /tls/ext.cnf
+        openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout /tls/ca.key -out /tls/ca.crt -subj "/CN=seaweedfs-s3-grpc-ca"
+        openssl req -newkey rsa:2048 -nodes -keyout /tls/s3.key -out /tls/s3.csr -subj "/CN=storage-s3"
+        echo "extendedKeyUsage=serverAuth,clientAuth" > /tls/ext.cnf
+        openssl x509 -req -in /tls/s3.csr -CA /tls/ca.crt -CAkey /tls/ca.key -CAcreateserial -days 3650 -out /tls/s3.crt -extfile /tls/ext.cnf
+        # The CA private key is the only thing that could ever mint a client
+        # certificate this port would accept. Destroy it.
+        rm -f /tls/ca.key /tls/ca.srl /tls/s3.csr /tls/ext.cnf
+        # The storage server runs as uid/gid 1000 and mounts /tls read-only.
+        chown 1000:1000 /tls/ca.crt /tls/s3.crt /tls/s3.key
+        chmod 644 /tls/ca.crt /tls/s3.crt
+        chmod 640 /tls/s3.key
+        echo "==> storage-tls-init: certificate minted, CA key destroyed"
+    restart: "no"
+
+  storage-config:
+    image: alpine:3.21.3
+    env_file:
+      - ./.env                            # admin identity (S3_ROOT_*)
+      - ./media.env                       # scoped identity + bucket names
+    volumes:
+      - ./seaweedfs/config:/config
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+
+        # <NAME>_FILE wins over <NAME>, the same Docker-secret indirection the
+        # app services use under docker-compose.production.yml. Without this the
+        # generated table would carry the placeholder from media.env while the
+        # apps authenticate with the real secret, and every request would 403.
+        pick() {  # pick <value> <file> <label>
+          if [ -n "$$2" ]; then
+            if [ ! -r "$$2" ]; then
+              echo "storage-config: $$3_FILE=$$2 is not readable" >&2; exit 1
+            fi
+            # $(...) already strips trailing newlines; a stray CR is then
+            # caught by the charset guard rather than silently signed with.
+            cat "$$2"
+          else
+            printf '%s' "$$1"
+          fi
+        }
+
+        require() {  # require <label> <value>
+          case "$$2" in
+            "")
+              echo "storage-config: $$1 is empty — refusing to generate an identity table" >&2
+              exit 1 ;;
+            changethis)
+              echo "storage-config: $$1 is still the placeholder 'changethis' — fill .env/media.env before first boot" >&2
+              exit 1 ;;
+            *[!A-Za-z0-9._~+/=-]*)
+              echo "storage-config: $$1 contains a character this generator will not embed in JSON verbatim (allowed: A-Z a-z 0-9 . _ ~ + / = -)" >&2
+              exit 1 ;;
+          esac
+        }
+
+        ROOT_USER=$$(pick "$${S3_ROOT_USER:-}" "$${S3_ROOT_USER_FILE:-}" S3_ROOT_USER)
+        ROOT_PASSWORD=$$(pick "$${S3_ROOT_PASSWORD:-}" "$${S3_ROOT_PASSWORD_FILE:-}" S3_ROOT_PASSWORD)
+        APP_KEY=$$(pick "$${S3_ACCESS_KEY:-}" "$${S3_ACCESS_KEY_FILE:-}" S3_ACCESS_KEY)
+        APP_SECRET=$$(pick "$${S3_SECRET_KEY:-}" "$${S3_SECRET_KEY_FILE:-}" S3_SECRET_KEY)
+
+        require S3_ROOT_USER "$$ROOT_USER"
+        require S3_ROOT_PASSWORD "$$ROOT_PASSWORD"
+        require S3_ACCESS_KEY "$$APP_KEY"
+        require S3_SECRET_KEY "$$APP_SECRET"
+
+        if [ "$$ROOT_USER" = "$$APP_KEY" ]; then
+          echo "storage-config: S3_ROOT_USER must differ from S3_ACCESS_KEY — the app credential must not be the admin credential" >&2
+          exit 1
+        fi
+
+        ACTIONS=""
+        for b in "$$S3_BUCKET_PUBLIC" "$$S3_BUCKET_PRIVATE" "$$S3_BUCKET_SENSITIVE" "$$S3_BUCKET_TEMP" "$$S3_BUCKET_ARCHIVE"; do
+          require "bucket name" "$$b"
+          for verb in Read Write List; do
+            ACTIONS="$$ACTIONS,\"$$verb:$$b\""
+          done
+        done
+        ACTIONS=$${ACTIONS#,}
+
+        umask 027
+        cat > /config/s3.json.tmp <<EOF
+        {
+          "identities": [
+            {
+              "name": "admin",
+              "credentials": [{"accessKey": "$$ROOT_USER", "secretKey": "$$ROOT_PASSWORD"}],
+              "actions": ["Admin", "Read", "Write", "List"]
+            },
+            {
+              "name": "media-rw",
+              "credentials": [{"accessKey": "$$APP_KEY", "secretKey": "$$APP_SECRET"}],
+              "actions": [$$ACTIONS]
+            }
+          ]
+        }
+        EOF
+        # The storage server runs as uid/gid 1000 and mounts this directory
+        # read-only; 0640 keeps the secrets off every other mode bit.
+        chown 1000:1000 /config/s3.json.tmp
+        chmod 640 /config/s3.json.tmp
+        mv /config/s3.json.tmp /config/s3.json
+        echo "storage-config: identity table written (admin + media-rw scoped to 5 buckets)"
+    restart: "no"
+    # It talks to nothing — but a service with no `networks:` gets compose's
+    # implicit `default` bridge, which has a gateway. data_net is internal, so
+    # the container that handles both credentials has no egress at all.
+    networks:
+      - data_net
+
+  # Object storage — SeaweedFS, the backend ratified for this fleet (S3 API,
+  # SigV4). The application never speaks to it as "SeaweedFS": media_service and
+  # media_worker sign plain S3 through the SDK's boto3 client, so this block is
+  # the only place the implementation is named.
+  #
+  # Boot flags, all load-bearing:
+  #   -ip=localhost      the address master/volume/filer ADVERTISE to each other.
+  #                      Without it they advertise the container's routable IP
+  #                      while -ip.bind pins them to loopback, and every write
+  #                      fails when the filer dials the volume server (measured,
+  #                      not assumed — `upload_content.go … connection refused`).
+  #   -ip.bind=127.0.0.1 master (9333), volume (8080), filer (8888) and webdav
+  #                      (7333) bind the container's OWN loopback interface, so
+  #                      no sibling on data_net can reach the admin surfaces.
+  #   -s3.ip.bind=0.0.0.0 only the S3 gateway (8333) is reachable from siblings.
+  #   -s3.config          static IAM identities, generated by storage-config
+  #                      before this service starts: an `admin` identity no
+  #                      application container is given, and `media-rw` scoped
+  #                      to the five media buckets. SeaweedFS reads this file
+  #                      once at startup — there is no admin API to add users
+  #                      afterwards, which is why the generator runs first.
+  #
+  # Hardened like every other service in this stack: non-root, all capabilities
+  # dropped, read-only root filesystem. It runs as uid/gid 1000 (the image's own
+  # `seaweed` user) so the entrypoint's root-only chown/su-exec path is skipped
+  # entirely — that path is what needs CHOWN/SETUID/SETGID, and skipping it is
+  # what lets `cap_drop: ALL` stand. ./seaweedfs/data must therefore be writable
+  # by uid 1000 (Docker Desktop mounts already are; on a Linux host:
+  # `chown -R 1000:1000 seaweedfs/data`).
+  storage:
+    image: chrislusf/seaweedfs:4.45
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp                            # gRPC unix socket + scratch
+      - /run
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G                    # ~96 MiB idle for all four components;
+                                        # headroom is for concurrent object I/O
+    volumes:
+      - ./seaweedfs/data:/data
+      # The DIRECTORY, not the file: a bind mount whose host path does not exist
+      # yet is created by Docker as a directory, so mounting s3.json directly
+      # would race the generator on a first boot and hand `weed` a directory
+      # where it expects a file. Mounting the parent makes the ordering
+      # depends_on already guarantees sufficient.
+      - ./seaweedfs/config:/etc/seaweedfs/config:ro
+      # gRPC mTLS material for the S3 component. `-s3.ip.bind=0.0.0.0` binds
+      # the S3 gRPC port (18333) as well as the S3 gateway (8333) and there is
+      # no flag to separate them; that port's IAM service mints identities and
+      # was measured accepting an UNAUTHENTICATED PutIdentity on this image.
+      # security.toml turns it into an mTLS port whose CA key no longer exists.
+      - ./seaweedfs/tls:/etc/seaweedfs/tls:ro
+      - ./seaweedfs/security.toml:/etc/seaweedfs/security.toml:ro
+    command:
+      - server
+      - -dir=/data
+      - -filer
+      - -s3
+      - -ip=localhost
+      - -ip.bind=127.0.0.1
+      - -s3.ip.bind=0.0.0.0
+      - -s3.config=/etc/seaweedfs/config/s3.json
+      # SeaweedFS 4.x starts an Iceberg REST catalog (8181) and a Lance
+      # namespace server (9101) by default, and BOTH bind 0.0.0.0 — they were
+      # reachable from every sibling container. This stack is a plain S3 media
+      # store and uses neither, so both are switched off at the listener.
+      - -s3.port.iceberg=0
+      - -s3.port.lance=0
+    # The identity table is generated from .env + media.env before the server
+    # boots; `weed` reads -s3.config once at startup.
+    depends_on:
+      storage-config:
+        condition: service_completed_successfully
+      storage-tls-init:
+        condition: service_completed_successfully
+    # S3 port only. The admin surfaces are loopback-bound above and are not
+    # probed here — a healthcheck that passes while S3 is down is not a
+    # healthcheck for this service.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8333/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
+    # No `ports:` block — the hardened stack reaches storage only on data_net,
+    # and the browser only through the Traefik storage router on app_net.
     restart: unless-stopped
     networks:
       - app_net
       - data_net
 
-  # One-shot: create the logical buckets and a scoped media-rw user/policy.
-  # Reads MinIO root creds from .env and the media service creds from media.env.
-  # media_service waits for this to complete successfully before starting.
-  minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+  # One-shot: create the five logical buckets and pin CORS on each of them.
+  # Runs against the S3 API with the admin identity storage-config declared —
+  # the only container besides the backend itself that ever holds it.
+  #
+  # Buckets and CORS are the two things that cannot be declared in the static
+  # identity table: both are S3 API calls, so they need a running server. The
+  # scoped media-rw identity already exists by the time this runs (it was
+  # written into -s3.config), so this step never creates users.
+  #
+  # CORS is per bucket, not an env var — SeaweedFS has no MINIO_API_CORS_ALLOW_ORIGIN
+  # equivalent, so the origin allowlist is applied with PutBucketCors once per
+  # bucket. S3_CORS_ALLOW_ORIGIN is an exact origin list (comma-separated for
+  # more than one) and is rejected here if it is `*`.
+  #
+  # Idempotent: head-bucket guards create-bucket, and put-bucket-cors replaces
+  # the rule set wholesale, so a re-run converges instead of failing.
+  storage-init:
+    image: amazon/aws-cli:2.36.40
     depends_on:
-      minio:
+      storage:
         condition: service_healthy
     env_file:
-      - ./.env
-      - ./media.env
+      - ./.env                            # admin identity + CORS origin
+      - ./media.env                       # bucket names, endpoint, region
+    environment:
+      AWS_EC2_METADATA_DISABLED: "true"   # never probe a metadata endpoint
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
     entrypoint:
       - /bin/sh
       - -c
       - |
-        set -e
-        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
-          echo "minio-init: waiting for minio..."; sleep 1
+        set -eu
+
+        pick() {  # pick <value> <file> <label> — Docker secret wins, as in storage-config
+          if [ -n "$$2" ]; then
+            if [ ! -r "$$2" ]; then
+              echo "storage-init: $$3_FILE=$$2 is not readable" >&2; exit 1
+            fi
+            # $(...) already strips trailing newlines; a stray CR is then
+            # caught by the charset guard rather than silently signed with.
+            cat "$$2"
+          else
+            printf '%s' "$$1"
+          fi
+        }
+
+        AWS_ACCESS_KEY_ID=$$(pick "$${S3_ROOT_USER:-}" "$${S3_ROOT_USER_FILE:-}" S3_ROOT_USER)
+        AWS_SECRET_ACCESS_KEY=$$(pick "$${S3_ROOT_PASSWORD:-}" "$${S3_ROOT_PASSWORD_FILE:-}" S3_ROOT_PASSWORD)
+        AWS_DEFAULT_REGION="$${S3_REGION:-us-east-1}"
+        export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+
+        case "$${S3_USE_SSL:-false}" in
+          true|True|TRUE|1|yes) SCHEME=https ;;
+          *) SCHEME=http ;;
+        esac
+        ENDPOINT="$$SCHEME://$$S3_ENDPOINT"
+
+        ORIGINS="$${S3_CORS_ALLOW_ORIGIN:-}"
+        if [ -z "$$ORIGINS" ]; then
+          echo "storage-init: S3_CORS_ALLOW_ORIGIN is empty — set the exact browser origin(s) allowed on the presigned data path" >&2
+          exit 1
+        fi
+        case "$$ORIGINS" in
+          *"*"*)
+            echo "storage-init: S3_CORS_ALLOW_ORIGIN must not contain '*' — a wildcard origin lets any site drive the presigned data path" >&2
+            exit 1 ;;
+        esac
+
+        # Build the AllowedOrigins array from the comma-separated list.
+        ORIGIN_JSON=""
+        OLD_IFS=$$IFS; IFS=,
+        for o in $$ORIGINS; do
+          ORIGIN_JSON="$$ORIGIN_JSON,\"$$o\""
         done
-        for b in "$$MINIO_BUCKET_PUBLIC" "$$MINIO_BUCKET_PRIVATE" "$$MINIO_BUCKET_SENSITIVE" "$$MINIO_BUCKET_TEMP" "$$MINIO_BUCKET_ARCHIVE"; do
-          mc mb --ignore-existing "local/$$b"
+        IFS=$$OLD_IFS
+        ORIGIN_JSON=$${ORIGIN_JSON#,}
+
+        # Methods the browser actually uses on this origin: presigned GET
+        # download, presigned POST-policy upload, and the HEAD behind a ranged
+        # fetch. No PUT (uploads are POST policies), no DELETE (deletes are
+        # server-side only). Headers are enumerated rather than `*`.
+        CORS="{\"CORSRules\":[{
+          \"AllowedOrigins\":[$$ORIGIN_JSON],
+          \"AllowedMethods\":[\"GET\",\"HEAD\",\"POST\"],
+          \"AllowedHeaders\":[\"Authorization\",\"Content-Type\",\"Content-Length\",\"Content-Disposition\",\"Range\",\"x-amz-date\",\"x-amz-content-sha256\",\"x-amz-algorithm\",\"x-amz-credential\",\"x-amz-signature\"],
+          \"ExposeHeaders\":[\"ETag\",\"Content-Range\",\"Content-Length\",\"Content-Disposition\"],
+          \"MaxAgeSeconds\":3000
+        }]}"
+
+        for b in "$$S3_BUCKET_PUBLIC" "$$S3_BUCKET_PRIVATE" "$$S3_BUCKET_SENSITIVE" "$$S3_BUCKET_TEMP" "$$S3_BUCKET_ARCHIVE"; do
+          if aws --endpoint-url "$$ENDPOINT" s3api head-bucket --bucket "$$b" >/dev/null 2>&1; then
+            echo "storage-init: bucket $$b already exists"
+          else
+            aws --endpoint-url "$$ENDPOINT" s3api create-bucket --bucket "$$b"
+            echo "storage-init: bucket $$b created"
+          fi
+          aws --endpoint-url "$$ENDPOINT" s3api put-bucket-cors --bucket "$$b" --cors-configuration "$$CORS"
+          echo "storage-init: CORS pinned on $$b"
         done
-        printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"],"Resource":["arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*","arn:aws:s3:::%s","arn:aws:s3:::%s/*"]}]}' \
-          "$$MINIO_BUCKET_PUBLIC" "$$MINIO_BUCKET_PUBLIC" \
-          "$$MINIO_BUCKET_PRIVATE" "$$MINIO_BUCKET_PRIVATE" \
-          "$$MINIO_BUCKET_SENSITIVE" "$$MINIO_BUCKET_SENSITIVE" \
-          "$$MINIO_BUCKET_TEMP" "$$MINIO_BUCKET_TEMP" \
-          "$$MINIO_BUCKET_ARCHIVE" "$$MINIO_BUCKET_ARCHIVE" > /tmp/media-rw.json
-        mc admin policy create local media-rw /tmp/media-rw.json || true
-        mc admin user add local "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY" || true
-        mc admin policy attach local media-rw --user "$$MINIO_ACCESS_KEY" || true
-        echo "minio-init: buckets and media-rw policy ready"
+        echo "storage-init: 5 buckets ready, CORS scoped to $$ORIGINS"
     restart: "no"
     networks:
       - data_net
@@ -231,7 +546,7 @@ services:
     restart: unless-stopped
 
   auth_user_service:
-    image: tepochtli/fa-auth-m8:2.0.3
+    image: tepochtli/fa-auth-m8:2.2.1
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -303,7 +618,7 @@ services:
   # repo, not under this stack). Only the .env file is mounted, matching the
   # media_service pattern.
   media_worker:
-    image: tepochtli/media-worker-m8:0.4.1
+    image: tepochtli/media-worker-m8:1.0.0
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -330,16 +645,16 @@ services:
         condition: service_healthy
       media_redis_cache:                  # ARQ queue the worker consumes
         condition: service_healthy
-      minio:                              # object bytes (get/put/remove)
+      storage:                            # object bytes (get/put/remove)
         condition: service_healthy
-      minio-init:                         # media-rw creds + buckets must exist
+      storage-init:                         # media-rw creds + buckets must exist
         condition: service_completed_successfully
       media_service:                      # internal callback target
         condition: service_started
     restart: unless-stopped
     networks:
       # data_net carries everything the worker pulls from / reports to:
-      # media_redis_cache (ARQ queue), minio (bytes), media_service (internal API).
+      # media_redis_cache (ARQ queue), storage (bytes), media_service (internal API).
       - data_net
       # scan_net is the private worker↔clamav segment. NOT on app_net: the worker
       # runs no HTTP server, needs nothing external-facing, and (both its nets are
@@ -347,7 +662,7 @@ services:
       - scan_net
 
   media_service:
-    image: tepochtli/media-service-m8:2.1.1
+    image: tepochtli/media-service-m8:3.0.0
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -376,9 +691,9 @@ services:
         condition: service_started
       media_redis_cache:
         condition: service_healthy
-      minio:
+      storage:
         condition: service_healthy
-      minio-init:
+      storage-init:
         condition: service_completed_successfully
     restart: unless-stopped
     networks:
@@ -393,7 +708,7 @@ services:
   # this command override bypasses docker_start.sh. Outbound-only: no Traefik
   # label, no exposed port.
   media_service_worker:
-    image: tepochtli/media-service-m8:2.1.1
+    image: tepochtli/media-service-m8:3.0.0
     command: ["arq", "media_service.maintenance_worker.WorkerSettings"]
     security_opt:
       - no-new-privileges:true
@@ -421,9 +736,9 @@ services:
         condition: service_healthy
       media_redis_cache:
         condition: service_healthy
-      minio:
+      storage:
         condition: service_healthy
-      minio-init:
+      storage-init:
         condition: service_completed_successfully
       media_service:
         condition: service_started
@@ -447,7 +762,10 @@ volumes:
 networks:
   app_net:
     driver: bridge
-    name: hardened_m8_app_net   # explicit name so Traefik's network: setting can reference it
+    # No explicit `name:` — Compose project-prefixes the network (e.g.
+    # hardened_media_m8_app_net), keeping it isolated from every other stack.
+    # Two projects must never share an app network name (see
+    # .workspace/plans/stack/analysis/audit-fa-auth-jwks-kid-key-binding-2026-09-08.md §0.2).
     # Pinned, deterministic subnet so the bridge gateway IP is stable and the
     # allowlists in traefik/dynamic_conf.yml can trust it. 172.16.0.0/16 is RFC1918
     # private space Docker allocates per-bridge on ANY host, independent of the
@@ -468,9 +786,8 @@ networks:
   scan_net:
     driver: bridge
     internal: true
-    name: hardened_media_m8_scan_net
+    # No explicit `name:` — project-prefixed, same isolation reasoning as app_net.
   # clamav-ONLY outbound network so freshclam can fetch signature DB updates. No
   # other container attaches here, so this egress path is never shared.
   clamav_egress:
     driver: bridge
-    name: hardened_media_m8_clamav_egress

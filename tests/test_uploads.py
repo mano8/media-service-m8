@@ -71,13 +71,13 @@ def test_initiate_upload_returns_presigned_post_form(
     client: TestClient, mock_storage: MagicMock
 ):
     mock_storage.presigned_post_object.return_value = (
-        "https://minio/private-media",
+        "https://storage/private-media",
         {"key": "k", "Content-Type": "application/pdf", "policy": "p"},
     )
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["upload_url"] == "https://minio/private-media"
+    assert data["upload_url"] == "https://storage/private-media"
     assert data["upload_fields"]["key"] == "k"
     assert "session_id" in data
     assert "expires_at" in data
@@ -86,7 +86,7 @@ def test_initiate_upload_returns_presigned_post_form(
 def test_initiate_upload_constrains_size_and_content_type(
     client: TestClient, mock_storage: MagicMock
 ):
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     assert resp.status_code == 200
     # The POST policy is signed for the declared type and a finite size cap, so
@@ -99,7 +99,7 @@ def test_initiate_upload_constrains_size_and_content_type(
 def test_initiate_upload_creates_session_in_db(
     client: TestClient, mock_storage: MagicMock, session: Session
 ):
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     sid = uuid.UUID(resp.json()["session_id"])
     upload_session = session.get(UploadSession, sid)
@@ -110,7 +110,7 @@ def test_initiate_upload_creates_session_in_db(
 def test_initiate_upload_ignores_client_tenant_id(
     client: TestClient, mock_storage: MagicMock, session: Session
 ):
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     body = {**_INITIATE_BODY, "tenant_id": str(uuid.uuid4())}
     resp = client.post("/media/v1/uploads/initiate", json=body)
     assert resp.status_code == 200
@@ -130,7 +130,7 @@ def test_initiate_upload_stamps_tenant_from_claim(
     user = UserModel(
         id=uuid.uuid4(), email="tenant@example.com", is_active=True, tenant_id=tenant
     )
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = UploadsController.initiate_upload(
         session=session,
         current_user=user,
@@ -154,7 +154,7 @@ def test_initiate_upload_uses_tenant_prefixed_object_key(
     user = UserModel(
         id=owner, email="tenant@example.com", is_active=True, tenant_id=tenant
     )
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = UploadsController.initiate_upload(
         session=session,
         current_user=user,
@@ -172,7 +172,7 @@ def test_initiate_upload_non_tenant_uses_flat_object_key(
     # Non-tenanted callers (tenant_id=None) keep the flat users/{owner}/... path.
     owner = uuid.uuid4()
     user = UserModel(id=owner, email="plain@example.com", is_active=True)
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = UploadsController.initiate_upload(
         session=session,
         current_user=user,
@@ -228,7 +228,7 @@ def test_initiate_upload_signs_post_for_declared_size_not_category_max(
 ):
     # The POST policy is signed for the declared size (2048), not the much larger
     # category maximum, so a small declaration cannot push a large object.
-    mock_storage.presigned_post_object.return_value = ("https://minio/b", {})
+    mock_storage.presigned_post_object.return_value = ("https://storage/b", {})
     resp = client.post("/media/v1/uploads/initiate", json=_INITIATE_BODY)
     assert resp.status_code == 200
     _, kwargs = mock_storage.presigned_post_object.call_args

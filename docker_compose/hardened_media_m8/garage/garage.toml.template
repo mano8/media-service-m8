@@ -1,0 +1,42 @@
+# Garage 2.x server config TEMPLATE for the T27-garage-alt-profile alternate
+# storage backend (docker-compose.garage.yml). The profile's storage-config
+# one-shot renders it to garage/config/garage.toml (gitignored) at every boot,
+# substituting @S3_REGION@ with S3_REGION from media.env — the same
+# generate-before-boot shape the SeaweedFS profile uses for
+# seaweedfs/config/s3.json. Do not edit the rendered copy; edit this file.
+#
+# Tracked as a plain file: it carries NO secret. The RPC secret comes from
+# GARAGE_RPC_SECRET / GARAGE_RPC_SECRET_FILE (env, see .env.example and
+# docker-compose.garage.production.yml), the same Docker-secret indirection
+# pattern every other credential in this stack uses.
+#
+# s3_api.s3_region MUST match S3_REGION in media.env/worker.env exactly —
+# Garage validates the SigV4 region on every request and answers 403 to any
+# other value. Templating it from the one S3_REGION the apps sign with is what
+# makes that a non-issue (T30-close-deferred-flags); before that this was a
+# static "eu-west-1" that silently broke every signature when S3_REGION moved.
+
+metadata_dir = "/data/meta"
+data_dir = "/data/data"
+db_engine = "sqlite"
+
+# Single node, no peers: whatever is written is the only copy there is.
+replication_factor = 1
+
+# RPC (cluster administration: layout, buckets, keys) — bound to the
+# container's OWN loopback, exactly like SeaweedFS's master/volume/filer/
+# webdav under -ip.bind=127.0.0.1 (S2). No sibling on any Docker network can
+# reach it. storage-init below runs the `garage` CLI sharing THIS container's
+# network namespace (network_mode: "service:storage" in the compose file) to
+# administer it — the same "same network namespace, no Docker socket, no
+# published admin port" property T4's docker-exec bootstrap measurement
+# relied on, expressed as a compose-native sidecar instead of a host exec.
+rpc_bind_addr = "127.0.0.1:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+s3_region = "@S3_REGION@"
+# Same port SeaweedFS's S3 gateway used (8333) — nothing downstream (the
+# Traefik storage route, S3_ENDPOINT in media.env/worker.env) needs to change
+# when switching backends. That is the whole point of a profile swap.
+api_bind_addr = "0.0.0.0:8333"

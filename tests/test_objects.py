@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
+from media_service.core.config import settings
 from media_service.db_models.media_objects import (
     MediaObject,
     MediaObjectStatus,
@@ -95,10 +96,10 @@ def test_download_url_returns_presigned_url(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
     obj = _make_object(session, current_user.id)
-    mock_storage.presigned_get_object.return_value = "https://minio/download"
+    mock_storage.presigned_get_object.return_value = "https://storage/download"
     resp = client.get(f"/media/v1/objects/{obj.id}/download-url")
     assert resp.status_code == 200
-    assert resp.json()["url"] == "https://minio/download"
+    assert resp.json()["url"] == "https://storage/download"
     assert "expires_at" in resp.json()
 
 
@@ -159,7 +160,7 @@ def test_update_object_relocation_failure_leaves_metadata_unchanged(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
     obj = _make_object(session, current_user.id, visibility=MediaVisibility.PRIVATE)
-    mock_storage.copy_object.side_effect = RuntimeError("minio down")
+    mock_storage.copy_object.side_effect = RuntimeError("storage down")
     resp = client.patch(
         f"/media/v1/objects/{obj.id}",
         json={"visibility": "public"},
@@ -248,25 +249,78 @@ def test_update_object_forbidden(client: TestClient, session: Session, superuser
 # ── DELETE /media/v1/objects/{id} ─────────────────────────────────────────────
 
 
-def test_delete_object_soft_deletes(
+def test_delete_object_soft_deletes_and_archives_bytes(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
+    # The archive-tier writer: a soft-delete cold-moves the original out of
+    # its visibility bucket into S3_BUCKET_ARCHIVE (copy, repoint, then drop
+    # the source), where the hard purge later reclaims it.
     obj = _make_object(session, current_user.id)
+    key = obj.object_key
     resp = client.delete(f"/media/v1/objects/{obj.id}")
     assert resp.status_code == 204
     session.refresh(obj)
     assert obj.deleted_at is not None
     assert obj.status == MediaObjectStatus.DELETED
-    # PRIVATE bytes are reachable only via presigned URLs; metadata soft-delete
-    # is sufficient, so the stored object is left in place.
+    assert obj.storage_bucket == settings.S3_BUCKET_ARCHIVE
+    mock_storage.copy_object.assert_called_once_with(
+        src_bucket="private-media",
+        src_object_key=key,
+        dest_bucket=settings.S3_BUCKET_ARCHIVE,
+        dest_object_key=key,
+    )
+    mock_storage.remove_object.assert_called_once_with(
+        bucket="private-media", object_key=key
+    )
+
+
+def test_delete_object_source_removed_only_after_commit(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # Ordering contract: the archive copy lands before the soft-delete commits
+    # and the source copy is dropped after it, so the row never points at
+    # bytes that are not there.
+    obj = _make_object(session, current_user.id)
+    order: list[str] = []
+    mock_storage.copy_object.side_effect = lambda **_: order.append("copy")
+    mock_storage.remove_object.side_effect = lambda **_: order.append("remove")
+    original_commit = session.commit
+
+    def _commit() -> None:
+        order.append("commit")
+        original_commit()
+
+    session.commit = _commit  # type: ignore[method-assign]
+    try:
+        resp = client.delete(f"/media/v1/objects/{obj.id}")
+    finally:
+        session.commit = original_commit  # type: ignore[method-assign]
+    assert resp.status_code == 204
+    assert order == ["copy", "commit", "remove"]
+
+
+def test_delete_object_private_tolerates_archive_copy_failure(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # Archival is best-effort: a failed copy must not fail the delete, and the
+    # row keeps pointing at the bucket the bytes are really in. PRIVATE bytes
+    # are reachable only via presigned URLs, so they are left in place.
+    obj = _make_object(session, current_user.id)
+    mock_storage.copy_object.side_effect = RuntimeError("copy failed")
+    resp = client.delete(f"/media/v1/objects/{obj.id}")
+    assert resp.status_code == 204
+    session.refresh(obj)
+    assert obj.deleted_at is not None
+    assert obj.storage_bucket == "private-media"
     mock_storage.remove_object.assert_not_called()
 
 
-def test_delete_object_public_removes_bytes(
+def test_delete_object_public_archives_and_removes_public_bytes(
     client: TestClient, mock_storage: MagicMock, session: Session, current_user
 ):
-    # A PUBLIC object is world-readable at a known URL; a soft-delete must also
-    # remove the bytes so "deleted" content stops being served.
+    # A PUBLIC object is world-readable at a known URL; after the archive move
+    # the public copy is removed so "deleted" content stops being served, while
+    # the archived copy stays recoverable for the retention window.
     obj = _make_object(session, current_user.id, visibility=MediaVisibility.PUBLIC)
     obj.storage_bucket = "public-media"
     session.add(obj)
@@ -275,6 +329,33 @@ def test_delete_object_public_removes_bytes(
     assert resp.status_code == 204
     session.refresh(obj)
     assert obj.deleted_at is not None
+    assert obj.storage_bucket == settings.S3_BUCKET_ARCHIVE
+    mock_storage.copy_object.assert_called_once_with(
+        src_bucket="public-media",
+        src_object_key=obj.object_key,
+        dest_bucket=settings.S3_BUCKET_ARCHIVE,
+        dest_object_key=obj.object_key,
+    )
+    mock_storage.remove_object.assert_called_once_with(
+        bucket="public-media", object_key=obj.object_key
+    )
+
+
+def test_delete_object_public_removes_bytes_when_archive_copy_fails(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # The pre-archive guarantee survives a storage hiccup: if the archive copy
+    # fails, the public bytes are still removed from their known URL.
+    obj = _make_object(session, current_user.id, visibility=MediaVisibility.PUBLIC)
+    obj.storage_bucket = "public-media"
+    session.add(obj)
+    session.commit()
+    mock_storage.copy_object.side_effect = RuntimeError("copy failed")
+    resp = client.delete(f"/media/v1/objects/{obj.id}")
+    assert resp.status_code == 204
+    session.refresh(obj)
+    assert obj.deleted_at is not None
+    assert obj.storage_bucket == "public-media"
     mock_storage.remove_object.assert_called_once_with(
         bucket="public-media", object_key=obj.object_key
     )
@@ -294,6 +375,21 @@ def test_delete_object_public_tolerates_remove_failure(
     assert resp.status_code == 204
     session.refresh(obj)
     assert obj.deleted_at is not None
+    assert obj.storage_bucket == settings.S3_BUCKET_ARCHIVE
+
+
+def test_delete_object_already_archived_is_not_copied_again(
+    client: TestClient, mock_storage: MagicMock, session: Session, current_user
+):
+    # A row already living in the archive bucket has nothing to move.
+    obj = _make_object(session, current_user.id)
+    obj.storage_bucket = settings.S3_BUCKET_ARCHIVE
+    session.add(obj)
+    session.commit()
+    resp = client.delete(f"/media/v1/objects/{obj.id}")
+    assert resp.status_code == 204
+    mock_storage.copy_object.assert_not_called()
+    mock_storage.remove_object.assert_not_called()
 
 
 def test_delete_object_idempotent(
@@ -302,7 +398,8 @@ def test_delete_object_idempotent(
     obj = _make_object(session, current_user.id, deleted=True)
     resp = client.delete(f"/media/v1/objects/{obj.id}")
     assert resp.status_code == 204
-    # Already deleted: no second attempt to remove bytes.
+    # Already deleted: no second attempt to archive or remove bytes.
+    mock_storage.copy_object.assert_not_called()
     mock_storage.remove_object.assert_not_called()
 
 

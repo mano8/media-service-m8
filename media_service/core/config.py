@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import ClassVar, Literal, Optional
 from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from fastapi_m8 import ConsumerServiceSettings, find_dotenv
@@ -48,10 +48,10 @@ class Settings(ConsumerServiceSettings):
     SERVICE_VERSION: str = __version__
     CONTRACT_NAME: str = "media-service-m8"
     CONTRACT_VERSION: str = "1.1"
-    CONTRACT_RANGE: str = ">=2.0.0 <3.0.0"
+    CONTRACT_RANGE: str = ">=3.0.0 <4.0.0"
 
     secret_fields = ConsumerServiceSettings.secret_fields + [
-        "MINIO_SECRET_KEY",
+        "S3_SECRET_KEY",
         "MEDIA_REDIS_PASSWORD",
         "MEDIA_INTERNAL_SERVICE_TOKEN",
         "MEDIA_SHARE_SIGNING_SECRET",
@@ -76,25 +76,32 @@ class Settings(ConsumerServiceSettings):
     # link stays useful.
     MEDIA_SHARE_MAX_EXPIRES_SECONDS: int = Field(default=2_592_000, ge=1)
 
-    # ── MinIO ────────────────────────────────────────────────────────────────
-    MINIO_HOST: str = "minio"
-    MINIO_PORT: int = Field(default=9000, ge=1, le=65535)
-    MINIO_USE_SSL: bool = False
-    MINIO_REGION: str = "eu-west-1"
+    # ── Object storage (S3) ──────────────────────────────────────────────────
+    # Named after the protocol, not after one implementation of it: the backend
+    # is any S3-API server (SeaweedFS 4.x is the ratified default, Garage 2.x
+    # the validated fallback; the application never names either). Internal
+    # endpoint the service itself talks S3 to, as a scheme-less
+    # ``host[:port]``; TLS is selected by ``S3_USE_SSL``, never by a scheme
+    # here. The default is the ``storage`` service on its S3 port, which every
+    # compose stack in the fleet sets explicitly anyway.
+    S3_ENDPOINT: str = "storage:8333"
+    S3_USE_SSL: bool = False
+    S3_REGION: str = "eu-west-1"
     # Browser-facing endpoint (full URL, e.g. ``http://127.0.0.1:9005`` or
     # ``https://storage.example.com``) used **only** when minting presigned
-    # URLs. Must differ from the internal ``MINIO_HOST:MINIO_PORT`` whenever
-    # the browser cannot resolve the internal host. Empty = use internal
-    # endpoint (current behaviour; proxy-through deployments unaffected).
-    MINIO_PUBLIC_ENDPOINT: str = ""
-    MINIO_ACCESS_KEY: str = ""
-    MINIO_SECRET_KEY: str = ""
-    MINIO_BUCKET_PUBLIC: str = "public-media"
-    MINIO_BUCKET_PRIVATE: str = "private-media"
-    MINIO_BUCKET_SENSITIVE: str = "sensitive-media"
-    MINIO_BUCKET_TEMP: str = "temp-media"
-    MINIO_BUCKET_ARCHIVE: str = "archive-media"
-    MINIO_PRESIGNED_URL_EXPIRE_SECONDS: int = Field(default=300, ge=1)
+    # URLs. Must differ from the internal ``S3_ENDPOINT`` whenever the browser
+    # cannot resolve the internal host. Empty = use internal endpoint (current
+    # behaviour; proxy-through deployments unaffected).
+    S3_PUBLIC_ENDPOINT: str = ""
+    S3_ACCESS_KEY: str = ""
+    S3_SECRET_KEY: str = ""
+    S3_BUCKET_PUBLIC: str = "public-media"
+    S3_BUCKET_PRIVATE: str = "private-media"
+    S3_BUCKET_SENSITIVE: str = "sensitive-media"
+    S3_BUCKET_TEMP: str = "temp-media"
+    S3_BUCKET_ARCHIVE: str = "archive-media"
+    S3_PRESIGNED_URL_EXPIRE_SECONDS: int = Field(default=300, ge=1)
+
     MEDIA_MAX_UPLOAD_SIZE_BYTES: int = Field(default=104_857_600, ge=1)
     MEDIA_MAX_UPLOAD_SIZE_BYTES_PER_CATEGORY: dict[str, int] = Field(
         default_factory=dict
@@ -205,9 +212,44 @@ class Settings(ConsumerServiceSettings):
     MEDIA_REDIS_PASSWORD: Optional[SecretStr] = None
     MEDIA_REDIS_NAMESPACE: str = "media"
 
+    @field_validator("S3_ENDPOINT")
+    @classmethod
+    def _validate_s3_endpoint(cls, value: str) -> str:
+        """Require a scheme-less ``host[:port]`` internal endpoint.
+
+        Keeps the port-range guarantee a separate port field would give, and
+        rejects a URL early rather than letting the S3 client build
+        ``https://https://host`` at the first request. The browser-facing
+        ``S3_PUBLIC_ENDPOINT`` is the one that carries a scheme.
+        """
+        endpoint = value.strip()
+        if not endpoint:
+            raise ValueError(
+                "CONFIG: S3_ENDPOINT must not be empty (expected 'host:port')."
+            )
+        if "://" in endpoint:
+            raise ValueError(
+                f"CONFIG: S3_ENDPOINT must be a scheme-less 'host[:port]' value; "
+                f"got {endpoint!r} — use S3_USE_SSL for TLS and S3_PUBLIC_ENDPOINT "
+                f"for the browser-facing URL."
+            )
+        host, separator, port = endpoint.rpartition(":")
+        # ``endswith(']')`` is a bracketed IPv6 literal with no port.
+        if separator and not endpoint.endswith("]"):
+            if not port.isdigit() or not 1 <= int(port) <= 65535:
+                raise ValueError(
+                    f"CONFIG: S3_ENDPOINT port must be a number between 1 and "
+                    f"65535; got {port!r}."
+                )
+            if not host:
+                raise ValueError(
+                    f"CONFIG: S3_ENDPOINT must include a host; got {endpoint!r}."
+                )
+        return endpoint
+
     @model_validator(mode="after")
-    def _validate_minio_public_endpoint(self) -> "Settings":
-        """Reject unsafe MINIO_PUBLIC_ENDPOINT values before presigned URLs are minted (11.4).
+    def _validate_s3_public_endpoint(self) -> "Settings":
+        """Reject unsafe S3_PUBLIC_ENDPOINT values before presigned URLs are minted (11.4).
 
         Rules:
         - Empty → allowed (internal endpoint used for presign).
@@ -215,19 +257,19 @@ class Settings(ConsumerServiceSettings):
         - Unsupported scheme (not http/https) → rejected in all modes.
         - http:// targeting a non-loopback host → rejected in production/strict.
         """
-        endpoint = self.MINIO_PUBLIC_ENDPOINT
+        endpoint = self.S3_PUBLIC_ENDPOINT
         if not endpoint:
             return self
         if "://" not in endpoint:
             raise ValueError(
-                f"CONFIG: MINIO_PUBLIC_ENDPOINT must be an absolute URL with "
+                f"CONFIG: S3_PUBLIC_ENDPOINT must be an absolute URL with "
                 f"'http://' or 'https://' scheme (e.g. 'https://storage.example.com'); "
                 f"got {endpoint!r} — bare hostnames are rejected (11.4)."
             )
         parsed = urlparse(endpoint)
         if parsed.scheme not in ("http", "https"):
             raise ValueError(
-                f"CONFIG: MINIO_PUBLIC_ENDPOINT scheme must be 'http' or 'https'; "
+                f"CONFIG: S3_PUBLIC_ENDPOINT scheme must be 'http' or 'https'; "
                 f"got {parsed.scheme!r} (11.4)."
             )
         is_production = self.ENVIRONMENT == "production" or self.STRICT_PRODUCTION_MODE
@@ -235,7 +277,7 @@ class Settings(ConsumerServiceSettings):
             host = parsed.hostname or ""
             if not _is_loopback_host(host):
                 raise ValueError(
-                    f"CONFIG: MINIO_PUBLIC_ENDPOINT uses 'http://' for non-loopback "
+                    f"CONFIG: S3_PUBLIC_ENDPOINT uses 'http://' for non-loopback "
                     f"host {host!r} in production/strict mode — HTTPS is required for "
                     f"browser-facing presigned URLs. "
                     f"Use 'https://{parsed.netloc}' or set STRICT_PRODUCTION_MODE=false "
