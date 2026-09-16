@@ -290,6 +290,23 @@ In this order — each step assumes the one before it.
 
 ### Security
 
+- **Patched the runtime image past the Debian 13.7 point-release CVEs.** The
+  `trivy-image` gate reported 12 findings (9 HIGH, 3 CRITICAL) against the
+  pinned `python:3.14-slim` base: `gzip` (CVE-2026-41992), `libpcre2-8-0`
+  (CVE-2026-86145, CVE-2026-89161), `libsqlite3-0` (CVE-2026-11822,
+  CVE-2026-11824) and `perl-base` (CVE-2026-13221, CRITICAL, plus five more).
+  Debian shipped all four fixes in the 13.7 point release (2026-09-12) via
+  `trixie` main, but the current upstream `python:3.14-slim` digest
+  (`cad9a2c8…`, built 2026-09-01) still carries the vulnerable versions —
+  verified by building on it and reading `dpkg-query`, so a base bump alone
+  could not collect them and the digest is left as-is. The four packages are
+  exact-pinned in `media_service/Dockerfile`'s existing apt patch layer
+  alongside the OpenSSL pins: `gzip=1.13-1+deb13u1`,
+  `libpcre2-8-0=10.46-1~deb13u2`, `libsqlite3-0=3.46.1-7+deb13u2`,
+  `perl-base=5.40.1-6+deb13u1`. Same pins, same reasoning and same commit
+  shape as `media-worker-m8` (`a5e0ba4`). No `.trivyignore` entry added;
+  the rebuilt image scans clean under the CI settings (CRITICAL/HIGH,
+  fixed-only: 0 findings).
 - **Closed an unauthenticated privilege escalation at the storage backend's
   gRPC port, and two undeclared HTTP listeners beside it** (all 7 compose
   stacks across `media-service-m8` and `fa-ui-m8`; object-storage backend
