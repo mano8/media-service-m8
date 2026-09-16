@@ -476,9 +476,17 @@ def test_storage_workflow_live() -> None:
         s3.head_object(Bucket=BUCKET_TEMP, Key=orphan_key)
 
     # ── 8. Archive tier (soft-delete cold move) ──────────────────────────────
+    # Subject: the clean original, PUBLIC in `public-media` since step 5 — the
+    # case the archive tier exists for (its world-readable URL must die, its
+    # bytes must survive the retention window). The quarantined upload is the
+    # wrong subject here: the worker already removed its bytes at scan time,
+    # so its archive copy is a documented best-effort no-op (asserted below),
+    # not a move. Caught by the first live run of this step against the
+    # published `3.0.0` image (`T31`); the step was written under `T32` and
+    # measured statically only.
     del_resp = _call(
         "DELETE",
-        f"{MEDIA_BASE}/v1/objects/{second_id}",
+        f"{MEDIA_BASE}/v1/objects/{clean_id}",
         expect=(204,),
         headers=_auth_headers(token),
     )
@@ -486,10 +494,15 @@ def test_storage_workflow_live() -> None:
 
     # Real cross-bucket move proof, straight from storage: the soft-deleted
     # original now lives in the archive bucket and only there (`T32`).
-    second_key = second_obj["object_key"]
-    s3.head_object(Bucket=BUCKET_ARCHIVE, Key=second_key)  # raises if absent
+    s3.head_object(Bucket=BUCKET_ARCHIVE, Key=object_key)  # raises if absent
     with pytest.raises(Exception):  # noqa: B017, PT011
-        s3.head_object(Bucket=second_obj["storage_bucket"], Key=second_key)
+        s3.head_object(Bucket=BUCKET_PUBLIC, Key=object_key)
+
+    # A PUBLIC delete still takes the bytes off their known URL on the spot.
+    dead_public = requests.get(
+        f"{STORAGE_PUBLIC}/{BUCKET_PUBLIC}/{object_key}", verify=False, timeout=30
+    )
+    assert dead_public.status_code in (403, 404), dead_public.status_code
 
     # The archived copy is not an orphan: a repair sweep must leave it alone.
     repair_after_archive = _call(
@@ -500,7 +513,20 @@ def test_storage_workflow_live() -> None:
         timeout=90,
     )
     assert repair_after_archive.status_code == 200, repair_after_archive.text
-    s3.head_object(Bucket=BUCKET_ARCHIVE, Key=second_key)  # still there
+    s3.head_object(Bucket=BUCKET_ARCHIVE, Key=object_key)  # still there
+
+    # Quarantined object: bytes were purged by the worker at scan time, so the
+    # soft-delete succeeds (204) with nothing to archive — best-effort, never a
+    # 5xx — and no copy appears in the archive tier.
+    del_quarantined = _call(
+        "DELETE",
+        f"{MEDIA_BASE}/v1/objects/{second_id}",
+        expect=(204,),
+        headers=_auth_headers(token),
+    )
+    assert del_quarantined.status_code == 204, del_quarantined.text
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        s3.head_object(Bucket=BUCKET_ARCHIVE, Key=second_obj["object_key"])
 
     # ── 9. Hard purge ─────────────────────────────────────────────────────────
     if not DB_EXEC_COMMAND:
@@ -512,7 +538,7 @@ def test_storage_workflow_live() -> None:
 
     sql = (
         f"UPDATE app_media_object SET deleted_at = now() - interval '2 days' "
-        f"WHERE id = '{second_id}';"
+        f"WHERE id = '{clean_id}';"
     )
     # No shell=True: DB_EXEC_COMMAND is split into argv tokens and the literal
     # "{sql}" token is replaced with the real statement, so the SQL never
@@ -534,7 +560,7 @@ def test_storage_workflow_live() -> None:
 
     gone_resp = _call(
         "GET",
-        f"{MEDIA_BASE}/v1/objects/{second_id}",
+        f"{MEDIA_BASE}/v1/objects/{clean_id}",
         expect=(404,),
         headers=_auth_headers(token),
     )
@@ -543,4 +569,4 @@ def test_storage_workflow_live() -> None:
     # Reclaimed from the bucket as stored — the archive tier, not the
     # visibility bucket the row was uploaded into.
     with pytest.raises(Exception):  # noqa: B017, PT011
-        s3.head_object(Bucket=BUCKET_ARCHIVE, Key=second_key)
+        s3.head_object(Bucket=BUCKET_ARCHIVE, Key=object_key)
