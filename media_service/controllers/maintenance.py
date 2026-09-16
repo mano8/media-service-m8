@@ -28,7 +28,9 @@ from media_service.db_models.media_objects import (
     MediaObjectStatus,
     utcnow,
 )
+from media_service.db_models.media_variants import MediaVariant
 from media_service.db_models.upload_sessions import UploadSession, UploadSessionStatus
+from media_service.db_models.variant_jobs import VariantJob
 from media_service.schemas.admin import PurgeStaleResponse
 from media_service.schemas.maintenance import (
     HardPurgeResponse,
@@ -61,6 +63,18 @@ class MaintenanceController:
         the bytes from the bucket *as stored* (archived objects live in their own
         bucket, so the bucket is never re-derived from visibility), then deletes
         the row. Quota is **not** re-debited (already done at soft-delete).
+
+        The original's derived rows go with it, explicitly: ``media_variant``
+        and ``variant_job`` reference the object without ``ON DELETE CASCADE``
+        (unlike share tokens and category links), so deleting the object row
+        alone is a foreign-key violation on PostgreSQL — every image that ever
+        had a variant generated was unpurgeable, surfacing as a 500 from
+        ``purge-expired`` the first time the live suite purged a clean image
+        rather than a quarantined one (``T31``, against the published
+        ``3.0.0``). Variant bytes are real objects in their own bucket and are
+        removed the same best-effort way as the original; left behind they
+        would be orphans the reconciler never matches (it keys on
+        ``MediaObject`` rows only).
         """
         cutoff = utcnow() - older_than
         candidates = session.exec(
@@ -82,6 +96,21 @@ class MaintenanceController:
             MaintenanceController._best_effort_remove(
                 storage, bucket=obj.storage_bucket, object_key=obj.object_key
             )
+            variants = session.exec(
+                select(MediaVariant).where(MediaVariant.media_object_id == obj.id)
+            ).all()
+            for variant in variants:
+                MaintenanceController._best_effort_remove(
+                    storage,
+                    bucket=variant.storage_bucket,
+                    object_key=variant.object_key,
+                )
+                session.delete(variant)
+            jobs = session.exec(
+                select(VariantJob).where(VariantJob.media_object_id == obj.id)
+            ).all()
+            for job in jobs:
+                session.delete(job)
             _logger.info(
                 "media.hard_purge",
                 extra={
@@ -91,8 +120,13 @@ class MaintenanceController:
                     "owner_user_id": str(obj.owner_user_id),
                     "deleted_at": obj.deleted_at.isoformat(),
                     "cutoff": cutoff.isoformat(),
+                    "variants": len(variants),
+                    "variant_jobs": len(jobs),
                 },
             )
+            # Children first: the FK has no cascade, so the parent row may only
+            # go once its variants and jobs are gone.
+            session.flush()
             session.delete(obj)
             purged += 1
 
