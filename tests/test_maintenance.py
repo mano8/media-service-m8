@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 from sqlmodel import Session
 
@@ -14,7 +14,9 @@ from media_service.db_models.media_objects import (
     MediaVisibility,
     utcnow,
 )
+from media_service.db_models.media_variants import MediaVariant
 from media_service.db_models.upload_sessions import UploadSession, UploadSessionStatus
+from media_service.db_models.variant_jobs import VariantJob, VariantJobStatus
 
 # Frozen "now" used to make the retention cutoff deterministic.
 _NOW = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -108,6 +110,62 @@ def test_hard_purge_removes_only_expired_deleted_rows(
     assert session.get(MediaObject, old.id) is None
     assert session.get(MediaObject, recent.id) is not None
     assert session.get(MediaObject, active.id) is not None
+
+
+def test_hard_purge_takes_variants_and_variant_jobs_with_the_original(
+    session: Session, mock_storage: MagicMock, monkeypatch
+):
+    """`media_variant` / `variant_job` have no `ON DELETE CASCADE` on their FK.
+
+    Deleting the object row alone is a foreign-key violation on PostgreSQL —
+    measured live as a 500 from `purge-expired` against the published `3.0.0`
+    (`T31`), for any image that ever had a variant generated. The purge must
+    delete both child tables itself, and the variant bytes go the same
+    best-effort way as the original's (they are real objects in a bucket the
+    reconciler never matches against `MediaVariant` rows).
+    """
+    # FK enforcement is opt-in under SQLite; without it the bug is invisible.
+    session.connection().exec_driver_sql("PRAGMA foreign_keys=ON")
+    _freeze_now(monkeypatch)
+    old = _make_object(
+        session,
+        status=MediaObjectStatus.DELETED,
+        deleted_at=_CUTOFF - timedelta(days=1),
+        bucket="archive-media",
+        object_key="old-key",
+    )
+    variant = MediaVariant(
+        media_object_id=old.id,
+        variant_name="thumb",
+        storage_bucket="private-media",
+        object_key="old-key/variants/thumb.webp",
+        size_bytes=10,
+        format="webp",
+    )
+    job = VariantJob(
+        media_object_id=old.id,
+        owner_user_id=old.owner_user_id,
+        status=VariantJobStatus.COMPLETED,
+        requested_presets=["thumb"],
+    )
+    session.add(variant)
+    session.add(job)
+    session.commit()
+    variant_id, job_id = variant.id, job.id
+
+    result = MaintenanceController.hard_purge_expired(
+        session=session, storage=mock_storage, older_than=_OLDER_THAN, limit=500
+    )
+
+    assert result.purged == 1
+    assert session.get(MediaObject, old.id) is None
+    assert session.get(MediaVariant, variant_id) is None
+    assert session.get(VariantJob, job_id) is None
+    # Original and variant bytes both removed, each from its bucket as stored.
+    assert mock_storage.remove_object.call_args_list == [
+        call(bucket="archive-media", object_key="old-key"),
+        call(bucket="private-media", object_key="old-key/variants/thumb.webp"),
+    ]
 
 
 def test_hard_purge_empty_is_noop(
