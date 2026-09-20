@@ -15,6 +15,59 @@ All notable changes to `media-service-m8` are documented here.
 
 ---
 
+## [3.0.2] — 2026-09-20 · one Debian patch-layer form, no pins
+
+Debian patch-layer convergence — `B23-converge-patch-layer` (Wave 6) of the
+workspace's consumer-alignment closure plan, finding `G18`; the form is
+recorded once, in the workspace's `.workspace/context/debian-patch-layer.md`,
+and the five service images now carry it byte-for-byte. Image-only patch
+release: no route, schema, contract or dependency change. Served
+contract unchanged: `CONTRACT_VERSION` `1.1`, `CONTRACT_RANGE` `>=3.0.0 <4.0.0`;
+`astro-media-m8`'s `>=2.0.0 <4.0.0` gate already admits it.
+
+### Security
+
+- **The runtime image's Debian layer is now the fleet's one form:**
+  `apt-get update && apt-get upgrade -y`, nothing exact-pinned, nothing
+  installed that the base does not already ship. The seven exact `=`
+  pins (`openssl`, `libssl3t64`, `openssl-provider-legacy`, `gzip`,
+  `libpcre2-8-0`, `libsqlite3-0`, `perl-base`) are gone and `apt-get
+  upgrade -y` is back: each of those pins was raised by hand per advisory
+  (`3.0.0`'s Security entry is the worked example) and froze the image on
+  the pinned version until the next hand-raise, while every *other* Debian
+  package moved only when the base digest moved. Now every package is raised
+  on every build, and the next advisory needs no commit here.
+  Mirrors `media-worker-m8` `1.0.1`.
+- **Base image raised to the current `python:3.14-slim` digest
+  `caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2`**
+  (Debian 13.7, Python 3.14.7, created 2026-09-19), from `83ff1d…` (Debian 13.6, which
+  "predates the 13.7 point release" — the reason the seven pins existed).
+  All five service images now pin this same digest, and from here on base
+  digests move together — on advisory or on cadence, never one repository
+  alone. Measured inside the new base: every package this fleet had ever
+  pinned ships at or above its pinned version (`openssl` `3.5.7-1~deb13u2`,
+  `gzip` `1.13-1+deb13u1`, `libpcre2-8-0` `10.46-1~deb13u2`, `libsqlite3-0`
+  `3.46.1-7+deb13u2`, `perl-base` `5.40.1-6+deb13u1`), so `upgrade -y` is a
+  no-op today and self-heals from the next advisory on.
+- **`anyio` `4.14.1` → `4.14.2` in `media_service/requirements_prod.lock`** — CVE-2026-63374
+  (CRITICAL, TLS certificate spoofing via IDNA 2003 host-name encoding in
+  `TLSStream`) and CVE-2026-63349 (HIGH, `run_process`/`open_process`
+  retaining the parent's supplementary groups), both published 2026-09-18,
+  after this repository's last green `trivy-image` run on `main`. Transitive
+  (under `fastapi-m8`, `httpx` and `starlette`), so the hash-locked release
+  set is the only place it
+  appears; regenerated with `pip-compile --upgrade-package anyio==4.14.2`,
+  so exactly one version line moves. Found by this release's own pre-PR
+  Trivy read — the gate's freshness limit, not a property of the diff.
+- Verified before the change was proposed: `docker build --no-cache` green
+  on the new Dockerfile; Trivy at the `trivy-image` gate's own settings
+  (`severity: CRITICAL,HIGH`, `ignore-unfixed: true`) reports **0**
+  findings; inside the built container `openssl version` reads
+  `OpenSSL 3.5.7`, `dpkg-query -W openssl libssl3t64 gzip libpcre2-8-0 libsqlite3-0
+  perl-base` reads the 13.7 versions above, and `curl` is not installed.
+
+---
+
 ## [3.0.1] — 2026-09-16 · hard purge takes an image's variants with it
 
 **Bug fix.** `POST /media/v1/admin/maintenance/purge-expired` (and the
