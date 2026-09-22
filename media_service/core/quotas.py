@@ -8,9 +8,13 @@ URL is ever handed out.
 """
 
 import uuid
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, status
 from sqlmodel import Session, col, select
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, keeps core free of schemas
+    from media_service.schemas.uploads import UploadRejectReason
 
 from media_service.core.config import settings
 from media_service.db_models.media_objects import utcnow
@@ -152,8 +156,8 @@ class QuotaExceededError(Exception):
     failures, removing the stored bytes rather than leaking them over quota.
     """
 
-    def __init__(self, reason: str) -> None:
-        self.reason = reason
+    def __init__(self, reason: "UploadRejectReason") -> None:
+        self.reason: "UploadRejectReason" = reason
         super().__init__(reason)
 
 

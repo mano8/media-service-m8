@@ -94,6 +94,20 @@ class UploadCompleteResponse(SQLModel):
     media_object: MediaObjectPublic
 
 
+# The stable reject tokens, named once so every hop carries the same type:
+# the metric counter, the ``QuotaExceededError`` that reaches the reject path,
+# ``_reject_upload``'s parameter and this field. Declared as a bare ``str``
+# anywhere along that chain, a typo or a new branch reaches the 422 detail and
+# only fails at serialization time.
+UploadRejectReason = Literal[
+    "size_exceeded",
+    "mime_mismatch",
+    "sha256_mismatch",
+    "quota_bytes_exceeded",
+    "quota_objects_exceeded",
+]
+
+
 class UploadRejectDetail(SQLModel):
     """Structured 422 detail raised when a staged upload is rejected.
 
@@ -107,11 +121,5 @@ class UploadRejectDetail(SQLModel):
     """
 
     code: Literal["upload_rejected"] = "upload_rejected"
-    reason: Literal[
-        "size_exceeded",
-        "mime_mismatch",
-        "sha256_mismatch",
-        "quota_bytes_exceeded",
-        "quota_objects_exceeded",
-    ]
+    reason: UploadRejectReason
     message: str

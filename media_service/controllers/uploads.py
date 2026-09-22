@@ -34,6 +34,7 @@ from media_service.schemas.uploads import (
     UploadInitiateRequest,
     UploadInitiateResponse,
     UploadRejectDetail,
+    UploadRejectReason,
 )
 from media_service.core.validation import (
     is_allowed_declared_mime,
@@ -102,7 +103,7 @@ def _reject_upload(
     session: Session,
     storage: ObjectStorage,
     upload_session: UploadSession,
-    reason: str,
+    reason: UploadRejectReason,
     mime_type: str,
     size_bytes: int,
     etag: str | None,
