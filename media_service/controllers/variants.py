@@ -185,8 +185,19 @@ class VariantsController:
                 col(MediaVariant.variant_name) == req.variant_name,
             )
         ).first()
+        # ``storage_bucket``, ``object_key`` and ``format`` are NOT NULL with no
+        # default, so a row built without them was already invalid between
+        # construction and the assignments below; sqlmodel 0.0.46 types
+        # ``__init__`` with the table's required fields and now says so. They
+        # are supplied here and still assigned below, which is what the
+        # ``existing`` branch of this upsert needs.
         variant = existing or MediaVariant(
-            media_object_id=object_id, variant_name=req.variant_name, size_bytes=0
+            media_object_id=object_id,
+            variant_name=req.variant_name,
+            storage_bucket=req.storage_bucket,
+            object_key=req.object_key,
+            size_bytes=0,
+            format=req.format,
         )
         variant.storage_bucket = req.storage_bucket
         variant.object_key = req.object_key

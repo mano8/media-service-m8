@@ -1,10 +1,13 @@
 """Media-specific Prometheus counters."""
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from prometheus_client import Counter
 
 from fastapi_m8 import REGISTRY
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, keeps metrics import-light
+    from media_service.schemas.uploads import UploadRejectReason
 
 _uploads_initiated: Optional[Counter] = None
 _uploads_completed: Optional[Counter] = None
@@ -101,7 +104,7 @@ def inc_upload_failed() -> None:
         _uploads_failed.inc()
 
 
-def inc_upload_rejected(reason: str) -> None:
+def inc_upload_rejected(reason: "UploadRejectReason") -> None:
     if _uploads_rejected is not None:
         _uploads_rejected.labels(reason=reason).inc()
 
