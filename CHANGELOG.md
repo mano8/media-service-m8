@@ -25,6 +25,39 @@ release: no route, schema, contract or dependency change. Served
 contract unchanged: `CONTRACT_VERSION` `1.1`, `CONTRACT_RANGE` `>=3.0.0 <4.0.0`;
 `astro-media-m8`'s `>=2.0.0 <4.0.0` gate already admits it.
 
+### Fixed
+
+- **Dashboard activity bounds are timezone-aware UTC**
+  (`B27-dev-set-drift-repair`, finding `G20`).
+  `DashboardController.get_range_activity` built both bounds from a naive
+  `datetime.now()`, and both are compared against `created_at`/`updated_at`
+  columns declared `DateTime(timezone=True)`. SQLAlchemy `2.0.54` rejects a
+  naive value at that boundary (*"Datetime values must have timezone
+  information"*), so the dashboard routes raised instead of answering. The
+  bounds now come from `datetime.now(timezone.utc)` — the same instant this
+  repository's `utcnow()` helper returns. Deliberately **not** fixed with a
+  `NaiveDatetime` annotation, which would have recorded the bug rather than
+  fixed it.
+- **`register_variant` builds a complete `MediaVariant` row.** The upsert's
+  new-row branch omitted `storage_bucket`, `object_key` and `format` — all
+  three `NOT NULL` with no default — and assigned them on the next lines, so
+  the row was momentarily invalid by its own schema. sqlmodel `0.0.46` types
+  `__init__` with the table's required fields and reports it. They are now
+  passed at construction; the assignments remain for the `existing` branch.
+- **The upload reject reason is a named type, not a bare `str`.** The five
+  stable tokens are declared once as `UploadRejectReason` in
+  `schemas/uploads.py` and carried through `inc_upload_rejected`,
+  `QuotaExceededError.reason` and `_reject_upload`, all of which previously
+  typed it `str` while `UploadRejectDetail.reason` demanded the `Literal`.
+  A typo or a new reject branch anywhere on that chain used to reach the
+  `422` body and fail only at serialization. No token changed, so the
+  response is byte-identical.
+
+Every one of these predates this release and predates `B23`: CI resolves
+`requirements_dev.txt`'s `>=` floors fresh on every run, and the library
+generation that resolved on 2026-09-22 stopped hiding them. The shipped
+`requirements_prod.lock` is unchanged.
+
 ### Security
 
 - **The runtime image's Debian layer is now the fleet's one form:**
