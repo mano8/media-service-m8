@@ -56,7 +56,49 @@ contract unchanged: `CONTRACT_VERSION` `1.1`, `CONTRACT_RANGE` `>=3.0.0 <4.0.0`;
 Every one of these predates this release and predates `B23`: CI resolves
 `requirements_dev.txt`'s `>=` floors fresh on every run, and the library
 generation that resolved on 2026-09-22 stopped hiding them. The shipped
-`requirements_prod.lock` is unchanged.
+`requirements_prod.lock` is unchanged *by that repair* — it moves in this same
+release for a different reason (`B29`, under **Changed** below), and that move
+is what finally puts the tested generation and the shipped one on one graph.
+
+### Changed
+
+- **The shipped lock moves onto the library generation CI already tests
+  against** (`B29-align-shipped-library-generation`, finding `G22`). Every
+  service in the fleet was tested on a graph none of them shipped: CI installs
+  `requirements_dev.txt`'s `>=` floors, which resolve to the current
+  generation, while `media_service/requirements_prod.lock` pinned an older
+  one. The three `B27` defects above are what that gap costs — each visible
+  only to the *tested* generation, in a release whose *shipped* generation
+  still could not see them. Three declared pins move, plus `pydantic-core`,
+  `pydantic`'s hard `==` peer. Regenerated with
+  `pip-compile --generate-hashes --no-emit-index-url --upgrade-package sqlalchemy==2.0.54 --upgrade-package sqlmodel==0.0.46 --upgrade-package pydantic==2.13.5`,
+  never a blanket `--upgrade`. Read out of the images themselves:
+
+  | Package | Published `3.0.1` image | This release |
+  | --- | --- | --- |
+  | `sqlalchemy` | `2.0.51` | **`2.0.54`** |
+  | `sqlmodel` | `0.0.39` | **`0.0.46`** |
+  | `pydantic` | `2.13.4` | **`2.13.5`** |
+  | `pydantic-core` | `2.46.4` | **`2.46.5`** |
+  | `colorama` | `0.4.6` | **not installed** (see below) |
+
+  `sqlalchemy` `2.0.54` is the release whose timezone-aware boundary check
+  raised the first `B27` defect, and `sqlmodel` `0.0.46` is what typed
+  `MediaVariant.__init__` strictly enough to raise the second — both are now
+  the generation this image *ships*, not only the one it is tested on.
+
+### Removed
+
+- **`colorama` is no longer installed in the release image.** It is a
+  Windows-only ANSI shim, pulled in transitively by `click` (under `uvicorn`),
+  and it entered the lock because that lock had been regenerated on a Windows
+  host: `pip-compile` resolves for the platform it runs on, and the entry it
+  wrote carried **no environment marker**, so every Linux release image
+  installed it unconditionally. Confirmed present in the published `3.0.1`
+  image and absent from this one. The lock is now resolved inside
+  `python:3.14-slim` — the image's own platform — which is the only place this
+  repository's release graph is ever installed. Nothing imports it; `click`
+  degrades to plain output, which is what a container log wants anyway.
 
 ### Security
 
