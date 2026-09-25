@@ -38,10 +38,13 @@ from fastapi_m8 import (
 )
 
 from .config import settings
+from .utc_session import pin_utc_session
 
 # Single instances shared across the entire process.
 auth: AuthDeps = build_auth_deps(settings)
 engine: DbEngine = create_db_engine(settings)
+# Every PostgreSQL session this engine opens runs in UTC (G23).
+pin_utc_session(engine._engine)
 
 get_current_user = auth.get_current_user
 require_reader = auth.get_current_active_reader

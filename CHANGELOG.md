@@ -27,6 +27,34 @@ contract unchanged: `CONTRACT_VERSION` `1.1`, `CONTRACT_RANGE` `>=3.0.0 <4.0.0`;
 
 ### Fixed
 
+- **Timestamps are stored exactly on a PostgreSQL server that does not run
+  in UTC** (`B30-pre-publish-hardening` leg 1, finding `G23`). The sqlmodel
+  `0.0.46` this release ships maps a `datetime` field to `UTCDateTime`,
+  which binds an *aware* UTC value, while every existing deployment holds
+  `timestamp without time zone` columns generated under the old mapping.
+  PostgreSQL casts that value into the column **in the session
+  `TimeZone`**, so under `Europe/Madrid` a row written at `12:00Z` was
+  stored as `13:00` and read back as `13:00Z`, beside older rows that were
+  correct. `core/utc_session.py` now runs `SET TIME ZONE 'UTC'` on every
+  connection the service engine (`core/deps.py`) and Alembic's engine
+  (`alembic/env.py`) open, which makes that cast a no-op on every server.
+  Other dialects are left alone. Read on the built image with its own
+  libraries, a naive column and one row written each way:
+
+  | Server `TimeZone` | without the pin: old / new row | this release: old / new row |
+  | --- | --- | --- |
+  | `UTC` | `12:00Z` / `12:00Z` | `12:00Z` / `12:00Z` |
+  | `Europe/Madrid` | `12:00Z` / **`13:00Z`** | `12:00Z` / `12:00Z` |
+
+  **Upgrade note (`timestamptz`).** New deployments already generate
+  `timestamp with time zone` columns at first boot. An existing deployment
+  keeps its naive columns and stays correct with the pin. To move it to
+  `timestamptz`, generate and apply a revision
+  (`alembic revision --autogenerate`, then `alembic upgrade head`). Alembic
+  now reports the type change, and because its session is pinned too, the
+  ALTER reads every existing row as the UTC it is. Measured on `Europe/Madrid`:
+  `12:00Z` stays `12:00Z`, where an unpinned ALTER moves it to `11:00Z`.
+  Run that revision only with this release's `alembic/env.py`.
 - **Dashboard activity bounds are timezone-aware UTC**
   (`B27-dev-set-drift-repair`, finding `G20`).
   `DashboardController.get_range_activity` built both bounds from a naive
@@ -140,6 +168,22 @@ is what finally puts the tested generation and the shipped one on one graph.
   findings; inside the built container `openssl version` reads
   `OpenSSL 3.5.7`, `dpkg-query -W openssl libssl3t64 gzip libpcre2-8-0 libsqlite3-0
   perl-base` reads the 13.7 versions above, and `curl` is not installed.
+- **A lock that only resolves where it was made is now refused**
+  (`B30-pre-publish-hardening` leg 2, finding `G24`).
+  `scripts/shipped_lock_env.py --check-portable` runs first in
+  `test-shipped-lock`. It fails on a `--find-links`/`-f`/`--index-url`/
+  `--extra-index-url`/`-e` option, on any filesystem path, and on a short,
+  commented deny-list of platform-only distributions (`colorama`, `pywin32`,
+  `pywin32-ctypes`, `pywinpty`), so a Windows regeneration can no longer put
+  `colorama` back into the Linux image silently. This repository's lock
+  already passes. The same check is in all five service repositories.
+- **The arm64 image is scanned before it is pushed** (leg 8, finding
+  `G31`(a)). The publish workflow scanned an amd64 build and then pushed
+  amd64 and arm64, so arm64 reached the registry unscanned. A second
+  single-platform build is now Trivy-gated at the same settings before the
+  push, and `tests/test_publish_scans_every_platform.py` fails if any pushed
+  platform lacks its own blocking scan. Both architectures of this release
+  read **0** CRITICAL/HIGH locally.
 
 ---
 
