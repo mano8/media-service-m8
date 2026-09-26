@@ -114,6 +114,16 @@ is what finally puts the tested generation and the shipped one on one graph.
   raised the first `B27` defect, and `sqlmodel` `0.0.46` is what typed
   `MediaVariant.__init__` strictly enough to raise the second — both are now
   the generation this image *ships*, not only the one it is tested on.
+- **Every stack pins the fleet's pending releases**
+  (`B32-pre-publish-pin-alignment`). `hardened_media_m8` already pinned this
+  release's `3.0.2`, but its `README.md` and `docker_compose/README.md` still
+  named `3.0.1`, and both media stacks lagged their siblings. Now
+  `dev_media_m8` and `hardened_media_m8` (compose and `README.md`) pin
+  `tepochtli/fa-auth-m8:2.2.3` (was `2.2.1` / `2.2.2`) and
+  `tepochtli/media-worker-m8:1.0.2` (was `1.0.0` / `1.0.1`), and every doc
+  names `tepochtli/media-service-m8:3.0.2`. All three are pending publish,
+  so the stacks pull once the fleet's publish sweep reads them back, and not
+  before.
 
 ### Removed
 

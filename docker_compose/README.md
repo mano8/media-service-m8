@@ -29,7 +29,7 @@ profile on the hardened stack).
 | Stack | media_service / worker | fa-auth + media_worker | S3 gateway host port | Best for |
 | --- | --- | --- | --- | --- |
 | [dev_media_m8](dev_media_m8/) | built from `../../media_service` | published images | `127.0.0.1:9005` | Iterating on media-service against published peers |
-| [hardened_media_m8](hardened_media_m8/) | `tepochtli/media-service-m8:3.0.1` | published images | none (internal only) | Reference deployment / production-shaped posture |
+| [hardened_media_m8](hardened_media_m8/) | `tepochtli/media-service-m8:3.0.2` | published images | none (internal only) | Reference deployment / production-shaped posture |
 | [worspace_dev_media_m8](worspace_dev_media_m8/) | built from `../../` | built from sibling repos | `127.0.0.1:9005` | Cross-repo workspace dev (local-only, not in CI) |
 
 **Decision guide:**
