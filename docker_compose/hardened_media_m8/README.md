@@ -41,10 +41,10 @@ through that network.
 | Service | Image/build | Local access |
 | --- | --- | --- |
 | traefik | `traefik:v3.7.5` | `:8000`, `:4430`, `127.0.0.1:9000`, `127.0.0.1:8080` |
-| auth_user_service | `tepochtli/fa-auth-m8:2.2.1` | `/user` via Traefik |
-| media_service | `tepochtli/media-service-m8:3.0.1` | `/media` via Traefik |
-| media_service_worker | `tepochtli/media-service-m8:3.0.1` (arq command override) | internal — no port; lifecycle/outbox crons |
-| media_worker | `tepochtli/media-worker-m8:1.0.0` | internal — enqueue-driven (scan + variants) |
+| auth_user_service | `tepochtli/fa-auth-m8:2.2.3` | `/user` via Traefik |
+| media_service | `tepochtli/media-service-m8:3.0.2` | `/media` via Traefik |
+| media_service_worker | `tepochtli/media-service-m8:3.0.2` (arq command override) | internal — no port; lifecycle/outbox crons |
+| media_worker | `tepochtli/media-worker-m8:1.0.2` | internal — enqueue-driven (scan + variants) |
 | clamav | `clamav/clamav:1.5-debian13-slim` | internal `scan_net` only |
 | m8_db | `postgres:18.4-alpine` | internal data network |
 | redis_cache | `redis:8.8.0-alpine` | auth Redis — internal data network |
