@@ -254,3 +254,24 @@ Nothing in this folder is specific to `hardened_media_m8` beyond the values in
 
 Algorithm-, token-mode-, and component-specific suites skip automatically when
 they do not match the detected stack.
+
+<!-- env-files:start -->
+## Environment files
+
+Copy each template to the name after the arrow (`init.sh` does this where the stack has one), then replace every
+`changethis`. Every key is documented in its template; each secret carries a `# Value:` line with its minimum
+and maximum length and allowed characters. Real env files are gitignored and never committed.
+
+| Template → file | Read by | Must be set (placeholders) |
+| --- | --- | --- |
+| `env.example` → `.env` | the live security test runner (pytest), not a container | `LIVE_TEST_ADMIN_EMAIL`, `LIVE_TEST_ADMIN_PASSWORD` |
+
+Generate a value that satisfies every secret rule (48 chars: upper, lower, digit and `-`):
+
+```sh
+python -c "import secrets,string; a=string.ascii_letters+string.digits; print('Aa1-'+''.join(secrets.choice(a) for _ in range(44)))"
+```
+
+Values must avoid spaces, `$`, `#`, quotes and backslashes: Compose interpolates `$`, dotenv treats `#` as a
+comment, and several values are embedded in URLs, JSON or the Redis ACL.
+<!-- env-files:end -->

@@ -115,7 +115,7 @@ docker compose up -d --build
 Generate secret values with:
 
 ```sh
-python -c "import secrets; print(secrets.token_urlsafe(64))"
+python -c "import secrets,string; a=string.ascii_letters+string.digits; print('Aa1-'+''.join(secrets.choice(a) for _ in range(44)))"
 ```
 
 ---
